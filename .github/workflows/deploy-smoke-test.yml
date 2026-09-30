@@ -37,7 +37,9 @@ jobs:
         run: |
           out="$(python -m pyflakes . || true)"
           echo "$out"
-          if echo "$out" | grep -q "undefined name"; then
+          # Only real undefined names ("undefined name 'x'") are fatal; pyflakes
+          # also emits harmless star-import notices containing "undefined names".
+          if echo "$out" | grep -qE "undefined name '"; then
             echo "::error::undefined names found"; exit 1
           fi
 
