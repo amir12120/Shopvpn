@@ -1,0 +1,42 @@
+# Python
+*.pyc
+__pycache__/
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+translation-venv/
+.translation-home/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+bot_database.db
+backups/
+
+# Logs / generated artifacts
+*.log
+logs/
+mock.log
+mock.log.err
+shop.log
+shop.log.err
+qr_background.png
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -3821,7 +3821,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 await call.answer(db.get_text('handlers_user.auto_dd15f4d3', 'این کانفیگ یافت نشد (شاید قبلاً حذف شده).'), show_alert=True)
             else:
                 await send_service_alert(
-                    bot, db,
+                    call.bot, db,
                     f"🗑 حذف کانفیگ\n\n👤 کاربر: {user_tg_id}\n🔗 کانفیگ #{item_id}\n📌 نوع: کانفیگ بانکی"
                 )
                 await call.answer(db.get_text('handlers_user.auto_67b7397c', '✅ کانفیگ برای همیشه حذف شد.'), show_alert=True)
@@ -3854,7 +3854,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     )
                 if removed:
                     await send_service_alert(
-                        bot, db,
+                        call.bot, db,
                         f"🗑 حذف کانفیگ\n\n👤 کاربر: {user_tg_id}\n🔗 سرویس #{item_id}\n📌 نام کاربری پنل: {cc_row['username']}\n📌 نوع: کانفیگ پنلی"
                     )
                 if refunded > 0:

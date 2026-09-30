@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from i18n import tr, set_language, reset_language, normalize_language, LANGUAGE_CATALOG
+from i18n import tr, set_language, reset_language, normalize_language, is_language_enabled, LANGUAGE_CATALOG
 from notification_i18n import localized_payload
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse

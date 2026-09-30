@@ -1,4 +1,3 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """
 تحویل حرفه‌ای کانفیگ به کاربر
@@ -20,15 +19,20 @@ import asyncio
 import os
 from datetime import datetime
 from io import BytesIO
+from typing import TYPE_CHECKING
 
 import qrcode
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
 import config
+from i18n import tr
 from jalali import to_jalali_str
 from sub_info import fetch_individual_links
 from notification_i18n import localized, user_language
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from PIL import Image
 
 # -----------------------------------------------------------------------
 # تصویر پس‌زمینه‌ی سفارشی برای کد QR کانفیگ (فعلاً فقط از داخل خودِ بات اصلی

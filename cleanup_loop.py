@@ -1,4 +1,3 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """پاکسازی دوره‌ای سرویس‌های منقضی (F14).
 
@@ -8,6 +7,7 @@ from i18n import tr
 - On-hold، نامحدود و auto-renew هرگز وارد حذف نمی‌شوند.
 - dry-run به‌صورت پیش‌فرض روشن است تا اولین انتشار فقط نامزدهای حذف را به ادمین نشان دهد.
 """
+from i18n import tr
 
 import asyncio
 import logging
@@ -48,7 +48,7 @@ def _safe_bool(db, key, default=True):
     return raw in {"1", "true", "yes", "on"}
 
 
-async def _notify_user(bot: Bot, user_id: int, text: str, product_id=None):
+async def _notify_user(bot: Bot, db, user_id: int, text: str, product_id=None):
     markup = None
     if product_id:
         markup = InlineKeyboardMarkup(inline_keyboard=[[
@@ -138,7 +138,7 @@ async def delete_inactive_configs_once(bot: Bot, db):
                 f"F138: حذف خودکار در ساعت {schedule[0]:02d}:{schedule[1]:02d} تهران",
             )
             try:
-                await _notify_user(bot, row["user_id"], "🗑 کانفیگ غیرفعال شما طبق زمان‌بندی حذف خودکار از پنل حذف شد.")
+                await _notify_user(bot, db, row["user_id"], "🗑 کانفیگ غیرفعال شما طبق زمان‌بندی حذف خودکار از پنل حذف شد.")
             except Exception:
                 pass
 
@@ -216,6 +216,7 @@ async def cleanup_once(bot: Bot, db):
             warned_count += 1
             await _notify_user(
                 bot,
+                db,
                 row["user_id"],
                 "⚠️ سرویس شما به‌زودی منقضی می‌شود. لطفاً در صورت نیاز، قبل از پایان مهلت آن را تمدید یا سرویس جدید تهیه کنید.",
                 row["product_id"] if "product_id" in row.keys() else None,
@@ -255,6 +256,7 @@ async def cleanup_once(bot: Bot, db):
             if is_test:
                 await _notify_user(
                     bot,
+                    db,
                     row["user_id"],
                     "🧪 تست شما تمام شد و از پنل حذف شد. برای ادامه، می‌توانید یک سرویس خریداری کنید.",
                     row["product_id"] if "product_id" in row.keys() else None,
@@ -262,6 +264,7 @@ async def cleanup_once(bot: Bot, db):
             else:
                 await _notify_user(
                     bot,
+                    db,
                     row["user_id"],
                     "⛔ سرویس منقضی شما پس از پایان مهلت نگهداری از پنل حذف شد.",
                     row["product_id"] if "product_id" in row.keys() else None,
@@ -306,7 +309,7 @@ async def expire_stale_discount_orders_once(bot: Bot, db):
         if not order:
             continue
         await _notify_user(
-            bot, order["user_id"],
+            bot, db, order["user_id"],
             f"⌛ سفارش #{order_id} شما به دلیل ارسال‌نشدن رسید پرداخت تا مهلت تعیین‌شده، "
             f"به‌صورت خودکار لغو شد.\nکد تخفیف و مبلغ کیف پول (در صورت استفاده) به حالت "
             f"قبل بازگشت داده شد؛ در صورت تمایل می‌توانید دوباره سفارش دهید.",

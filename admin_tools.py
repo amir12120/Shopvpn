@@ -1,6 +1,6 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """صفحه‌های مدیریت داخل بات: سکه و قرعه‌کشی، کش‌بک، هدیه‌ی گروهی و ضداسپم."""
+from i18n import tr
 
 import asyncio
 import html

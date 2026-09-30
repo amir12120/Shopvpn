@@ -1,4 +1,3 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """
 سوئیچ سراسری خاموش/روشن ربات.
@@ -17,6 +16,7 @@ from i18n import tr
 هر ربات (اصلی یا نمایندگی) دیتابیس و تنظیم مستقل خودش را دارد، پس سوئیچ هر ربات
 جداگانه عمل می‌کند.
 """
+from i18n import tr
 
 import asyncio
 import logging

@@ -1,6 +1,6 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """مسیریابی گزارش‌ها به گروه فوروم تاپیک‌دار؛ بدون گروه یا هنگام خطا، ارسال مستقیم به مدیران."""
+from i18n import tr
 
 import asyncio
 import html

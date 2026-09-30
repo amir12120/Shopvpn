@@ -1,6 +1,6 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """پنل ادمین بات اصلی برای درگاه‌های افزوده‌شده: تنظیمات، فهرست فاکتورها، بررسی و لغو."""
+from i18n import tr
 
 import asyncio
 

@@ -1,4 +1,3 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """
 Middleware عضویت اجباری در کانال.
@@ -11,6 +10,7 @@ Middleware عضویت اجباری در کانال.
 نیست یا آیدی اشتباه تنظیم شده)، به‌جای قفل‌کردن کل بات برای همه، عبور می‌دهد
 (fail-open) تا یک تنظیم اشتباه، بات را کاملاً از کار نیندازد.
 """
+from i18n import tr
 
 import asyncio
 import logging

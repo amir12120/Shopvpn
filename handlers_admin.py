@@ -1,4 +1,3 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """
 هندلرهای پنل مدیریت
@@ -6,6 +5,7 @@ from i18n import tr
 این فایل هم مثل handlers_user.py یک تابع کارخانه‌ای دارد: create_admin_router(db, ...).
 هر بات (اصلی یا نمایندگی) پنل مدیریت کامل و مستقل خودش را از همین یک کد می‌سازد.
 """
+from i18n import tr
 
 import os
 import re
@@ -994,7 +994,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         failed = 0
         for uid in user_ids:
             try:
-                await bot.send_message(uid, notification)
+                await call.bot.send_message(uid, notification)
                 sent += 1
             except Exception:
                 failed += 1

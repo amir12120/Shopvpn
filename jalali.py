@@ -54,6 +54,12 @@ def gregorian_to_jalali(gy: int, gm: int, gd: int):
             jd = j_day_no + 1
             break
         j_day_no -= j_days_in_month[i]
+    else:
+        # Esfand (month 12): j_day_no now holds the remaining (0-based) day
+        # after subtracting the first eleven months. Without this the day was
+        # computed from the pre-loop value, so every late-March/Nowruz date was
+        # returned as e.g. 1402/12/346 instead of 1402/12/10.
+        jd = j_day_no + 1
 
     return jy, jm, jd
 

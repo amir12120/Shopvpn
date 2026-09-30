@@ -1,6 +1,6 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """هندلرهای کاربر برای درگاه‌های افزوده‌شده (فقط بات اصلی): انتخاب روش، ساخت فاکتور، بررسی وضعیت و استارز داخلی."""
+from i18n import tr
 
 import asyncio
 import logging

@@ -1,6 +1,6 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """منطق مشترک ساخت، بررسی و تحویل فاکتور درگاه‌های زرین‌پال، آقای پرداخت، تترا۹۸، کیوب‌پی، NowPayments و استارز داخلی تلگرام (فقط بات اصلی)."""
+from i18n import tr
 
 import asyncio
 import json

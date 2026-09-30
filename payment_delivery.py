@@ -1,4 +1,3 @@
-from i18n import tr
 # -*- coding: utf-8 -*-
 """
 هلپر مشترک تحویل سفارش/شارژ پس از تایید پرداخت.
@@ -8,6 +7,7 @@ finalize_paid_topup داشت. تفاوت‌ها فقط در نام لاگر بو
 این ماژول آن را یک‌بار پیاده می‌کند و فایل‌های پرداخت فقط یک wrapper نازک
 با نام قدیمی export می‌کنند تا importهای موجود نشکند.
 """
+from i18n import tr
 import logging
 
 from config_delivery import deliver_config_to_user
