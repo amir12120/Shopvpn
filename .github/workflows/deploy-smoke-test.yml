@@ -1,0 +1,101 @@
+name: Deploy Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-unit:
+    name: Static checks + unit smoke
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install analysis tools
+        run: pip install -q --disable-pip-version-check pyflakes ruff pytest
+
+      - name: Shell syntax check
+        run: |
+          for f in install.sh manage.sh update.sh preflight.sh cleanup.sh setup_local_translation.sh; do
+            echo "bash -n $f"; bash -n "$f"
+          done
+
+      - name: Undefined-name / redefinition lint (ruff)
+        run: ruff check --select F821,F811,E9 .
+
+      - name: Undefined-name check (pyflakes)
+        run: |
+          out="$(python -m pyflakes . || true)"
+          echo "$out"
+          if echo "$out" | grep -q "undefined name"; then
+            echo "::error::undefined names found"; exit 1
+          fi
+
+      - name: Unit smoke tests
+        run: python -m pytest tests -q
+
+  installer-smoke:
+    name: Full install on fresh Ubuntu 22.04 (disk-lean)
+    runs-on: ubuntu-22.04
+    needs: lint-and-unit
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight report (prerequisites only, no changes)
+        run: bash preflight.sh --check
+
+      - name: Install prerequisites + bot non-interactively
+        # Runs as the normal runner user: install.sh calls sudo itself for
+        # apt/systemd. Models and the heavy LibreTranslate are skipped so the
+        # lean default is what we actually verify.
+        run: |
+          printf '123456789:TEST-TOKEN\n123456789\n1\n' | \
+            env SHOPVPN_SKIP_MODELS=1 SHOPVPN_INSTALL_LIBRETRANSLATE=0 \
+                SHOPVPN_SKIP_SERVICE_START=1 \
+                bash install.sh
+
+      - name: Verify install outcome (lean + working)
+        run: |
+          set -e
+          D="$HOME/v2ray_bot"
+          test -f "$D/main.py"
+          test -x "$D/venv/bin/python3"
+          test -f "$D/.env"
+          grep -q '^BOT_TOKEN=' "$D/.env"
+          test -f /etc/systemd/system/v2raybot.service
+          # Disk-lean guarantees:
+          test ! -d "$D/translation-venv"           # LibreTranslate off by default
+          test ! -d "$HOME/.cache/pip"              # pip cache purged
+          echo "venv:    $(du -sh "$D/venv" | cut -f1)"
+          echo "project: $(du -sh "$D" | cut -f1)"
+          echo "free /:  $(df -Ph / | awk 'NR==2{print $4}')"
+
+      - name: Cleanup must not delete anything the bot needs
+        run: |
+          set -e
+          D="$HOME/v2ray_bot"
+          sudo bash "$D/cleanup.sh" "$D"
+          test -f "$D/main.py"
+          test -x "$D/venv/bin/python3"
+          test -f "$D/.env"
+          test -f /etc/systemd/system/v2raybot.service
+          if find "$D" -name '*.pyc' -print -quit | grep -q .; then
+            echo "::error::compiled bytecode still present after cleanup"; exit 1
+          fi
+          echo "project after cleanup: $(du -sh "$D" | cut -f1)"
+
+      - name: Runtime dependencies import
+        run: |
+          "$HOME/v2ray_bot/venv/bin/python3" -c \
+            "import aiogram, fastapi, argostranslate, PIL, qrcode; print('runtime deps import OK')"

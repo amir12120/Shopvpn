@@ -29,11 +29,16 @@ echo "────────────────────────�
 # ----------------------------------------------------------------------------
 # ۱. نصب پیش‌نیازهای سیستمی
 # ----------------------------------------------------------------------------
-echo "📦 بررسی و نصب پیش‌نیازها (git, python3, pip, venv)..."
+echo "📦 مرحله ۱/۶ — نصب کامل پیش‌نیازها قبل از هر کار دیگری..."
+# پیش‌نیازها همیشه اول نصب می‌شوند تا نصب پایتون/ترجمه وسط کار گیر نکند.
+# --no-install-recommends حجم نصب apt را کم می‌کند.
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-timeout 180 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
-    apt-get install -y -qq git curl ca-certificates python3 python3-pip python3-venv \
+timeout 240 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+    apt-get install -y -qq --no-install-recommends \
+    git curl ca-certificates python3 python3-pip python3-venv \
     build-essential python3-dev pkg-config libffi-dev libssl-dev zlib1g-dev libjpeg-dev > /dev/null
+
+echo "   git: $(git --version 2>/dev/null || echo MISSING) | python3: $(python3 --version 2>/dev/null || echo MISSING)"
 
 # هرگز کش دانلود pip را نگه نداریم (چند گیگابایت روی دیسک‌های کوچک).
 export PIP_NO_CACHE_DIR=1
@@ -59,7 +64,8 @@ fetch_project_code() {
         if git -C "$INSTALL_DIR" pull --quiet; then ok=1; fi
     else
         echo "📥 دریافت پروژه از گیت‌هاب..."
-        if git clone --quiet "$REPO_URL" "$INSTALL_DIR"; then ok=1; fi
+        # کلون کم‌عمق: تاریخ کامل مخزن روی دیسک سرور ذخیره نمی‌شود.
+        if git clone --quiet --depth 1 "$REPO_URL" "$INSTALL_DIR"; then ok=1; fi
     fi
 
     if [ "$ok" = "1" ]; then
@@ -188,10 +194,11 @@ if ! bash "$INSTALL_DIR/setup_local_translation.sh"; then
     echo "⚠️ نصب موتور ترجمه محلی کامل نشد؛ بات ادامه می‌دهد و در آپدیت بعدی دوباره تلاش می‌کند."
 fi
 
-# آزادسازی فضای هدررفته: کش‌های pip بعد از ساخت venv بی‌فایده‌اند.
-venv/bin/python3 -m pip cache purge >/dev/null 2>&1 || true
-rm -rf "$HOME/.cache/pip" 2>/dev/null || true
-[ "$(id -u)" -eq 0 ] && rm -rf /root/.cache/pip 2>/dev/null || true
+# آزادسازی فضای هدررفته (کش pip، کش apt، کش دانلود مدل‌ها، __pycache__ و ...).
+# این کار فقط فایل‌های قابل‌ساخت‌مجدد را پاک می‌کند و به اجرای بات کاری ندارد.
+if [ -f "$INSTALL_DIR/cleanup.sh" ]; then
+    bash "$INSTALL_DIR/cleanup.sh" "$INSTALL_DIR" || true
+fi
 echo "💾 فضای مصرفی -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1) | کل پروژه: $(du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1)"
 
 # ----------------------------------------------------------------------------
@@ -218,7 +225,14 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
-sudo systemctl restart "$SERVICE_NAME"
+
+# در CI/تست می‌توان با SHOPVPN_SKIP_SERVICE_START=1 از اجرای بات صرف‌نظر کرد
+# (سرویس ساخته و enable می‌شود ولی همین حالا start نمی‌شود).
+if [ "${SHOPVPN_SKIP_SERVICE_START:-0}" = "1" ]; then
+    echo "ℹ️ SHOPVPN_SKIP_SERVICE_START=1 → سرویس ساخته شد ولی اجرا نشد."
+else
+    sudo systemctl restart "$SERVICE_NAME"
+fi
 
 sleep 2
 

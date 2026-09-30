@@ -110,7 +110,9 @@ fi
 if [ "${#MISSING[@]}" -gt 0 ] && command -v apt-get >/dev/null 2>&1; then
   echo "Installing prerequisites (apt)..."
   as_root apt-get update -qq
-  as_root apt-get install -y -qq "${MISSING[@]}" >/dev/null
+  as_root apt-get install -y -qq --no-install-recommends "${MISSING[@]}" >/dev/null
+  # آرشیو بسته‌های دانلودشده فضای دیسک را اشغال می‌کند و بعد از نصب لازم نیست.
+  as_root apt-get clean >/dev/null 2>&1 || true
 fi
 
 # --- Summary ---------------------------------------------------------------

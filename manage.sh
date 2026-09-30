@@ -750,8 +750,9 @@ run_step() {
 install_bot() {
     echo -e "${CYAN}$(t installing_prereqs)${RESET}"
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-    timeout 180 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
-        apt-get install -y -qq git curl ca-certificates python3 python3-pip python3-venv \
+    timeout 240 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+        apt-get install -y -qq --no-install-recommends \
+        git curl ca-certificates python3 python3-pip python3-venv \
         build-essential python3-dev pkg-config libffi-dev libssl-dev zlib1g-dev libjpeg-dev > /dev/null
     # Never keep pip's download cache: it silently eats gigabytes on small disks.
     export PIP_NO_CACHE_DIR=1
@@ -792,10 +793,13 @@ EOF
         echo -e "${YELLOW}⚠️ نصب موتور ترجمه کامل نشد؛ بات ادامه می‌دهد و در آپدیت بعدی دوباره تلاش می‌کند.${RESET}"
     fi
 
-    # Reclaim pip caches now that the venv is built.
-    venv/bin/python3 -m pip cache purge >/dev/null 2>&1 || true
-    rm -rf "$HOME/.cache/pip" 2>/dev/null || true
-    [ "$(id -u)" -eq 0 ] && rm -rf /root/.cache/pip 2>/dev/null || true
+    # Reclaim disk space now that the venv is built (caches + regenerable files).
+    if [ -f "$INSTALL_DIR/cleanup.sh" ]; then
+        bash "$INSTALL_DIR/cleanup.sh" "$INSTALL_DIR" || true
+    else
+        venv/bin/python3 -m pip cache purge >/dev/null 2>&1 || true
+        rm -rf "$HOME/.cache/pip" 2>/dev/null || true
+    fi
     echo -e "${CYAN}💾 فضای مصرفی -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1) | کل پروژه: $(du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1)${RESET}"
 
     echo -e "${CYAN}$(t creating_service)${RESET}"
