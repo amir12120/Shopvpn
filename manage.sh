@@ -13,10 +13,10 @@
 # ---------------------------------------------------------------------------
 # Customizable settings / تنظیمات قابل شخصی‌سازی
 # ---------------------------------------------------------------------------
-REPO_URL="https://github.com/mehdirafatpanah/Shopvpn.git"
+REPO_URL="https://github.com/amir12120/Shopvpn.git"
 INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
-GITHUB_OWNER="mehdirafatpanah"
+GITHUB_OWNER="amir12120"
 GITHUB_REPO="Shopvpn"
 GITHUB_BRANCH="main"
 export GIT_TERMINAL_PROMPT=0
@@ -539,10 +539,20 @@ MSG_EN[menu_26]="Update integration API"
 MSG_FA[menu_26]="آپدیت API یکپارچه‌سازی"
 MSG_EN[menu_23]="Change admin panel username/password"
 MSG_FA[menu_23]="تغییر نام کاربری و رمز عبور پنل مدیریت وب"
-MSG_EN[menu_27]="Repair / install local translation runtime (automatic)"
-MSG_FA[menu_27]="نصب/آپدیت خودکار موتور ترجمه محلی"
+MSG_EN[menu_27]="Install/repair translation models (Argos; optional LibreTranslate)"
+MSG_FA[menu_27]="نصب/تعمیر مدل‌های ترجمه (Argos؛ LibreTranslate اختیاری)"
 MSG_EN[menu_28]="Remove LibreTranslate"
 MSG_FA[menu_28]="حذف LibreTranslate"
+MSG_EN[menu_29]="Install additional translation languages (Argos models)"
+MSG_FA[menu_29]="نصب زبان‌های ترجمه بیشتر (مدل‌های Argos)"
+MSG_EN[lt_heavy_prompt]="Also install the heavy LibreTranslate fallback? It needs several GB of disk [y/N]: "
+MSG_FA[lt_heavy_prompt]="fallback سنگین LibreTranslate هم نصب شود؟ چند گیگابایت فضا لازم دارد [y/N]: "
+MSG_EN[langs_header]="Additional translation languages"
+MSG_FA[langs_header]="زبان‌های ترجمه بیشتر"
+MSG_EN[langs_prompt]="Enter target language codes separated by commas (e.g. tr,ar,ru) or 'all': "
+MSG_FA[langs_prompt]="کد زبان‌های مقصد را با کاما وارد کن (مثلاً tr,ar,ru) یا بنویس all: "
+MSG_EN[langs_done]="🎉 Language models installed. Those languages now translate locally."
+MSG_FA[langs_done]="🎉 مدل‌های زبان نصب شد. حالا آن زبان‌ها به‌صورت محلی ترجمه می‌شوند."
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_FA[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_EN[menu_0]="Exit"
@@ -555,8 +565,8 @@ MSG_EN[goodbye]="Goodbye 👋"
 MSG_FA[goodbye]="خدانگهدار 👋"
 
 # LibreTranslate self-hosted install / لغات نصب LibreTranslate اختصاصی
-MSG_EN[lt_header]="Self-hosted LibreTranslate"
-MSG_FA[lt_header]="LibreTranslate اختصاصی (self-hosted)"
+MSG_EN[lt_header]="Local translation models"
+MSG_FA[lt_header]="مدل‌های ترجمه محلی"
 MSG_EN[lt_installing_deps]="📦 Making sure Python/venv are installed..."
 MSG_FA[lt_installing_deps]="📦 اطمینان از نصب بودن Python/venv..."
 MSG_EN[lt_venv_failed]="✗ Failed to create the virtual environment."
@@ -740,7 +750,12 @@ run_step() {
 install_bot() {
     echo -e "${CYAN}$(t installing_prereqs)${RESET}"
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-    timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv > /dev/null
+    timeout 180 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+        apt-get install -y -qq git curl ca-certificates python3 python3-pip python3-venv \
+        build-essential python3-dev pkg-config libffi-dev libssl-dev zlib1g-dev libjpeg-dev > /dev/null
+    # Never keep pip's download cache: it silently eats gigabytes on small disks.
+    export PIP_NO_CACHE_DIR=1
+    export PIP_DISABLE_PIP_VERSION_CHECK=1
 
     if [ -f "$INSTALL_DIR/main.py" ]; then
         echo -e "${YELLOW}$(t already_installed_pulling)${RESET}"
@@ -755,7 +770,7 @@ install_bot() {
         python3 -m venv venv
     fi
     source venv/bin/activate
-    pip install -r requirements.txt --quiet
+    pip install -q --no-cache-dir -r requirements.txt
     deactivate
 
     if [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -772,10 +787,16 @@ EOF
         echo -e "${GREEN}$(t env_exists)${RESET}"
     fi
 
-    echo -e "${CYAN}🌍 نصب خودکار موتور ترجمه محلی و مدل‌های زبان...${RESET}"
+    echo -e "${CYAN}🌍 نصب سبک موتور ترجمه محلی (Argos؛ بدون LibreTranslate سنگین)...${RESET}"
     if ! bash "$INSTALL_DIR/setup_local_translation.sh"; then
         echo -e "${YELLOW}⚠️ نصب موتور ترجمه کامل نشد؛ بات ادامه می‌دهد و در آپدیت بعدی دوباره تلاش می‌کند.${RESET}"
     fi
+
+    # Reclaim pip caches now that the venv is built.
+    venv/bin/python3 -m pip cache purge >/dev/null 2>&1 || true
+    rm -rf "$HOME/.cache/pip" 2>/dev/null || true
+    [ "$(id -u)" -eq 0 ] && rm -rf /root/.cache/pip 2>/dev/null || true
+    echo -e "${CYAN}💾 فضای مصرفی -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1) | کل پروژه: $(du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1)${RESET}"
 
     echo -e "${CYAN}$(t creating_service)${RESET}"
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -2085,12 +2106,42 @@ setup_libretranslate() {
         return
     fi
 
-    echo -e "${CYAN}🌍 Installing/repairing Argos models and the local LibreTranslate runtime...${RESET}"
-    if bash "$INSTALL_DIR/setup_local_translation.sh"; then
+    # Argos alone is enough for offline translation. LibreTranslate is a heavy
+    # (multi-GB) second fallback, so ask before downloading it.
+    read -rp "$(t lt_heavy_prompt)" LT_CHOICE
+    local lt_env="0"
+    case "$LT_CHOICE" in
+        [Yy]|[Yy][Ee][Ss]) lt_env="1" ;;
+    esac
+
+    echo -e "${CYAN}🌍 Installing/repairing Argos models${RESET}"
+    if SHOPVPN_INSTALL_LIBRETRANSLATE="$lt_env" bash "$INSTALL_DIR/setup_local_translation.sh"; then
         echo -e "${GREEN}${BOLD}$(t lt_done)${RESET}"
     else
         echo -e "${RED}$(t lt_pip_failed)${RESET}"
         return
+    fi
+
+    if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
+        sudo systemctl restart "$SERVICE_NAME"
+    fi
+}
+
+install_translation_langs() {
+    section_header "$(t langs_header)"
+    if [ ! -f "$INSTALL_DIR/setup_local_translation.sh" ]; then
+        echo -e "${RED}$(t bot_not_installed)${RESET}"
+        return
+    fi
+    read -rp "$(t langs_prompt)" LANGS_INPUT
+    if [ -z "$LANGS_INPUT" ]; then
+        echo -e "${YELLOW}$(t cancelled)${RESET}"
+        return
+    fi
+    if SHOPVPN_TRANSLATION_LANGS="$LANGS_INPUT" bash "$INSTALL_DIR/setup_local_translation.sh"; then
+        echo -e "${GREEN}${BOLD}$(t langs_done)${RESET}"
+    else
+        echo -e "${RED}$(t lt_pip_failed)${RESET}"
     fi
 
     if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
@@ -2112,10 +2163,15 @@ remove_libretranslate() {
     sudo systemctl disable "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1 || true
     sudo rm -f "/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service"
     sudo systemctl daemon-reload
-    rm -rf "$INSTALL_DIR/translation-venv"
+    rm -rf "$INSTALL_DIR/translation-venv" "$INSTALL_DIR/.translation-home"
+    rm -rf "$HOME/.cache/pip" 2>/dev/null || true
+    [ "$(id -u)" -eq 0 ] && rm -rf /root/.cache/pip 2>/dev/null || true
 
     local ENV_FILE="$INSTALL_DIR/.env"
-    [ -f "$ENV_FILE" ] && sed -i '/^SHOPVPN_LIBRETRANSLATE_URL=/d' "$ENV_FILE"
+    if [ -f "$ENV_FILE" ]; then
+        sed -i '/^SHOPVPN_LIBRETRANSLATE_URL=/d' "$ENV_FILE"
+        sed -i 's/^SHOPVPN_TRANSLATION_PROVIDERS=.*/SHOPVPN_TRANSLATION_PROVIDERS=argos/' "$ENV_FILE"
+    fi
 
     if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
         sudo systemctl restart "$SERVICE_NAME"
@@ -2163,6 +2219,7 @@ while true; do
     menu_section sec_translation
     menu_item 27 menu_27
     menu_item 28 menu_28 "$RED"
+    menu_item 29 menu_29
     menu_section sec_advanced
     menu_item 21 menu_21
     menu_item 22 menu_22
@@ -2203,6 +2260,7 @@ while true; do
         26) update_api; pause ;;
         27) setup_libretranslate; pause ;;
         28) remove_libretranslate; pause ;;
+        29) install_translation_langs; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;

@@ -356,11 +356,21 @@ The backend provides infrastructure for a native Android management application.
 
 ## 🚀 One-Line Automatic Installation
 
+> 🌿 This is the personal fork `amir12120/Shopvpn`. Its installer is disk-lean: no heavy LibreTranslate and no pip cache by default. See [`INSTALL.fa.md`](INSTALL.fa.md) (Persian) for the full guide.
+
+**Step 0 (recommended): install prerequisites** so apt never stalls mid-install:
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
+```
+
 **Recommended:** on a fresh Ubuntu/Debian server, run:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main/manage.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
 ```
+
+> 💾 Instead of LibreTranslate (which alone uses several GB), this installer installs Argos only and downloads just the language models you need. Add languages with `SHOPVPN_TRANSLATION_LANGS=tr,ar`; enable the heavy fallback with `SHOPVPN_INSTALL_LIBRETRANSLATE=1`.
 
 <details>
 <summary><strong>What does the installer do?</strong></summary>
@@ -399,7 +409,7 @@ The same one-line installer can be run again for future updates. Translation run
 ### 1. Clone
 
 ```bash
-git clone https://github.com/mehdirafatpanah/Shopvpn.git
+git clone https://github.com/amir12120/Shopvpn.git
 cd Shopvpn
 ```
 

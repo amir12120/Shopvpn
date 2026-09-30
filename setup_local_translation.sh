@@ -1,16 +1,42 @@
 #!/bin/bash
-# Fully automatic local translation setup for ShopVPN.
-# Installs system/Python prerequisites, Argos Translate and the language models
-# required by ShopVPN. No API key is required and public translation APIs are
-# never enabled by this script.
+# ============================================================================
+# Disk-aware local translation setup for ShopVPN.
+#
+# The previous version installed LibreTranslate (PyTorch + CTranslate2 + a
+# second copy of every language model) on every server. A default
+# LibreTranslate install is several gigabytes (its full image is ~16 GB) and
+# routinely fails outright on a VPS with "only" a few GB free. Argos Translate
+# alone already provides the fully offline translation ShopVPN needs, and the
+# app treats LibreTranslate purely as a *second* fallback (provider order is
+# "argos,libretranslate" and Argos is tried first).
+#
+# So this script now defaults to the lean path:
+#   * install Argos Translate only,
+#   * download only the language pairs the shop actually uses,
+#   * never keep pip's download cache,
+#   * leave LibreTranslate off unless you explicitly opt in.
+#
+# Knobs (all optional):
+#   SHOPVPN_TRANSLATION_LANGS=fa,tr,ar   extra target languages to preload
+#   SHOPVPN_TRANSLATION_LANGS=all        preload every language in the catalog
+#   SHOPVPN_INSTALL_LIBRETRANSLATE=1     also install the heavy LibreTranslate
+#   SHOPVPN_SKIP_MODELS=1                skip model downloads entirely
+# ============================================================================
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/venv}"
 TRANSLATION_VENV_DIR="${TRANSLATION_VENV_DIR:-$ROOT_DIR/translation-venv}"
-TRANSLATION_HOME="${TRANSLATION_HOME:-$ROOT_DIR/.translation-home}"
 PYTHON_BIN="${PYTHON_BIN:-$VENV_DIR/bin/python3}"
 LT_PYTHON="${LT_PYTHON:-$TRANSLATION_VENV_DIR/bin/python3}"
+
+INSTALL_LIBRETRANSLATE="${SHOPVPN_INSTALL_LIBRETRANSLATE:-0}"
+SKIP_MODELS="${SHOPVPN_SKIP_MODELS:-0}"
+LANGS_SPEC="${SHOPVPN_TRANSLATION_LANGS:-fa}"
+
+# Never let pip keep gigabytes of downloaded wheels around: this is one of the
+# biggest silent disk hogs on small VPS disks.
+export PIP_NO_CACHE_DIR=1
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PYTHONUNBUFFERED=1
 
@@ -24,6 +50,13 @@ as_root() {
     exit 1
   fi
 }
+
+pip_q() {
+  # pip_q <python> <args...>  -> quiet, cache-less install
+  "$1" -m pip install -q --no-cache-dir --disable-pip-version-check "${@:2}"
+}
+
+human() { if [ -e "$1" ]; then du -sh "$1" 2>/dev/null | cut -f1; else echo "-"; fi; }
 
 install_system_prereqs() {
   if command -v apt-get >/dev/null 2>&1; then
@@ -44,33 +77,46 @@ if [ ! -x "$PYTHON_BIN" ]; then
   python3 -m venv "$VENV_DIR"
 fi
 
-"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel >/dev/null
-"$PYTHON_BIN" -m pip install -q 'argostranslate>=1.11.0'
+pip_q "$PYTHON_BIN" --upgrade pip setuptools wheel
+pip_q "$PYTHON_BIN" 'argostranslate>=1.11.0'
 
-# Keep LibreTranslate in its own virtualenv so its large dependency tree cannot
-# conflict with ShopVPN/aiogram/FastAPI dependencies during future updates.
-if [ ! -x "$LT_PYTHON" ]; then
-  echo "[translation] Creating isolated LibreTranslate environment..."
-  python3 -m venv "$TRANSLATION_VENV_DIR"
-fi
-"$LT_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
-"$LT_PYTHON" -m pip install -q --upgrade 'libretranslate>=1.9.0'
-
-# Ask the project's own language registry which target languages are needed.
-# This avoids maintaining a second hard-coded language list in the installer.
-mapfile -t TARGETS < <(SHOPVPN_ROOT="$ROOT_DIR" "$PYTHON_BIN" - <<'PY'
+# ---------------------------------------------------------------------------
+# Decide which language pairs to preload.
+#   * fa (default)  -> en->fa and fa->en only (~200 MB): enough for the
+#                      Persian/English shop UI and the admin panel.
+#   * a CSV list    -> those targets as well (e.g. "tr,ar,ru").
+#   * all           -> every language in the project catalog (~1.5 GB+).
+# Anything not preloaded still works later via:
+#   SHOPVPN_TRANSLATION_LANGS=... bash setup_local_translation.sh
+# ---------------------------------------------------------------------------
+TARGETS=()
+if [ "$SKIP_MODELS" != "1" ]; then
+  if [ "$LANGS_SPEC" = "all" ]; then
+    mapfile -t TARGETS < <(SHOPVPN_ROOT="$ROOT_DIR" "$PYTHON_BIN" - <<'PY'
 import os
 import sys
 sys.path.insert(0, os.environ["SHOPVPN_ROOT"])
-from i18n import LANGUAGE_CATALOG
+try:
+    from i18n import LANGUAGE_CATALOG
+except Exception:
+    print("fa")
+    raise SystemExit(0)
 for code in sorted(LANGUAGE_CATALOG):
     if code not in {"en", "fa"}:
         print(code)
 PY
 )
-
-# Argos package metadata is public/open and does not require an API key.
-"$VENV_DIR/bin/argospm" update
+  else
+    IFS=',' read -r -a _raw <<< "$LANGS_SPEC"
+    for _lang in "${_raw[@]}"; do
+      _lang="$(echo "$_lang" | tr -d '[:space:]')"
+      [ -z "$_lang" ] && continue
+      [ "$_lang" = "en" ] && continue
+      [ "$_lang" = "fa" ] && continue
+      TARGETS+=("$_lang")
+    done
+  fi
+fi
 
 install_pair() {
   local pair="$1"
@@ -80,15 +126,42 @@ install_pair() {
   fi
 }
 
-for lang in "${TARGETS[@]}"; do
-  install_pair "en_${lang}"
-done
+if [ "$SKIP_MODELS" = "1" ]; then
+  echo "[translation] SHOPVPN_SKIP_MODELS=1 -> skipping model downloads."
+else
+  # Argos package metadata is public/open and does not require an API key.
+  "$VENV_DIR/bin/argospm" update
 
-# The admin panel can contain raw Persian strings that need direct fa -> en.
-install_pair "fa_en"
+  # en -> fa is what the Persian UI needs; fa -> en completes the admin panel,
+  # which can contain raw Persian strings.
+  install_pair "en_fa"
+  install_pair "fa_en"
+  for lang in "${TARGETS[@]}"; do
+    [ "$lang" = "fa" ] && continue
+    install_pair "en_${lang}"
+  done
+fi
 
-# The local engine is the source of truth. Public providers are disabled by
-# default so Google/MyMemory/OpenRouter rate limits can never break the UI.
+# ---------------------------------------------------------------------------
+# Optional: LibreTranslate fallback (heavy). Off by default.
+# ---------------------------------------------------------------------------
+LT_ENABLED=0
+if [ "$INSTALL_LIBRETRANSLATE" = "1" ]; then
+  LT_ENABLED=1
+  echo "[translation] SHOPVPN_INSTALL_LIBRETRANSLATE=1 -> installing LibreTranslate (several GB)."
+  echo "[translation] This is optional; Argos already handles offline translation."
+
+  if [ ! -x "$LT_PYTHON" ]; then
+    echo "[translation] Creating isolated LibreTranslate environment..."
+    python3 -m venv "$TRANSLATION_VENV_DIR"
+  fi
+  pip_q "$LT_PYTHON" --upgrade pip setuptools wheel
+  pip_q "$LT_PYTHON" --upgrade 'libretranslate>=1.9.0'
+fi
+
+# ---------------------------------------------------------------------------
+# Environment file
+# ---------------------------------------------------------------------------
 ENV_FILE="$ROOT_DIR/.env"
 touch "$ENV_FILE"
 set_env() {
@@ -99,27 +172,42 @@ set_env() {
     printf '\n%s=%s\n' "$key" "$value" >> "$ENV_FILE"
   fi
 }
-set_env SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS 0
-set_env SHOPVPN_TRANSLATION_PROVIDERS 'argos,libretranslate'
-set_env SHOPVPN_LIBRETRANSLATE_URL 'http://127.0.0.1:5000'
+unset_env() {
+  [ -f "$ENV_FILE" ] && sed -i "/^$1=/d" "$ENV_FILE" || true
+}
 
-# Run LibreTranslate locally as a second free/offline-capable fallback. Argos
-# remains first and therefore avoids HTTP overhead for normal short UI strings.
-if command -v systemctl >/dev/null 2>&1; then
-  SERVICE_FILE=/etc/systemd/system/shopvpn-libretranslate.service
-  as_root mkdir -p "$TRANSLATION_HOME"
-  as_root chmod 755 "$TRANSLATION_HOME"
-  as_root bash -c "cat > '$SERVICE_FILE' <<EOF
+# The local engine is the source of truth. Public providers stay disabled so
+# Google/MyMemory/OpenRouter rate limits can never break the UI.
+set_env SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS 0
+
+if [ "$LT_ENABLED" = "1" ]; then
+  set_env SHOPVPN_TRANSLATION_PROVIDERS 'argos,libretranslate'
+  set_env SHOPVPN_LIBRETRANSLATE_URL 'http://127.0.0.1:5000'
+
+  # Run LibreTranslate as the installing user with the SAME HOME as the main
+  # venv, so it reuses the Argos packages already downloaded instead of
+  # fetching a second multi-hundred-MB copy into a private home directory.
+  LT_USER="$(id -un)"
+  LT_LOAD_ONLY="en,fa"
+  for lang in "${TARGETS[@]}"; do
+    [ "$lang" = "fa" ] && continue
+    LT_LOAD_ONLY="${LT_LOAD_ONLY},${lang}"
+  done
+
+  if command -v systemctl >/dev/null 2>&1; then
+    SERVICE_FILE=/etc/systemd/system/shopvpn-libretranslate.service
+    as_root bash -c "cat > '$SERVICE_FILE' <<EOF
 [Unit]
 Description=ShopVPN Local LibreTranslate
 After=network.target
 
 [Service]
 Type=simple
+User=$LT_USER
 WorkingDirectory=$ROOT_DIR
-Environment=HOME=$TRANSLATION_HOME
+Environment=HOME=$HOME
 Environment=PYTHONUNBUFFERED=1
-ExecStart=$TRANSLATION_VENV_DIR/bin/libretranslate --host 127.0.0.1 --port 5000 --load-only en,fa,tr,ar,de,fr,es,it,pt,zh,ja,ko,nl,pl,uk,ru --disable-web-ui
+ExecStart=$TRANSLATION_VENV_DIR/bin/libretranslate --host 127.0.0.1 --port 5000 --load-only $LT_LOAD_ONLY --disable-web-ui
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=15min
@@ -128,33 +216,45 @@ TimeoutStopSec=30s
 [Install]
 WantedBy=multi-user.target
 EOF"
-  as_root systemctl daemon-reload
-  as_root systemctl enable shopvpn-libretranslate.service >/dev/null
-  as_root systemctl restart shopvpn-libretranslate.service || true
+    as_root systemctl daemon-reload
+    as_root systemctl enable shopvpn-libretranslate.service >/dev/null
+    as_root systemctl restart shopvpn-libretranslate.service || true
 
-  # Wait for the local API to become ready before the bot starts making lazy
-  # translation requests. The documented health surface is /languages.
-  ready=0
-  for _ in $(seq 1 90); do
-    if curl -fsS --max-time 3 http://127.0.0.1:5000/languages >/dev/null 2>&1; then
-      ready=1
-      break
+    ready=0
+    for _ in $(seq 1 90); do
+      if curl -fsS --max-time 3 http://127.0.0.1:5000/languages >/dev/null 2>&1; then
+        ready=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$ready" -ne 1 ]; then
+      echo "[translation] WARNING: LibreTranslate did not become ready within 180s." >&2
+      as_root systemctl --no-pager --full status shopvpn-libretranslate.service 2>&1 | tail -40 >&2 || true
+      as_root journalctl -u shopvpn-libretranslate.service -n 40 --no-pager 2>&1 >&2 || true
     fi
-    sleep 2
-  done
-  if [ "$ready" -ne 1 ]; then
-    echo "[translation] WARNING: LibreTranslate did not become ready within 180s." >&2
-    as_root systemctl --no-pager --full status shopvpn-libretranslate.service 2>&1 | tail -40 >&2 || true
-    as_root journalctl -u shopvpn-libretranslate.service -n 40 --no-pager 2>&1 >&2 || true
   fi
+else
+  # Lean default: Argos only. Avoids pointless connections to a server that
+  # is intentionally not installed.
+  set_env SHOPVPN_TRANSLATION_PROVIDERS 'argos'
+  unset_env SHOPVPN_LIBRETRANSLATE_URL
 fi
+
+# ---------------------------------------------------------------------------
+# Reclaim space: pip caches are pure waste once a venv is built.
+# ---------------------------------------------------------------------------
+"$PYTHON_BIN" -m pip cache purge >/dev/null 2>&1 || true
+if [ -x "$LT_PYTHON" ]; then "$LT_PYTHON" -m pip cache purge >/dev/null 2>&1 || true; fi
+rm -rf "$HOME/.cache/pip" 2>/dev/null || true
+if [ "$(id -u)" -eq 0 ]; then rm -rf /root/.cache/pip 2>/dev/null || true; fi
 
 "$PYTHON_BIN" - <<'PY'
 import argostranslate
 print("[translation] Argos Translate: ready")
 PY
 
-if command -v curl >/dev/null 2>&1; then
+if [ "$LT_ENABLED" = "1" ] && command -v curl >/dev/null 2>&1; then
   if curl -fsS --max-time 5 http://127.0.0.1:5000/languages >/dev/null 2>&1; then
     echo "[translation] Local LibreTranslate: ready"
   else
@@ -162,5 +262,12 @@ if command -v curl >/dev/null 2>&1; then
   fi
 fi
 
-echo "[translation] Local translation setup completed."
 echo "[translation] Public translation APIs are disabled by default."
+if [ "${#TARGETS[@]}" -gt 0 ]; then
+  echo "[translation] Installed Argos pairs: en_fa, fa_en, $(printf 'en_%s ' "${TARGETS[@]}" | sed 's/ $//')"
+else
+  echo "[translation] Installed Argos pairs: en_fa, fa_en"
+fi
+echo "[translation] Disk used -> venv: $(human "$VENV_DIR") | translation-venv: $(human "$TRANSLATION_VENV_DIR") | Argos models: $(human "$HOME/.local/share/argos-translate") $(human "$HOME/.local/cache/argos-translate")"
+echo "[translation] Add more languages later with: SHOPVPN_TRANSLATION_LANGS=tr,ar bash setup_local_translation.sh"
+echo "[translation] Local translation setup completed."

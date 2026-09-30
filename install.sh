@@ -1,11 +1,12 @@
 #!/bin/bash
 # اسکریپت نصب/آپدیت خودکار بات فروش کانفیگ V2Ray
 #
-# استفاده (بعد از اینکه این فایل را در مخزن گیت‌هاب خودت گذاشتی و REPO_URL را
-# با آدرس ریپازیتوری خودت جایگزین کردی):
+# استفاده (این ریپازیتوری فورک شخصی است):
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/USERNAME/v2ray-bot/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
 #
+# نصب سبک و آگاه به فضای دیسک: به‌صورت پیش‌فرض فقط Argos (بدون LibreTranslate)
+# و بدون نگه‌داشتن کش pip نصب می‌شود تا فضای دیسک کم مصرف شود.
 # این اسکریپت هم برای نصب اولیه کار می‌کند و هم برای آپدیت‌های بعدی (idempotent است).
 
 set -e
@@ -18,7 +19,7 @@ export NEEDRESTART_SUSPEND=1
 # ============================================================================
 # تنظیمات - این خط را با آدرس مخزن گیت‌هاب خودت جایگزین کن
 # ============================================================================
-REPO_URL="https://github.com/mehdirafatpanah/Shopvpn.git"
+REPO_URL="https://github.com/amir12120/Shopvpn.git"
 INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
 
@@ -30,7 +31,13 @@ echo "────────────────────────�
 # ----------------------------------------------------------------------------
 echo "📦 بررسی و نصب پیش‌نیازها (git, python3, pip, venv)..."
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv ca-certificates curl > /dev/null
+timeout 180 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+    apt-get install -y -qq git curl ca-certificates python3 python3-pip python3-venv \
+    build-essential python3-dev pkg-config libffi-dev libssl-dev zlib1g-dev libjpeg-dev > /dev/null
+
+# هرگز کش دانلود pip را نگه نداریم (چند گیگابایت روی دیسک‌های کوچک).
+export PIP_NO_CACHE_DIR=1
+export PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # ----------------------------------------------------------------------------
 # ۲. دریافت یا آپدیت کد از گیت‌هاب
@@ -40,7 +47,7 @@ timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTA
 #    اول با گیت (بدون امکان پرامپت تعاملی) تلاش می‌کنیم و در صورت شکست،
 #    به دانلود مستقیم آرشیو (tar.gz) که این محدودیت را ندارد سوییچ می‌کنیم.
 # ----------------------------------------------------------------------------
-GITHUB_OWNER="mehdirafatpanah"
+GITHUB_OWNER="amir12120"
 GITHUB_REPO="Shopvpn"
 GITHUB_BRANCH="main"
 export GIT_TERMINAL_PROMPT=0
@@ -93,7 +100,7 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 source venv/bin/activate
-pip install -r requirements.txt --quiet
+pip install -q --no-cache-dir -r requirements.txt
 deactivate
 
 # ----------------------------------------------------------------------------
@@ -174,10 +181,18 @@ fi
 # ۵. نصب و راه‌اندازی خودکار موتور ترجمه محلی
 #    کاربر نباید هیچ مدل Argos یا LibreTranslate را دستی نصب کند.
 # ----------------------------------------------------------------------------
-echo "🌍 نصب خودکار موتور ترجمه محلی و مدل‌های زبان..."
+echo "🌍 نصب سبک موتور ترجمه محلی و مدل‌های زبان (بدون LibreTranslate سنگین)..."
+# برای زبان‌های بیشتر: SHOPVPN_TRANSLATION_LANGS="tr,ar" و برای fallback سنگین
+# LibreTranslate: SHOPVPN_INSTALL_LIBRETRANSLATE=1
 if ! bash "$INSTALL_DIR/setup_local_translation.sh"; then
     echo "⚠️ نصب موتور ترجمه محلی کامل نشد؛ بات ادامه می‌دهد و در آپدیت بعدی دوباره تلاش می‌کند."
 fi
+
+# آزادسازی فضای هدررفته: کش‌های pip بعد از ساخت venv بی‌فایده‌اند.
+venv/bin/python3 -m pip cache purge >/dev/null 2>&1 || true
+rm -rf "$HOME/.cache/pip" 2>/dev/null || true
+[ "$(id -u)" -eq 0 ] && rm -rf /root/.cache/pip 2>/dev/null || true
+echo "💾 فضای مصرفی -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1) | کل پروژه: $(du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1)"
 
 # ----------------------------------------------------------------------------
 # ۶. ساخت systemd service برای اجرای دائمی و خودکار بعد از ری‌بوت سرور

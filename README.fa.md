@@ -349,20 +349,32 @@ python -m admin_panel.generate_vapid_keys
 
 ## 🚀 نصب خودکار (یک‌خطی، پیشنهادی)
 
+> 🌿 این ریپازیتوری فورک شخصی `amir12120/Shopvpn` است و اسکریپت نصب آن سبک‌سازی شده تا فضای دیسک کم مصرف شود (بدون LibreTranslate سنگین و بدون کش pip). راهنمای کامل نصب: [`INSTALL.fa.md`](INSTALL.fa.md).
+
+**گام ۰ (توصیه‌شده): نصب پیش‌نیازها** — برای اینکه apt وسط نصب گیر نکند، یک‌بار پیش‌نیازها را نصب کن:
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
+```
+
 برای نصب کامل بات روی یک سرور تازه (Ubuntu/Debian)، فقط این دستور را در ترمینال سرور اجرا کن:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main/manage.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
 ```
+
+> 💾 این نصب‌کننده به‌جای نصب LibreTranslate (که به‌تنهایی چند گیگابایت فضا می‌برد)، فقط Argos را نصب می‌کند و مدل‌های زبان را محدود به زبان‌های موردنیاز دانلود می‌کند. برای زبان‌های بیشتر: `SHOPVPN_TRANSLATION_LANGS=tr,ar` و برای fallback سنگین: `SHOPVPN_INSTALL_LIBRETRANSLATE=1`.
 
 <details>
 <summary>این اسکریپت دقیقاً چه کار می‌کند؟</summary>
 
-1. ✅ پیش‌نیازهای سیستمی (`git`, `python3`, `pip`, `venv`) را نصب می‌کند
+1. ✅ پیش‌نیازهای سیستمی (`git`, `python3`, `pip`, `venv` و ابزارهای ساخت) را نصب می‌کند
 2. ✅ پروژه را از گیت‌هاب کلون می‌کند (یا در صورت وجود، آپدیت می‌کند)
-3. ✅ محیط مجازی پایتون را می‌سازد و پکیج‌ها را نصب می‌کند
+3. ✅ محیط مجازی پایتون را می‌سازد و پکیج‌ها را بدون کش (`--no-cache-dir`) نصب می‌کند
 4. ✅ توکن بات و آیدی عددی ادمین را از تو می‌پرسد و فایل `.env` را می‌سازد
-5. ✅ یک سرویس `systemd` می‌سازد تا بات همیشه در حال اجرا بماند و بعد از ری‌استارت سرور هم خودکار بالا بیاید
+5. ✅ مدل‌های ترجمه محلی Argos را فقط برای زبان‌های موردنیاز نصب می‌کند (کم‌مصرف)
+6. ✅ کش pip را آزاد می‌کند و گزارش فضای مصرفی را نشان می‌دهد
+7. ✅ یک سرویس `systemd` می‌سازد تا بات همیشه در حال اجرا بماند و بعد از ری‌استارت سرور هم خودکار بالا بیاید
 
 بعد از پایان نصب می‌توانی با دستورهای زیر وضعیت بات را مدیریت کنی:
 
@@ -388,7 +400,7 @@ sudo systemctl stop v2raybot       # توقف
 
 **۱. کلون کردن پروژه**
 ```bash
-git clone https://github.com/mehdirafatpanah/Shopvpn.git
+git clone https://github.com/amir12120/Shopvpn.git
 cd Shopvpn
 ```
 
@@ -479,7 +491,7 @@ nohup python main.py > bot.log 2>&1 &
 یک پنل متنی رنگی و تعاملی برای مدیریت کامل بات بدون نیاز به یادآوری دستورات:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main/manage.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/manage.sh)
 ```
 
 <details>
