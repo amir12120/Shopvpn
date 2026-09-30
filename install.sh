@@ -106,6 +106,13 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 source venv/bin/activate
+# argostranslate -> stanza -> torch. pip روی لینوکس به‌صورت پیش‌فرض نسخهٔ CUDA را
+# نصب می‌کند که با کتابخانه‌های nvidia حدود ۵ گیگابایت فضا می‌برد. نسخهٔ CPU را
+# از مخزن رسمی PyTorch از قبل نصب می‌کنیم تا pip نسخهٔ سنگین CUDA را نکشد.
+if ! pip -q --no-cache-dir --disable-pip-version-check install \
+        --index-url https://download.pytorch.org/whl/cpu torch; then
+    echo "⚠️ نصب torch نسخهٔ CPU ممکن نشد؛ ادامه می‌دهیم (ممکن است نسخهٔ سنگین نصب شود)."
+fi
 pip install -q --no-cache-dir -r requirements.txt
 deactivate
 

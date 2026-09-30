@@ -78,6 +78,11 @@ if [ ! -x "$PYTHON_BIN" ]; then
 fi
 
 pip_q "$PYTHON_BIN" --upgrade pip setuptools wheel
+# argostranslate -> stanza -> torch. Prefer the CPU-only build so we don't pull
+# ~5 GB of CUDA/nvidia libraries onto a small VPS.
+if ! pip_q "$PYTHON_BIN" --index-url https://download.pytorch.org/whl/cpu torch; then
+  echo "[translation] Warning: CPU-only torch install failed; continuing." >&2
+fi
 pip_q "$PYTHON_BIN" 'argostranslate>=1.11.0'
 
 # ---------------------------------------------------------------------------

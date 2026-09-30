@@ -771,6 +771,11 @@ install_bot() {
         python3 -m venv venv
     fi
     source venv/bin/activate
+    # CPU-only torch first: the default Linux wheel pulls ~5 GB of CUDA/nvidia libs.
+    if ! pip -q --no-cache-dir --disable-pip-version-check install \
+            --index-url https://download.pytorch.org/whl/cpu torch; then
+        echo -e "${YELLOW}⚠️ نصب torch نسخهٔ CPU ممکن نشد؛ ادامه می‌دهیم.${RESET}"
+    fi
     pip install -q --no-cache-dir -r requirements.txt
     deactivate
 
