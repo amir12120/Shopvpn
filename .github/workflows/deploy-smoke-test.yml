@@ -26,7 +26,7 @@ jobs:
 
       - name: Shell syntax check
         run: |
-          for f in install.sh manage.sh update.sh preflight.sh cleanup.sh setup_local_translation.sh; do
+          for f in install.sh manage.sh update.sh preflight.sh cleanup.sh setup_local_translation.sh check_upstream.sh; do
             echo "bash -n $f"; bash -n "$f"
           done
 
@@ -76,6 +76,8 @@ jobs:
           test -f "$D/.env"
           grep -q '^BOT_TOKEN=' "$D/.env"
           test -f /etc/systemd/system/v2raybot.service
+          test -x /usr/local/bin/shopvpn            # one-command install adds the CLI
+          grep -q 'manage.sh' /usr/local/bin/shopvpn
           # Disk-lean guarantees:
           test ! -d "$D/translation-venv"           # LibreTranslate off by default
           test ! -d "$HOME/.cache/pip"              # pip cache purged

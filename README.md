@@ -356,19 +356,29 @@ The backend provides infrastructure for a native Android management application.
 
 ## 🚀 One-Line Automatic Installation
 
-> 🌿 This is the personal fork `amir12120/Shopvpn`. Its installer is disk-lean: no heavy LibreTranslate and no pip cache by default. See [`INSTALL.fa.md`](INSTALL.fa.md) (Persian) for the full guide.
+> 🌿 This is the personal fork `amir12120/Shopvpn`. Its installer is disk-lean: no heavy LibreTranslate and no pip cache by default. Full guide: [`INSTALL.md`](INSTALL.md) (English) or [`INSTALL.fa.md`](INSTALL.fa.md) (Persian).
 
-**Step 0 (recommended): install prerequisites** so apt never stalls mid-install:
-
-```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
-```
-
-**Recommended:** on a fresh Ubuntu/Debian server, run:
+**One command, on a fresh Ubuntu/Debian server.** It installs every missing
+prerequisite, installs the bot, adds the `shopvpn` CLI command and **opens the
+management menu automatically** when the install finishes:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
 ```
+
+Afterwards, typing `shopvpn` opens the same management menu at any time:
+
+```bash
+shopvpn
+```
+
+> 🧪 All install steps are printed in English.
+>
+> If you prefer to install prerequisites on their own first (optional):
+>
+> ```bash
+> sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
+> ```
 
 > 💾 Instead of LibreTranslate (which alone uses several GB), this installer installs Argos only and downloads just the language models you need. Add languages with `SHOPVPN_TRANSLATION_LANGS=tr,ar`; enable the heavy fallback with `SHOPVPN_INSTALL_LIBRETRANSLATE=1`.
 
@@ -382,7 +392,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/insta
 5. Installs/updates the local translation runtime and language models automatically
 6. Creates/configures `.env`
 7. Creates the systemd service
-7. Starts the bot and keeps it running after server reboots
+8. Starts the bot and keeps it running after server reboots
+9. Installs the `shopvpn` CLI command and opens the management menu
 
 ### Basic service commands
 
@@ -494,7 +505,13 @@ Depending on the project version, it can handle:
 - 🔗 Integration API setup
 - 🌐 Persian/English management menu
 
-Run:
+After install, just type `shopvpn`:
+
+```bash
+shopvpn
+```
+
+Or run it straight from the repository (no install required):
 
 ```bash
 chmod +x manage.sh

@@ -349,19 +349,27 @@ python -m admin_panel.generate_vapid_keys
 
 ## 🚀 نصب خودکار (یک‌خطی، پیشنهادی)
 
-> 🌿 این ریپازیتوری فورک شخصی `amir12120/Shopvpn` است و اسکریپت نصب آن سبک‌سازی شده تا فضای دیسک کم مصرف شود (بدون LibreTranslate سنگین و بدون کش pip). راهنمای کامل نصب: [`INSTALL.fa.md`](INSTALL.fa.md).
+> 🌿 این ریپازیتوری فورک شخصی `amir12120/Shopvpn` است و اسکریپت نصب آن سبک‌سازی شده تا فضای دیسک کم مصرف شود (بدون LibreTranslate سنگین و بدون کش pip). راهنمای کامل نصب: [`INSTALL.fa.md`](INSTALL.fa.md) و [`INSTALL.md`](INSTALL.md) (انگلیسی).
 
-**گام ۰ (توصیه‌شده): نصب پیش‌نیازها** — برای اینکه apt وسط نصب گیر نکند، یک‌بار پیش‌نیازها را نصب کن:
-
-```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
-```
-
-برای نصب کامل بات روی یک سرور تازه (Ubuntu/Debian)، فقط این دستور را در ترمینال سرور اجرا کن:
+روی یک سرور تازه (Ubuntu/Debian) فقط **یک دستور** را در ترمینال سرور اجرا کن — همین یک دستور پیش‌نیازهای نصب‌نشده را نصب می‌کند، بات را نصب می‌کند، دستور `shopvpn` را می‌سازد و در پایان **منوی CLI را به‌صورت خودکار باز می‌کند**:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
 ```
+
+بعد از نصب، هرگاه بخواهی منوی مدیریت باز شود کافیست بنویسی:
+
+```bash
+shopvpn
+```
+
+> 🧪 تمام مراحل نصب به زبان انگلیسی نمایش داده می‌شوند.
+>
+> اگر فقط می‌خواهی پیش‌نیازها را جدا نصب کنی (اختیاری):
+>
+> ```bash
+> sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
+> ```
 
 > 💾 این نصب‌کننده به‌جای نصب LibreTranslate (که به‌تنهایی چند گیگابایت فضا می‌برد)، فقط Argos را نصب می‌کند و مدل‌های زبان را محدود به زبان‌های موردنیاز دانلود می‌کند. برای زبان‌های بیشتر: `SHOPVPN_TRANSLATION_LANGS=tr,ar` و برای fallback سنگین: `SHOPVPN_INSTALL_LIBRETRANSLATE=1`.
 
@@ -375,6 +383,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/insta
 5. ✅ مدل‌های ترجمه محلی Argos را فقط برای زبان‌های موردنیاز نصب می‌کند (کم‌مصرف)
 6. ✅ کش pip را آزاد می‌کند و گزارش فضای مصرفی را نشان می‌دهد
 7. ✅ یک سرویس `systemd` می‌سازد تا بات همیشه در حال اجرا بماند و بعد از ری‌استارت سرور هم خودکار بالا بیاید
+8. ✅ دستور `shopvpn` را در `/usr/local/bin` نصب می‌کند و منوی مدیریت را به‌صورت خودکار باز می‌کند
 
 بعد از پایان نصب می‌توانی با دستورهای زیر وضعیت بات را مدیریت کنی:
 
@@ -488,11 +497,17 @@ nohup python main.py > bot.log 2>&1 &
 
 ## 🧰 مدیریت بات (`manage.sh`)
 
-یک پنل متنی رنگی و تعاملی برای مدیریت کامل بات بدون نیاز به یادآوری دستورات:
+یک پنل متنی رنگی و تعاملی برای مدیریت کامل بات بدون نیاز به یادآوری دستورات. بعد از نصب، فقط با نوشتن `shopvpn` باز می‌شود:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/manage.sh)
+shopvpn
 ```
+
+> بدون نصب هم می‌شود اجرا کرد:
+>
+> ```bash
+> bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/manage.sh)
+> ```
 
 <details>
 <summary><strong>جدول کامل گزینه‌های منو (کلیک کن برای باز شدن)</strong></summary>

@@ -2238,7 +2238,9 @@ while true; do
     menu_item 0 menu_0 "$DIM"
     draw_rule
     echo ""
-    read -rp "$(echo -e ${MAGENTA}${BOLD}"  $(t enter_choice_prompt)"${RESET})" choice
+    # If stdin closes (EOF) or there is no terminal, exit instead of spinning
+    # through the menu forever.
+    read -rp "$(echo -e ${MAGENTA}${BOLD}"  $(t enter_choice_prompt)"${RESET})" choice || { echo ""; break; }
 
     case $choice in
         1) install_bot; pause ;;
