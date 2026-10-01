@@ -18,6 +18,7 @@ from aiogram import BaseMiddleware
 
 import ai_support
 import global_switch
+import user_limit as ul
 from i18n import tr
 from spam_guard import ThrottleMiddleware
 from states import AdminBusiness
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 KEY_ENABLED = "business_enabled"
 KEY_MARK_READ = "business_mark_read"
 KEY_NOTIFY_CHANGES = "business_notify_changes"
+KEY_SALES_CARD = "business_sales_card"
 
 MAX_TEXT = 4096
 TRANSCRIPT_LINES = 10
@@ -130,10 +132,46 @@ def create_business_router(db, language_mw=None) -> Router:
             lock = chat_locks[key] = asyncio.Lock()
         return lock
 
-    async def _send(bot: Bot, connection_id: str, chat_id: int, text: str):
+    async def _send(bot: Bot, connection_id: str, chat_id: int, text: str, reply_markup=None):
         await bot.send_message(
             chat_id=chat_id, text=_clip(text), business_connection_id=connection_id, parse_mode=None,
+            reply_markup=reply_markup,
         )
+
+    async def _send_product_card(bot: Bot, connection_id: str, chat_id: int, product_id) -> bool:
+        """کارت محصول داخل چت بیزنس. فقط دکمه‌ی URL دارد (نه callback)؛ خرید و پرداخت
+        داخل خودِ بات و با دیپ‌لینک prod_<id> ادامه پیدا می‌کند."""
+        try:
+            product_id = int(product_id)
+        except (TypeError, ValueError):
+            return False
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or not product["is_active"]:
+            return False
+        auto = bool(product["is_auto_provision"])
+        stock = 0 if auto else await asyncio.to_thread(db.count_available_configs, product_id)
+        if not auto and stock <= 0:
+            await _send(bot, connection_id, chat_id, tr("⛔️ موجودی این محصول در حال حاضر تمام شده."))
+            return True
+        lines = [
+            f"📦 {product['name']}",
+            f"💰 {tr('قیمت')}: {ul.price_for_users(product, 0):,} {tr('تومان')}",
+        ]
+        specs = []
+        if auto and product["auto_provision_volume_gb"]:
+            specs.append(f"📦 {tr('حجم')}: {product['auto_provision_volume_gb']} {tr('گیگ')}")
+        if product["duration_days"]:
+            specs.append(f"⏳ {tr('مدت')}: {product['duration_days']} {tr('روز')}")
+        if specs:
+            lines.append(" | ".join(specs))
+        if product["description"]:
+            lines.append(f"📝 {product['description']}")
+        me = await bot.me()
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text=tr("🛒 ادامه‌ی خرید در ربات"), url=f"https://t.me/{me.username}?start=prod_{product_id}",
+        )]])
+        await _send(bot, connection_id, chat_id, "\n".join(lines), markup)
+        return True
 
     async def _notify_seller(bot: Bot, conn, text: str, markup=None):
         targets = []
@@ -256,7 +294,8 @@ def create_business_router(db, language_mw=None) -> Router:
                     pass
                 history = await asyncio.to_thread(db.get_business_ai_conversation, conn_row, chat_id)
                 try:
-                    result = await ai_support.get_reply(db, user.id, history, text, business_mode=True)
+                    mode = ai_support.BUSINESS_SALES if _flag(db, KEY_SALES_CARD) else True
+                    result = await ai_support.get_reply(db, user.id, history, text, business_mode=mode)
                 except Exception:
                     logger.exception("business AI reply failed for user %s", user.id)
                     result = {"reply": FALLBACK_REPLY, "escalate": True}
@@ -276,7 +315,9 @@ def create_business_router(db, language_mw=None) -> Router:
                     await _handoff(bot, biz_conn, chat_id, user, history, text, reply)
                     return
                 ui_action = result.get("ui_action") or {}
-                if ui_action.get("type") == "deliver_test_config":
+                if ui_action.get("type") == "show_product" and _flag(db, KEY_SALES_CARD):
+                    await _send_product_card(bot, connection_id, chat_id, ui_action.get("product_id"))
+                elif ui_action.get("type") == "deliver_test_config":
                     me = await bot.me()
                     await _send(
                         bot, connection_id, chat_id,
@@ -384,6 +425,7 @@ def create_business_router(db, language_mw=None) -> Router:
         enabled = _flag(db, KEY_ENABLED)
         mark_read = _flag(db, KEY_MARK_READ)
         notify = _flag(db, KEY_NOTIFY_CHANGES, "1")
+        sales = _flag(db, KEY_SALES_CARD)
         text = (
             f"{tr('💼 تلگرام بیزنس')}\n\n"
             f"{tr('وضعیت کل قابلیت')}: {_onoff(enabled)}\n"
@@ -397,6 +439,7 @@ def create_business_router(db, language_mw=None) -> Router:
             [InlineKeyboardButton(text=f"{_onoff(enabled)} {tr('قابلیت بیزنس')}", callback_data="adm_biz_master")],
             [InlineKeyboardButton(text=f"{_onoff(mark_read)} {tr('علامت‌گذاری خوانده‌شده')}", callback_data="adm_biz_markread")],
             [InlineKeyboardButton(text=f"{_onoff(notify)} {tr('اعلان ویرایش/حذف پیام مشتری')}", callback_data="adm_biz_notify")],
+            [InlineKeyboardButton(text=f"{_onoff(sales)} {tr('کارت خرید داخل چت بیزنس')}", callback_data="adm_biz_sales")],
             [InlineKeyboardButton(text=tr("🔗 اتصال‌ها"), callback_data="adm_biz_conns")],
             [InlineKeyboardButton(text=f"{tr('🤝 چت‌های تحویل‌شده به انسان')} ({humans})", callback_data="adm_biz_humans")],
             [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
@@ -426,6 +469,7 @@ def create_business_router(db, language_mw=None) -> Router:
     _toggle_handler("adm_biz_master", KEY_ENABLED, "0", "business_toggle")
     _toggle_handler("adm_biz_markread", KEY_MARK_READ, "0", "business_markread_toggle")
     _toggle_handler("adm_biz_notify", KEY_NOTIFY_CHANGES, "1", "business_notify_toggle")
+    _toggle_handler("adm_biz_sales", KEY_SALES_CARD, "0", "business_sales_toggle")
 
     @router.callback_query(F.data == "adm_biz_conns")
     async def cb_conns(call: CallbackQuery):

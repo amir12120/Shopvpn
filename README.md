@@ -20,6 +20,7 @@
 - [📖 Overview](#overview)
 - [✨ Features](#features)
 - [🧠 AI Support Assistant](#ai-support)
+- [💼 Telegram Business](#business)
 - [💳 Payment Gateways](#payment-gateways)
 - [📲 Telegram Mini App](#miniapp)
 - [🖥️ Standalone Web Admin Panel](#admin-panel)
@@ -179,6 +180,31 @@ The AI layer answers repetitive customer questions before escalating to human su
 - 🔒 Wallet purchases/renewals and service changes run only through the bot's validated flows after explicit user confirmation; refunds and complaints go to human support
 - 🙋 Automatic escalation for financial complaints or explicit human-support requests
 - ⚡ If no API provider is configured, requests can go directly to human support
+
+</details>
+
+---
+
+<a id="business"></a>
+
+## 💼 Telegram Business
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+The seller can connect the main bot to their own Telegram Business account (Settings → Telegram Business → Chatbots). The bot then answers customers inside the seller's personal chats on their behalf. This works on the main bot only (not on reseller bots) and is **off by default** until an administrator turns it on.
+
+- 🔗 **Connection handling** — `business_connection` and `business_message` updates are stored per connection (owner, reply/read rights, enabled/disabled); admins are notified when a connection is activated or cut
+- 🤖 **Automatic AI replies** — customer messages are answered through the AI support assistant with real data; only read-only tools are available here: prices and products, payment methods, service status, server countries, service history and free test config
+- 🔒 **No financial actions in business chats** — wallet purchases, renewals and service changes are disabled; such requests are handed to the seller
+- 🛡 **Safety filters** — the bot ignores the seller's own messages, administrators, other bots and blocked users; the anti-spam guard and the global bot on/off switch apply to this path as well; non-text messages are ignored
+- 🤝 **Human handoff** — when the assistant escalates, it goes silent in that chat and the seller gets a notice in the main bot with the last messages, a button to open the chat and a button to return the chat to automatic mode
+- ✏️ **Edit/delete tracking** — customer edits and deletions in handed-off chats are reported to the seller (can be turned off); message log is pruned automatically after a few days
+- ✅ **Mark as read** — optional; requires the `can_read_messages` right from the account owner
+- 🛒 **Purchase card (optional, off by default)** — when a customer wants to buy, the bot sends a product card (name, price, volume, duration, description) with a link button that opens the bot at that product. Payment and delivery always run inside the bot; no payment happens in the business chat
+- ⚙️ **Admin panel** — **Admin & Access → 💼 Telegram Business**: master switch, mark-as-read, edit/delete notices, purchase card switch, list of active connections, per-connection auto-reply switch, first message (sent once at the start of each new chat), exception list of customer IDs and the list of chats handed to a human
+
+> Inline callback buttons inside business chats are intentionally not used: URL buttons are used instead, because callback delivery in business chats has not been verified.
 
 </details>
 
@@ -541,6 +567,7 @@ Shopvpn/
 ├── handlers_admin.py
 ├── payment_*.py
 ├── ai_support.py
+├── business_chat.py
 ├── db/
 ├── miniapp/
 │   ├── server.py

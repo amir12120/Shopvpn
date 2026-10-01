@@ -1285,6 +1285,28 @@ _BUSINESS_TOOL_NAMES = frozenset({
     "escalate_to_human",
 })
 
+# حالت فروشِ بیزنس: business_mode می‌تواند False، True (فقط خواندنی) یا
+# BUSINESS_SALES باشد. در BUSINESS_SALES علاوه بر ابزارهای خواندنی، فقط
+# show_purchase_options مجاز است (کارت محصول + دکمه‌ی لینک به بات؛ هیچ مبلغی
+# کسر نمی‌شود و هیچ پرداختی داخل چت بیزنس انجام نمی‌شود).
+BUSINESS_SALES = "sales"
+
+
+def _business_allows(business_mode, name: str) -> bool:
+    if name in _BUSINESS_TOOL_NAMES:
+        return True
+    return business_mode == BUSINESS_SALES and name == "show_purchase_options"
+
+
+_BUSINESS_SALES_PROMPT_ADDON = (
+    "\n\nاستثنا برای خرید محصول جدید: اگر مشتری می‌خواهد یک محصول جدید بخرد، بعد از "
+    "list_products ابزار show_purchase_options را با product_id واقعی صدا بزن. این ابزار "
+    "کارت محصول را با یک دکمه‌ی لینک برای ادامه‌ی خرید داخل ربات می‌فرستد؛ پرداخت و تحویل "
+    "فقط داخل ربات انجام می‌شود. در جواب‌ات کوتاه بگو کارت خرید زیر پیام فرستاده شد و با زدن "
+    "دکمه‌اش خرید را داخل ربات ادامه بدهد. تمدید، پرداخت با کیف پول و تغییر سرویس همچنان "
+    "با escalate_to_human به فروشنده سپرده می‌شود."
+)
+
 _BUSINESS_PROMPT_SUFFIX = (
     "\n\nمحدودیت این کانال (چت تلگرام بیزنس فروشنده): فقط ابزارهای خواندنی در دسترس است "
     "(قیمت و محصولات، روش‌های پرداخت، وضعیت سرویس، کانفیگ تست). خرید، تمدید، پرداخت با کیف پول "
@@ -1294,15 +1316,15 @@ _BUSINESS_PROMPT_SUFFIX = (
 )
 
 
-def _tools_for(business_mode: bool) -> list:
+def _tools_for(business_mode) -> list:
     if not business_mode:
         return _TOOLS
-    return [t for t in _TOOLS if t["name"] in _BUSINESS_TOOL_NAMES]
+    return [t for t in _TOOLS if _business_allows(business_mode, t["name"])]
 
 
 async def _run_tool(db, user_tg_id: int, name: str, args: dict, cache: "dict | None" = None,
                     business_mode: bool = False) -> dict:
-    if business_mode and name not in _BUSINESS_TOOL_NAMES:
+    if business_mode and not _business_allows(business_mode, name):
         return {"error": "این ابزار در این کانال در دسترس نیست."}
     if cache is not None and name in _CACHEABLE_NOARG_TOOLS and name in cache:
         return cache[name]
@@ -1614,6 +1636,8 @@ async def get_reply(db, user_tg_id: int, history: list, user_message: str, busin
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(faq=faq)
     if business_mode:
         system_prompt += _BUSINESS_PROMPT_SUFFIX
+        if business_mode == BUSINESS_SALES:
+            system_prompt += _BUSINESS_SALES_PROMPT_ADDON
     mode = resolve_provider_mode(db)
     providers = configured_providers(db) if mode == "auto" else [mode]
     last_exc = None
