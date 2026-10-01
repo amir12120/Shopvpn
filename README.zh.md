@@ -356,11 +356,21 @@ uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
 
 ## 🚀 一键自动安装
 
-**推荐做法：** 在全新的 Ubuntu/Debian 服务器上执行：
+> 🌿 这是个人分支 `amir12120/Shopvpn`。安装器轻量：默认不安装庞大的 LibreTranslate，也不保留 pip 缓存。完整指南：[`INSTALL.md`](INSTALL.md)（英文）或 [`INSTALL.fa.md`](INSTALL.fa.md)（波斯文）。
+
+**在全新的 Ubuntu/Debian 服务器上，只需一条命令。** 它会安装所有缺失的依赖、安装或更新机器人、添加 `shopvpn` 命令，并在安装完成后**自动打开管理菜单**：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main/manage.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
 ```
+
+安装后，输入 `shopvpn` 可随时打开同一个管理菜单：
+
+```bash
+shopvpn
+```
+
+> 🧪 所有安装步骤均以英文显示。
 
 <details>
 <summary><strong>安装脚本做了什么？</strong></summary>
@@ -369,9 +379,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 2. 克隆或更新项目
 3. 创建 Python 虚拟环境
 4. 安装所需软件包
-5. 创建/配置 `.env`
-6. 创建 systemd 服务
-7. 启动机器人，并确保服务器重启后自动继续运行
+5. 自动安装/更新本地翻译引擎与语言模型
+6. 创建/配置 `.env`
+7. 创建 systemd 服务
+8. 启动机器人，并确保服务器重启后自动继续运行
+9. 安装 `shopvpn` 命令并打开管理菜单
 
 ### 常用服务命令
 
@@ -483,7 +495,13 @@ python main.py
 - 🔗 集成 API 设置
 - 🌐 多语言管理菜单
 
-运行方式：
+安装后只需输入 `shopvpn`：
+
+```bash
+shopvpn
+```
+
+或直接从仓库运行（无需安装）：
 
 ```bash
 chmod +x manage.sh

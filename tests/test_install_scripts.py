@@ -60,8 +60,20 @@ def test_english_install_guide_exists():
 
 
 def test_readmes_mention_shopvpn_command():
-    for name in ("README.md", "README.fa.md"):
+    for name in ("README.md", "README.fa.md", "README.ru.md", "README.zh.md"):
         assert "shopvpn" in _read(name), f"{name} should document the shopvpn command"
+
+
+def test_all_readmes_exist_in_both_languages():
+    """English and Persian docs must both stay present."""
+    for name in ("README.md", "README.fa.md", "INSTALL.md", "INSTALL.fa.md",
+                 "README.ru.md", "README.zh.md"):
+        assert os.path.isfile(os.path.join(ROOT, name)), f"{name} is missing"
+
+
+def test_persian_docs_stay_persian():
+    for name in ("README.fa.md", "INSTALL.fa.md"):
+        assert ARA_FA.search(_read(name)), f"{name} should contain Persian text"
 
 
 def test_check_upstream_helper_targets_upstream():

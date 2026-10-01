@@ -4,6 +4,7 @@
 
 - 🔗 مخزن: <https://github.com/amir12120/Shopvpn>
 - 🧩 پروژه اصلی (upstream): `mehdirafatpanah/Shopvpn`
+- 🇬🇧 نسخهٔ انگلیسی همین راهنما: [`INSTALL.md`](INSTALL.md)
 
 > نکته: این فورک نصب‌کننده را «سبک» کرده تا **مصرف دیسک به‌شدت کاهش پیدا کند** (جزئیات در بخش [رفع مشکل فضای دیسک](#disk)).
 
@@ -12,8 +13,8 @@
 ## 📋 فهرست
 
 1. [پیش‌نیازها](#prereqs)
-2. [نصب پیش‌نیازها (یک‌خطی)](#prereq-install)
-3. [نصب یک‌خطی بات](#install)
+2. [نصب با یک دستور (پیش‌نیازها + بات + منو)](#prereq-install)
+3. [جزئیات نصب (اختصاصی این فورک)](#install)
 4. [رفع مشکل اشغال زیاد فضای دیسک](#disk)
 5. [زبان‌های ترجمه و LibreTranslate اختیاری](#langs)
 6. [مدیریت و اجرای دائمی](#manage)
@@ -143,7 +144,7 @@ sudo bash ~/v2ray_bot/cleanup.sh
 
 اگر قبلاً نسخهٔ سنگین را نصب کرده‌ای، LibreTranslate را حذف کن:
 
-- از منوی `manage.sh` گزینهٔ ۲۸ (حذف LibreTranslate)، یا دستور دستی زیر روی سرور:
+- از منوی `shopvpn` (که همان `manage.sh` است) گزینهٔ ۲۸ (حذف LibreTranslate)، یا دستور دستی زیر روی سرور:
 
 ```bash
 sudo systemctl disable --now shopvpn-libretranslate 2>/dev/null
@@ -169,7 +170,7 @@ SHOPVPN_TRANSLATION_LANGS="tr,ar" bash ~/v2ray_bot/setup_local_translation.sh
 SHOPVPN_TRANSLATION_LANGS=all bash ~/v2ray_bot/setup_local_translation.sh
 ```
 
-> می‌توانی همین کار را از منوی `manage.sh` گزینهٔ **۲۹** هم انجام دهی.
+> می‌توانی همین کار را از منوی `shopvpn` (که همان `manage.sh` است) گزینهٔ **۲۹** هم انجام دهی.
 
 **LibreTranslate (سنگین، اختیاری):** فقط اگر کیفیت/زبان بیشتری لازم داری:
 
