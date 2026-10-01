@@ -84,3 +84,31 @@ def test_check_upstream_helper_targets_upstream():
 def test_manage_cli_defaults_to_english():
     text = _read("manage.sh")
     assert 'APP_LANG="en"' in text
+
+
+def test_disk_lean_installs_survive_upstream_merges():
+    """The disk fixes must be present in both install paths (manage.sh + install.sh).
+
+    Upstream ships the same actions in the CLI and in the one-command installer,
+    so a merge that only keeps one of them would silently bring the multi-GB
+    CUDA torch wheel and pip's download cache back.
+    """
+    for name in ("manage.sh", "install.sh"):
+        text = _read(name)
+        assert "--index-url https://download.pytorch.org/whl/cpu" in text, name
+        assert "--no-cache-dir" in text, name
+    setup = _read("setup_local_translation.sh")
+    assert "PIP_NO_CACHE_DIR=1" in setup
+    assert "SHOPVPN_INSTALL_LIBRETRANSLATE" in setup
+
+
+def test_manage_keeps_fork_repo_and_optional_heavy_fallback():
+    text = _read("manage.sh")
+    assert 'REPO_URL="https://github.com/amir12120/Shopvpn.git"' in text
+    assert 'GITHUB_OWNER="amir12120"' in text
+    # LibreTranslate is a multi-GB opt-in, never a silent download.
+    assert "lt_heavy_prompt" in text
+    assert 'SHOPVPN_INSTALL_LIBRETRANSLATE="$lt_env"' in text
+    # The extra-language menu must survive merges of the upstream menu table.
+    assert "install_translation_langs" in text
+    assert "SHOPVPN_TRANSLATION_LANGS" in _read("setup_local_translation.sh")

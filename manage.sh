@@ -32,6 +32,16 @@ export GIT_TERMINAL_PROMPT=0
 # that block.
 # دریافت/آپدیت کد پروژه بدون گیر کردن روی پرامپت یوزرنیم/پسورد گیت.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Python packages: always cache-less (pip's download cache silently eats
+# gigabytes) and always with PyTorch from the CPU-only index, because the
+# default Linux wheel drags in ~5 GB of CUDA/nvidia libraries that a
+# translation-only server never uses.
+# پکیج‌های پایتون: بدون کش و با torch نسخهٔ CPU تا چند گیگابایت CUDA دانلود نشود.
+# ---------------------------------------------------------------------------
+PIP_CPU_TORCH="pip install -q --no-cache-dir --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch"
+PIP_REQS="pip install -q --no-cache-dir --disable-pip-version-check -r requirements.txt"
+
 fetch_project_code() {
     local target_dir="$1"
     local ok=0
@@ -256,6 +266,20 @@ MSG_EN[prompt_new_owner]="New admin numeric ID (press Enter to keep current): "
 MSG_FA[prompt_new_owner]="آیدی عددی جدید ادمین (اگر تغییری نیست Enter بزن): "
 MSG_EN[saved_restarting]="✅ Saved. Restarting..."
 MSG_FA[saved_restarting]="✅ ذخیره شد. در حال ری‌استارت..."
+MSG_EN[env_dir_missing]="Install directory not found: %s"
+MSG_FA[env_dir_missing]="پوشه نصب پیدا نشد: %s"
+MSG_EN[invalid_token_fmt]="Invalid token format. Expected like 123456789:AAxxxxxxxx (no spaces)."
+MSG_FA[invalid_token_fmt]="فرمت توکن نامعتبر است. باید مثل 123456789:AAxxxxxxxx باشد (بدون فاصله)."
+MSG_EN[token_rejected]="Telegram rejected this token (getMe failed). Nothing was changed."
+MSG_FA[token_rejected]="تلگرام این توکن را رد کرد (getMe ناموفق). هیچ تغییری اعمال نشد."
+MSG_EN[invalid_owner_fmt]="Admin ID must be a numeric Telegram ID."
+MSG_FA[invalid_owner_fmt]="آیدی ادمین باید یک عدد (آیدی عددی تلگرام) باشد."
+MSG_EN[owner_change_warn]="Changing the admin ID rebuilds the admins table: all other admins will be removed on restart. Continue? [y/N]: "
+MSG_FA[owner_change_warn]="تغییر آیدی ادمین جدول ادمین‌ها را بازسازی می‌کند: بقیه ادمین‌ها بعد از ری‌استارت حذف می‌شوند. ادامه می‌دهی؟ [y/N]: "
+MSG_EN[env_backup_done]="Backup saved: %s"
+MSG_FA[env_backup_done]="بکاپ ذخیره شد: %s"
+MSG_EN[env_service_failed]="Service %s is not active after restart. Last log lines:"
+MSG_FA[env_service_failed]="سرویس %s بعد از ری‌استارت فعال نیست. آخرین خطوط لاگ:"
 
 # restore_backup_cli (new-server migration wizard)
 MSG_EN[prompt_backup_path]="Full path of the backup .db file already placed on this server (e.g. /root/bot_database.db): "
@@ -553,12 +577,44 @@ MSG_EN[langs_prompt]="Enter target language codes separated by commas (e.g. tr,a
 MSG_FA[langs_prompt]="کد زبان‌های مقصد را با کاما وارد کن (مثلاً tr,ar,ru) یا بنویس all: "
 MSG_EN[langs_done]="🎉 Language models installed. Those languages now translate locally."
 MSG_FA[langs_done]="🎉 مدل‌های زبان نصب شد. حالا آن زبان‌ها به‌صورت محلی ترجمه می‌شوند."
+MSG_EN[menu_30]="Remove unwanted translation languages (free disk space)"
+MSG_FA[menu_30]="حذف زبان‌های ناخواسته (آزاد کردن فضا)"
+MSG_EN[rl_header]="Remove translation languages"
+MSG_FA[rl_header]="حذف زبان‌های ترجمه"
+MSG_EN[rl_none]="No removable extra language is installed."
+MSG_FA[rl_none]="هیچ زبان اضافه‌ای برای حذف نصب نیست."
+MSG_EN[rl_prompt]="Numbers or codes to remove (comma/space separated, a = all, Enter = cancel): "
+MSG_FA[rl_prompt]="شماره یا کد زبان‌هایی که حذف می‌شوند (با کاما/فاصله، a = همه، Enter = انصراف): "
+MSG_EN[rl_warn]="These languages will be removed: models, cached translations and settings. Persian and English are never touched."
+MSG_FA[rl_warn]="این زبان‌ها حذف می‌شوند: مدل‌ها، ترجمه‌های ذخیره‌شده و تنظیمات. فارسی و انگلیسی هرگز حذف نمی‌شوند."
+MSG_EN[rl_done]="✅ Languages removed."
+MSG_FA[rl_done]="✅ زبان‌ها حذف شدند."
+MSG_EN[menu_31]="Full cleanup / factory reset"
+MSG_FA[menu_31]="پاک‌سازی کامل و بازگشت به حالت اولیه"
+MSG_EN[fr_warn]="⚠️ FULL RESET: this will permanently delete ALL bot services (bot, mini app, admin panel, API, LibreTranslate), their nginx configs, the database, resellers, .env and the whole project folder. The server returns to its state before ShopVPN was installed."
+MSG_FA[fr_warn]="⚠️ پاک‌سازی کامل: همه‌ی سرویس‌ها (بات، مینی‌اپ، پنل ادمین، API، LibreTranslate)، کانفیگ‌های nginx، دیتابیس، نماینده‌ها، فایل .env و کل پوشه‌ی پروژه برای همیشه حذف می‌شود. سرور به حالت قبل از نصب ShopVPN برمی‌گردد."
+MSG_EN[fr_type_reset]="To continue type RESET (anything else cancels): "
+MSG_FA[fr_type_reset]="برای ادامه کلمه RESET را تایپ کن (هر چیز دیگر لغو می‌کند): "
+MSG_EN[fr_backup_ask]="Create a backup archive of database and .env in your home folder first? [Y/n]: "
+MSG_FA[fr_backup_ask]="قبل از پاک‌سازی از دیتابیس و .env یک بکاپ در پوشه‌ی هوم گرفته شود؟ [Y/n]: "
+MSG_EN[fr_backup_done]="Backup saved: %s"
+MSG_FA[fr_backup_done]="بکاپ ذخیره شد: %s"
+MSG_EN[fr_backup_failed]="Backup failed, reset aborted. Nothing was deleted."
+MSG_FA[fr_backup_failed]="بکاپ ناموفق بود، پاک‌سازی لغو شد. چیزی حذف نشد."
+MSG_EN[fr_domains_found]="nginx configs that will be removed:"
+MSG_FA[fr_domains_found]="کانفیگ‌های nginx که حذف می‌شوند:"
+MSG_EN[fr_ssl_ask]="Also delete the Let's Encrypt SSL certificates of these domains? [y/N]: "
+MSG_FA[fr_ssl_ask]="گواهی‌های SSL (Let's Encrypt) این دامنه‌ها هم حذف شود؟ [y/N]: "
+MSG_EN[fr_unsafe_dir]="Refusing to delete unsafe install path: %s"
+MSG_FA[fr_unsafe_dir]="مسیر نصب ناامن است، حذف انجام نشد: %s"
+MSG_EN[fr_done]="✅ Full cleanup finished. To install again, run option 1 (or the install command)."
+MSG_FA[fr_done]="✅ پاک‌سازی کامل انجام شد. برای نصب دوباره گزینه‌ی ۱ (یا دستور نصب) را اجرا کن."
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_FA[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_EN[menu_0]="Exit"
 MSG_FA[menu_0]="خروج"
-MSG_EN[enter_choice_prompt]="Enter choice [0-28, L]: "
-MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-28, L]: "
+MSG_EN[enter_choice_prompt]="Enter choice [0-31, L]: "
+MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-31, L]: "
 MSG_EN[invalid_choice]="Invalid option."
 MSG_FA[invalid_choice]="گزینه نامعتبر است."
 MSG_EN[goodbye]="Goodbye 👋"
@@ -772,11 +828,10 @@ install_bot() {
     fi
     source venv/bin/activate
     # CPU-only torch first: the default Linux wheel pulls ~5 GB of CUDA/nvidia libs.
-    if ! pip -q --no-cache-dir --disable-pip-version-check install \
-            --index-url https://download.pytorch.org/whl/cpu torch; then
+    if ! $PIP_CPU_TORCH; then
         echo -e "${YELLOW}⚠️ نصب torch نسخهٔ CPU ممکن نشد؛ ادامه می‌دهیم.${RESET}"
     fi
-    pip install -q --no-cache-dir -r requirements.txt
+    $PIP_REQS
     deactivate
 
     if [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -867,7 +922,7 @@ update_bot() {
     run_step "$step" "$total" "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
 
     step=$((step+1))
-    run_step "$step" "$total" "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
+    run_step "$step" "$total" "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
 
     step=$((step+1))
     run_step "$step" "$total" "🌍 Updating local translation runtime/models" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
@@ -916,7 +971,7 @@ update_miniapp() {
     local failed=0
     section_header "$(t update_miniapp_header)"
     run_step 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
-    run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
+    run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
     run_step 3 3 "$(t restarting_miniapp_service)" bash -c "sudo systemctl restart '$MINIAPP_SERVICE' && sleep 2" || failed=1
 
     draw_rule
@@ -930,6 +985,96 @@ update_miniapp() {
 # ---------------------------------------------------------------------------
 # Action: full removal / عملیات: حذف کامل
 # ---------------------------------------------------------------------------
+shopvpn_nginx_domains() {
+    local dir="${1:-/etc/nginx/sites-available}" env_file="$INSTALL_DIR/.env" key f d wport
+    {
+        if [ -f "$env_file" ]; then
+            for key in MINIAPP_URL ADMIN_PANEL_URL WEBHOOK_BASE_URL; do
+                grep -m1 "^${key}=" "$env_file" | cut -d= -f2- | sed -E 's#^"?https?://##; s#[/"]+.*$##'
+            done
+            wport=$(grep -m1 "^WEBHOOK_LISTEN_PORT=" "$env_file" | cut -d= -f2)
+        fi
+        wport="${wport:-8010}"
+        for f in "$dir"/*.conf; do
+            [ -f "$f" ] || continue
+            if grep -q "managed-by-shopvpn-panel-proxy" "$f" 2>/dev/null \
+               || grep -qE "proxy_pass http://127\.0\.0\.1:(8001|8002|8003|${wport});" "$f" 2>/dev/null; then
+                d=$(basename "$f" .conf)
+                echo "$d"
+            fi
+        done
+    } | grep -E '^[A-Za-z0-9.-]+$' | sort -u
+}
+
+factory_reset() {
+    local CONFIRM ans_backup ans_ssl real_dir script_path unit domain backup_file
+    local -a DOMAINS=()
+    real_dir=$(readlink -f "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")
+    if [ -z "$real_dir" ] || [ "$real_dir" = "/" ] || [ "$real_dir" = "$HOME" ] || [ "$real_dir" = "/root" ] || [ "${#real_dir}" -lt 8 ]; then
+        echo -e "${RED}$(t fr_unsafe_dir "$INSTALL_DIR")${RESET}"
+        return 1
+    fi
+
+    echo -e "${RED}${BOLD}$(t fr_warn)${RESET}"
+    read -rp "$(t fr_type_reset)" CONFIRM
+    if [ "$CONFIRM" != "RESET" ]; then
+        echo -e "${YELLOW}$(t cancelled)${RESET}"
+        return
+    fi
+
+    mapfile -t DOMAINS < <(shopvpn_nginx_domains)
+    if [ "${#DOMAINS[@]}" -gt 0 ]; then
+        echo -e "${CYAN}$(t fr_domains_found)${RESET}"
+        for domain in "${DOMAINS[@]}"; do echo "  - $domain"; done
+    fi
+
+    read -rp "$(t fr_backup_ask)" ans_backup
+    if [[ ! "$ans_backup" =~ ^[nN]$ ]] && [ -d "$real_dir" ]; then
+        backup_file="$HOME/shopvpn_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+        if tar -czf "$backup_file" --exclude="venv" --exclude="translation-venv" --exclude="__pycache__" \
+            -C "$(dirname "$real_dir")" "$(basename "$real_dir")" 2>/dev/null; then
+            chmod 600 "$backup_file"
+            echo -e "${GREEN}$(t fr_backup_done "$backup_file")${RESET}"
+        else
+            rm -f "$backup_file"
+            echo -e "${RED}$(t fr_backup_failed)${RESET}"
+            return 1
+        fi
+    fi
+
+    ans_ssl="n"
+    if [ "${#DOMAINS[@]}" -gt 0 ]; then
+        read -rp "$(t fr_ssl_ask)" ans_ssl
+    fi
+
+    cd "$HOME" || cd /
+    for unit in "$SERVICE_NAME" "${SERVICE_NAME}-miniapp" "${SERVICE_NAME}-adminpanel" "${SERVICE_NAME}-api" "$LIBRETRANSLATE_SERVICE"; do
+        sudo systemctl stop "$unit" >/dev/null 2>&1 || true
+        sudo systemctl disable "$unit" >/dev/null 2>&1 || true
+        sudo rm -f "/etc/systemd/system/${unit}.service"
+    done
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed >/dev/null 2>&1 || true
+
+    for domain in "${DOMAINS[@]}"; do
+        sudo rm -f "/etc/nginx/sites-enabled/${domain}.conf" "/etc/nginx/sites-available/${domain}.conf"
+        if [[ "$ans_ssl" =~ ^[yY]$ ]] && [ -d "/etc/letsencrypt/live/${domain}" ]; then
+            sudo certbot delete --cert-name "$domain" --non-interactive >/dev/null 2>&1 || true
+        fi
+    done
+    if [ "${#DOMAINS[@]}" -gt 0 ]; then
+        sudo nginx -t >/dev/null 2>&1 && sudo systemctl reload nginx >/dev/null 2>&1 || true
+    fi
+
+    rm -rf "$real_dir"
+    echo -e "${GREEN}$(t fr_done)${RESET}"
+
+    script_path=$(readlink -f "$0" 2>/dev/null || echo "")
+    case "$script_path" in
+        "$real_dir"/*) exit 0 ;;
+    esac
+}
+
 uninstall_bot() {
     echo -e "${RED}${BOLD}$(t uninstall_warning)${RESET}"
     read -rp "$(t confirm_prompt)" CONFIRM
@@ -1014,31 +1159,69 @@ PYEOF
 # ---------------------------------------------------------------------------
 # Action: change admin token or ID / عملیات: تغییر توکن یا آیدی ادمین
 # ---------------------------------------------------------------------------
+set_env_key() {
+    local key="$1" val="$2" file="$INSTALL_DIR/.env"
+    touch "$file"
+    KEY="$key" VAL="$val" awk 'BEGIN{k=ENVIRON["KEY"];v=ENVIRON["VAL"];d=0}
+        index($0,k"=")==1{if(!d){print k"="v;d=1};next}
+        {print}
+        END{if(!d)print k"="v}' "$file" > "$file.tmp" \
+        && cat "$file.tmp" > "$file" && rm -f "$file.tmp"
+}
+
 edit_env() {
+    local env_file="$INSTALL_DIR/.env" ans resp unit failed=0
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}$(t env_dir_missing "$INSTALL_DIR")${RESET}"
+        return 1
+    fi
     read -rp "$(t prompt_new_token)" NEW_TOKEN
     read -rp "$(t prompt_new_owner)" NEW_OWNER
+    NEW_TOKEN=$(printf '%s' "$NEW_TOKEN" | tr -d '[:space:]')
+    NEW_OWNER=$(printf '%s' "$NEW_OWNER" | tr -d '[:space:]')
+    [ -z "$NEW_TOKEN" ] && [ -z "$NEW_OWNER" ] && return 0
 
-    # قبلاً این تابع کل .env را با فقط BOT_TOKEN/OWNER_ID بازنویسی می‌کرد و در
-    # نتیجه هر کلید دیگری (MINIAPP_URL، ADMIN_PANEL_URL، BOT_MODE/WEBHOOK_*،
-    # کلیدهای درگاه پرداخت و ...) را پاک می‌کرد؛ حالا فقط همین دو کلید در جای
-    # خودشان به‌روزرسانی می‌شوند و بقیه‌ی فایل دست‌نخورده می‌ماند.
     if [ -n "$NEW_TOKEN" ]; then
-        if grep -q "^BOT_TOKEN=" "$INSTALL_DIR/.env" 2>/dev/null; then
-            sed -i "s|^BOT_TOKEN=.*|BOT_TOKEN=$NEW_TOKEN|" "$INSTALL_DIR/.env"
-        else
-            echo "BOT_TOKEN=$NEW_TOKEN" >> "$INSTALL_DIR/.env"
+        if ! [[ "$NEW_TOKEN" =~ ^[0-9]{5,}:[A-Za-z0-9_-]{20,}$ ]]; then
+            echo -e "${RED}$(t invalid_token_fmt)${RESET}"
+            return 1
+        fi
+        resp=$(curl -sS --max-time 10 "https://api.telegram.org/bot${NEW_TOKEN}/getMe" 2>/dev/null || true)
+        if [[ "$resp" == *'"ok":false'* ]]; then
+            echo -e "${RED}$(t token_rejected)${RESET}"
+            return 1
         fi
     fi
     if [ -n "$NEW_OWNER" ]; then
-        if grep -q "^OWNER_ID=" "$INSTALL_DIR/.env" 2>/dev/null; then
-            sed -i "s|^OWNER_ID=.*|OWNER_ID=$NEW_OWNER|" "$INSTALL_DIR/.env"
-        else
-            echo "OWNER_ID=$NEW_OWNER" >> "$INSTALL_DIR/.env"
+        if ! [[ "$NEW_OWNER" =~ ^-?[0-9]+$ ]]; then
+            echo -e "${RED}$(t invalid_owner_fmt)${RESET}"
+            return 1
         fi
+        read -rp "$(t owner_change_warn)" ans
+        [[ "$ans" =~ ^[yY]$ ]] || return 0
     fi
 
+    touch "$env_file"
+    cp -p "$env_file" "$env_file.bak.$(date +%Y%m%d%H%M%S)"
+    echo -e "${DIM}$(t env_backup_done "$env_file.bak.*")${RESET}"
+    [ -n "$NEW_TOKEN" ] && set_env_key BOT_TOKEN "$NEW_TOKEN"
+    [ -n "$NEW_OWNER" ] && set_env_key OWNER_ID "$NEW_OWNER"
+
     echo -e "${GREEN}$(t saved_restarting)${RESET}"
-    sudo systemctl restart "$SERVICE_NAME"
+    for unit in "$SERVICE_NAME" "${SERVICE_NAME}-miniapp" "${SERVICE_NAME}-adminpanel" "${SERVICE_NAME}-api"; do
+        [ -f "/etc/systemd/system/${unit}.service" ] || continue
+        sudo systemctl restart "$unit"
+    done
+    sleep 3
+    for unit in "$SERVICE_NAME" "${SERVICE_NAME}-miniapp" "${SERVICE_NAME}-adminpanel" "${SERVICE_NAME}-api"; do
+        [ -f "/etc/systemd/system/${unit}.service" ] || continue
+        if ! systemctl is-active --quiet "$unit"; then
+            failed=1
+            echo -e "${RED}$(t env_service_failed "$unit")${RESET}"
+            sudo journalctl -u "$unit" -n 15 --no-pager
+        fi
+    done
+    return $failed
 }
 
 # ---------------------------------------------------------------------------
@@ -1223,7 +1406,8 @@ setup_miniapp() {
     echo -e "${CYAN}$(t installing_miniapp_pkgs)${RESET}"
     cd "$INSTALL_DIR"
     source venv/bin/activate
-    pip install -r requirements.txt --quiet
+    $PIP_CPU_TORCH || true
+    $PIP_REQS
     deactivate
 
     echo -e "${CYAN}$(t creating_miniapp_service)${RESET}"
@@ -1352,7 +1536,8 @@ setup_admin_panel() {
     echo -e "${CYAN}$(t installing_panel_pkgs)${RESET}"
     cd "$INSTALL_DIR"
     source venv/bin/activate
-    pip install -r requirements.txt --quiet
+    $PIP_CPU_TORCH || true
+    $PIP_REQS
 
     if ! grep -q "^ADMIN_PANEL_SECRET=" "$INSTALL_DIR/.env" 2>/dev/null; then
         echo "ADMIN_PANEL_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> "$INSTALL_DIR/.env"
@@ -1453,7 +1638,7 @@ update_admin_panel() {
     local failed=0
     section_header "$(t update_panel_header)"
     run_step 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
-    run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
+    run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
     run_step 3 3 "$(t restarting_panel_service)" bash -c "sudo systemctl restart '$PANEL_SERVICE' && sleep 2" || failed=1
 
     draw_rule
@@ -1998,7 +2183,8 @@ setup_api() {
     echo -e "${CYAN}$(t installing_miniapp_pkgs)${RESET}"
     cd "$INSTALL_DIR"
     source venv/bin/activate
-    pip install -r requirements.txt --quiet
+    $PIP_CPU_TORCH || true
+    $PIP_REQS
     deactivate
 
     echo -e "${CYAN}$(t creating_api_service)${RESET}"
@@ -2072,7 +2258,7 @@ update_api() {
     local failed=0
     section_header "$(t update_api_header)"
     run_step 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
-    run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
+    run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
     run_step 3 3 "$(t restarting_api_service)" bash -c "sudo systemctl restart '$API_SERVICE' && sleep 2" || failed=1
 
     draw_rule
@@ -2189,6 +2375,156 @@ remove_libretranslate() {
     echo -e "${GREEN}$(t lt_removed)${RESET}"
 }
 
+remove_translation_languages() {
+    section_header "$(t rl_header)"
+    local ENV_FILE="$INSTALL_DIR/.env"
+    if [ ! -f "$ENV_FILE" ] || [ ! -f "$INSTALL_DIR/i18n.py" ]; then
+        echo -e "${RED}$(t bot_not_installed)${RESET}"
+        return
+    fi
+
+    local saved codes=() names=() code native name
+    saved="$(grep -m1 '^SHOPVPN_TRANSLATION_LANGS=' "$ENV_FILE" | cut -d= -f2- | tr -d ' ')"
+    while IFS='|' read -r code native name; do
+        [ -n "$code" ] || continue
+        case ",$saved," in *",$code,"*) codes+=("$code"); names+=("$native - $name") ;; esac
+    done < <(SHOPVPN_ROOT="$INSTALL_DIR" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SHOPVPN_ROOT"])
+from i18n import LANGUAGE_CATALOG
+for c, m in LANGUAGE_CATALOG.items():
+    if c not in {"fa", "en"}:
+        print(c, m["native_name"], m["name"], sep="|")
+PY
+)
+
+    if [ "${#codes[@]}" -eq 0 ]; then
+        echo -e "${YELLOW}$(t rl_none)${RESET}"
+        return
+    fi
+
+    local i
+    for i in "${!codes[@]}"; do
+        printf '  %2d) %s (%s)\n' "$((i + 1))" "${names[$i]}" "${codes[$i]}"
+    done
+    local answer
+    read -rp "$(t rl_prompt)" answer
+    answer="$(echo "$answer" | sed 's/،/,/g' | tr 'A-Z' 'a-z' | tr ',' ' ')"
+    [ -z "$answer" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
+
+    local picked=() tok c
+    if [ "$answer" = "a" ] || [ "$answer" = "all" ]; then
+        picked=("${codes[@]}")
+    else
+        for tok in $answer; do
+            if [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#codes[@]}" ]; then
+                picked+=("${codes[$((tok - 1))]}")
+            else
+                for c in "${codes[@]}"; do
+                    [ "$c" = "$tok" ] && picked+=("$c")
+                done
+            fi
+        done
+    fi
+    picked=($(printf '%s\n' "${picked[@]}" | awk 'NF && !seen[$0]++'))
+    if [ "${#picked[@]}" -eq 0 ]; then
+        echo -e "${YELLOW}$(t cancelled)${RESET}"
+        return
+    fi
+
+    echo -e "${RED}${BOLD}$(t rl_warn)${RESET}"
+    echo "  -> ${picked[*]}"
+    read -rp "$(t confirm_prompt)" CONFIRM
+    [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
+
+    local was_active=0
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        was_active=1
+        sudo systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+
+    local csv
+    csv="$(IFS=,; echo "${picked[*]}")"
+    INSTALL_DIR="$INSTALL_DIR" LANG_CSV="$csv" python3 - <<'PY'
+import glob, os, sqlite3
+root = os.environ["INSTALL_DIR"]
+codes = [c for c in os.environ["LANG_CSV"].split(",") if c and c not in {"fa", "en"}]
+paths = [os.path.join(root, "bot_database.db")] + sorted(glob.glob(os.path.join(root, "reseller_dbs", "*.db")))
+for path in paths:
+    if not os.path.isfile(path):
+        continue
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "languages" not in tables:
+            continue
+        for code in codes:
+            for table in ("translations", "translation_manifests", "translation_history"):
+                if table in tables:
+                    conn.execute(f"DELETE FROM {table} WHERE language_code=?", (code,))
+            conn.execute("UPDATE languages SET enabled=0, generated=0, translation_auto_quarantined=0 WHERE code=?", (code,))
+            if "users" in tables:
+                conn.execute("UPDATE users SET language_code='fa' WHERE language_code=?", (code,))
+            if "web_admins" in tables:
+                conn.execute("UPDATE web_admins SET language_code='fa' WHERE language_code=?", (code,))
+        conn.commit()
+        conn.execute("VACUUM")
+        print("cleaned:", path)
+    except Exception as exc:
+        print("skipped:", path, exc)
+    finally:
+        conn.close()
+PY
+
+    local lang dir base pkg_dirs=()
+    pkg_dirs+=("${XDG_DATA_HOME:-$HOME/.local/share}/argos-translate/packages")
+    pkg_dirs+=("$HOME/.local/share/argos-translate/packages")
+    pkg_dirs+=("$INSTALL_DIR/.translation-home/.local/share/argos-translate/packages")
+    for lang in "${picked[@]}"; do
+        if [ -x "$INSTALL_DIR/venv/bin/argospm" ]; then
+            "$INSTALL_DIR/venv/bin/argospm" remove "translate-en_${lang}" >/dev/null 2>&1 || true
+            "$INSTALL_DIR/venv/bin/argospm" remove "translate-${lang}_en" >/dev/null 2>&1 || true
+        fi
+        for dir in $(printf '%s\n' "${pkg_dirs[@]}" | awk '!seen[$0]++'); do
+            [ -d "$dir" ] || continue
+            for base in "$dir"/*; do
+                [ -d "$base" ] || continue
+                pkg="$(basename "$base")"
+                if [[ "$pkg" =~ ^(translate-)?(en_${lang}|${lang}_en)($|[-_.]) ]]; then
+                    rm -rf "$base"
+                fi
+            done
+        done
+    done
+
+    local remaining="" item
+    for item in ${saved//,/ }; do
+        local keep=1
+        for lang in "${picked[@]}"; do
+            [ "$item" = "$lang" ] && keep=0
+        done
+        [ "$keep" -eq 1 ] && remaining="${remaining:+$remaining,}$item"
+    done
+    if grep -q '^SHOPVPN_TRANSLATION_LANGS=' "$ENV_FILE"; then
+        sed -i "s#^SHOPVPN_TRANSLATION_LANGS=.*#SHOPVPN_TRANSLATION_LANGS=${remaining}#" "$ENV_FILE"
+    else
+        printf '\nSHOPVPN_TRANSLATION_LANGS=%s\n' "$remaining" >> "$ENV_FILE"
+    fi
+
+    local unit="/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service" load="en,fa"
+    [ -n "$remaining" ] && load="en,fa,${remaining}"
+    if [ -f "$unit" ]; then
+        sudo sed -i "s#--load-only [^ ]*#--load-only ${load}#" "$unit"
+        sudo systemctl daemon-reload
+        sudo systemctl restart "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1 || true
+    fi
+
+    if [ "$was_active" -eq 1 ]; then
+        sudo systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+    echo -e "${GREEN}${BOLD}$(t rl_done)${RESET}"
+}
+
 # ---------------------------------------------------------------------------
 # Main menu / منوی اصلی
 # ---------------------------------------------------------------------------
@@ -2229,6 +2565,8 @@ while true; do
     menu_item 27 menu_27
     menu_item 28 menu_28 "$RED"
     menu_item 29 menu_29
+    menu_item 30 menu_30 "$RED"
+    menu_item 31 menu_31 "$RED"
     menu_section sec_advanced
     menu_item 21 menu_21
     menu_item 22 menu_22
@@ -2272,6 +2610,8 @@ while true; do
         27) setup_libretranslate; pause ;;
         28) remove_libretranslate; pause ;;
         29) install_translation_langs; pause ;;
+        30) remove_translation_languages; pause ;;
+        31) factory_reset; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;

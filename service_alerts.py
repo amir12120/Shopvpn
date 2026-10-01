@@ -3,7 +3,11 @@
 import logging
 import aiohttp
 
+import report_router
+
 logger = logging.getLogger(__name__)
+
+TOPIC_KEY = "config_alert"
 
 
 def normalize_channel(value: str) -> str:
@@ -14,7 +18,9 @@ def normalize_channel(value: str) -> str:
 
 
 async def send_service_alert(bot, db, text: str) -> bool:
-    """پیام را به کانال اعلان تنظیم‌شده می‌فرستد؛ نبود کانال یعنی غیرفعال."""
+    """اول به تاپیک «حذف/اتمام کانفیگ» گروه گزارش؛ اگر گروه تنظیم نبود یا ارسال شکست خورد، به کانال قدیمی (در صورت ثبت)."""
+    if await report_router.send_text(bot, db, TOPIC_KEY, text):
+        return True
     channel = normalize_channel(db.get_setting("service_alert_channel", ""))
     if not channel:
         return False
@@ -27,7 +33,9 @@ async def send_service_alert(bot, db, text: str) -> bool:
 
 
 async def send_service_alert_http(bot_token: str, db, text: str) -> bool:
-    """نسخه‌ی مستقل از aiogram برای APIهای Mini App/پنل وب."""
+    """نسخه‌ی مستقل از aiogram برای APIهای Mini App/پنل وب؛ اول تاپیک گروه گزارش، بعد کانال قدیمی."""
+    if await report_router.send_raw_to_group(bot_token, db, TOPIC_KEY, text):
+        return True
     channel = normalize_channel(db.get_setting("service_alert_channel", ""))
     if not channel or not bot_token:
         return False

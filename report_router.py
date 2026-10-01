@@ -18,6 +18,7 @@ DEFAULT_TOPIC = "other"
 TOPICS = {
     "purchase": "🛒 خرید",
     "service": "🛠 سرویس",
+    "config_alert": "🗑 حذف/اتمام کانفیگ",
     "renewal": "🔄 تمدید",
     "test": "🧪 تست",
     "finance": "💰 مالی",
@@ -31,6 +32,11 @@ TOPICS = {
     "other": "📌 سایر",
 }
 MISSING_THREAD_MARKERS = ("thread not found", "topic_id_invalid", "topic_deleted")
+GROUP_CALLBACK_PREFIXES = (
+    "order_approve:", "order_reject:", "order_fake_receipt:",
+    "topup_approve:", "topup_reject:",
+    "qa_profile:", "qa_block:", "qa_block_go:", "qa_cancel", "qa_msg:",
+)
 RETRY_AFTER_CAP = 30
 
 _topic_lock = asyncio.Lock()
@@ -50,6 +56,12 @@ def get_chat_id(db):
         return int(raw) if raw else None
     except ValueError:
         return None
+
+
+def is_report_group_message(db, message) -> bool:
+    """True اگر پیام داخل گروه گزارش باشد."""
+    chat_id = get_chat_id(db)
+    return chat_id is not None and message is not None and message.chat.id == chat_id
 
 
 def topic_display_name(db, chat_id: int, topic_key: str) -> str:
@@ -209,14 +221,19 @@ def build_block_toggle_text(user_row, tg_id: int, blocked: bool, actor_label: st
 async def notify_test_config(bot, db, user_id: int, name: str, username, detail_html: str) -> None:
     """اعلان تحویل کانفیگ تست به تاپیک «تست»؛ بدون گروه گزارش چیزی ارسال نمی‌شود."""
     handle = f" (@{html.escape(username)})" if username else ""
+    from datetime import datetime
+    from jalali import to_jalali_str
     text = (
         "🧪 کانفیگ تست تحویل داده شد\n\n"
         f"👤 <a href=\"tg://user?id={user_id}\">{html.escape(name or '')}</a>{handle}\n"
         f"🆔 <code>{user_id}</code>\n"
-        f"{detail_html}"
+        f"{detail_html}\n\n"
+        "💡 پیشنهاد: یه پیام براش بفرست و ترغیبش کن به خرید اکانت 😍\n"
+        f"🕒 {to_jalali_str(datetime.now(), with_time=True)}"
     )
     try:
-        await send_text(bot, db, "test", text)
+        import keyboards as _kb
+        await send_text(bot, db, "test", text, _kb.user_quick_actions_kb(user_id))
     except Exception:
         logger.warning("ارسال اعلان کانفیگ تست ناموفق بود.", exc_info=True)
 
@@ -287,12 +304,12 @@ async def clear_group(db) -> None:
     await _db(db.clear_report_topics)
 
 
-async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str):
+async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str, name: str = None):
     url = f"https://api.telegram.org/bot{bot_token}/createForumTopic"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                url, json={"chat_id": chat_id, "name": TOPICS[topic_key]},
+                url, json={"chat_id": chat_id, "name": name or TOPICS[topic_key]},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 data = await resp.json()
@@ -303,21 +320,28 @@ async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str):
     return None
 
 
-async def _raw_send_message(bot_token: str, chat_id: int, text: str, thread_id: int = None) -> bool:
+async def _raw_send_message(bot_token: str, chat_id: int, text: str, thread_id: int = None, parse_mode: str = None) -> bool:
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if thread_id:
         payload["message_thread_id"] = thread_id
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                return resp.status == 200
+                if resp.status == 200:
+                    return True
+                body = (await resp.text()).lower()
+                if thread_id and any(marker in body for marker in MISSING_THREAD_MARKERS):
+                    return None
+                return False
     except Exception:
         logger.warning("ارسال پیام HTTP خام به تلگرام ناموفق بود.", exc_info=True)
         return False
 
 
-async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str) -> bool:
+async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str, parse_mode: str = None) -> bool:
     """فقط تلاش برای ارسال به تاپیک گروه گزارش با HTTP خام؛ اگر گروه تنظیم
     نباشد یا ارسال ناموفق باشد False برمی‌گرداند (بدون فالبک به پیام خصوصی -
     آن تصمیم به عهده‌ی فراخوان است)."""
@@ -329,22 +353,90 @@ async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str) -> bo
     key = topic_key if topic_key in TOPICS else DEFAULT_TOPIC
     topics = await _db(db.get_report_topics, chat_id)
     thread_id = topics.get(key)
+
+    async def _create():
+        name = await _db(topic_display_name, db, chat_id, key)
+        new_id = await _raw_create_topic(bot_token, chat_id, key, name)
+        if new_id:
+            await _db(db.set_report_topic, chat_id, key, new_id)
+        return new_id
+
     if not thread_id:
-        thread_id = await _raw_create_topic(bot_token, chat_id, key)
-        if thread_id:
-            await _db(db.set_report_topic, chat_id, key, thread_id)
+        thread_id = await _create()
     if not thread_id:
         return False
-    return await _raw_send_message(bot_token, chat_id, text, thread_id)
+    result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode)
+    if result is None:
+        thread_id = await _create()
+        if not thread_id:
+            return False
+        result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode)
+    return bool(result)
 
 
-async def report_raw(bot_token: str, db, topic_key: str, text: str, senior_only: bool = True) -> bool:
+async def _raw_send_photo(bot_token: str, chat_id: int, thread_id: int, caption: str, reply_markup: str,
+                         photo_bytes: bytes, filename: str, content_type: str):
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    form.add_field("message_thread_id", str(thread_id))
+    form.add_field("caption", caption[:1000])
+    if reply_markup:
+        form.add_field("reply_markup", reply_markup)
+    form.add_field("photo", photo_bytes, filename=filename, content_type=content_type)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"https://api.telegram.org/bot{bot_token}/sendPhoto", data=form,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return data["result"], True
+                desc = str(data.get("description", "")).lower()
+                return None, any(marker in desc for marker in MISSING_THREAD_MARKERS)
+    except Exception:
+        logger.warning("ارسال عکس رسید به گروه گزارش با HTTP خام ناموفق بود.", exc_info=True)
+        return None, False
+
+
+async def send_raw_photo_to_group(bot_token: str, db, topic_key: str, caption: str, reply_markup: str,
+                                  photo_bytes: bytes, filename: str, content_type: str):
+    """ارسال عکس رسید با HTTP خام به تاپیک گروه گزارش؛ پیام تلگرام یا None برمی‌گرداند."""
+    if not bot_token:
+        return None
+    chat_id = get_chat_id(db)
+    if chat_id is None:
+        return None
+    key = topic_key if topic_key in TOPICS else DEFAULT_TOPIC
+    thread_id = (await _db(db.get_report_topics, chat_id)).get(key)
+
+    async def _create():
+        name = await _db(topic_display_name, db, chat_id, key)
+        new_id = await _raw_create_topic(bot_token, chat_id, key, name)
+        if new_id:
+            await _db(db.set_report_topic, chat_id, key, new_id)
+        return new_id
+
+    if not thread_id:
+        thread_id = await _create()
+    if not thread_id:
+        return None
+    msg, thread_missing = await _raw_send_photo(bot_token, chat_id, thread_id, caption, reply_markup, photo_bytes, filename, content_type)
+    if msg is None and thread_missing:
+        thread_id = await _create()
+        if not thread_id:
+            return None
+        msg, _ = await _raw_send_photo(bot_token, chat_id, thread_id, caption, reply_markup, photo_bytes, filename, content_type)
+    return msg
+
+
+async def report_raw(bot_token: str, db, topic_key: str, text: str, senior_only: bool = True, parse_mode: str = None) -> bool:
     """مثل ``report()`` بالا، ولی برای پردازه‌هایی (مثل پنل وب مستقل) که شیء
     Bot از aiogram در اختیار ندارند و فقط توکن بات را دارند - با HTTP خام به
     Telegram Bot API وصل می‌شود. اول تلاش می‌کند در تاپیک مربوطه‌ی گروه گزارش
     پست کند؛ اگر گروه تنظیم نبود یا ارسال ناموفق بود، به پیام خصوصی ادمین‌های
     ارشد برمی‌گردد."""
-    if await send_raw_to_group(bot_token, db, topic_key, text):
+    if await send_raw_to_group(bot_token, db, topic_key, text, parse_mode):
         return True
     try:
         admin_ids = await _db(db.list_admins)
@@ -355,7 +447,7 @@ async def report_raw(bot_token: str, db, topic_key: str, text: str, senior_only:
     for admin_id in admin_ids:
         if senior_only and not db.is_senior_admin(admin_id):
             continue
-        if await _raw_send_message(bot_token, admin_id, text):
+        if await _raw_send_message(bot_token, admin_id, text, None, parse_mode):
             delivered = True
     return delivered
 
@@ -377,10 +469,17 @@ class ReportGroupGuardMiddleware(BaseMiddleware):
         elif isinstance(event, CallbackQuery):
             message = event.message
             user = event.from_user
-            if message is not None and message.chat.id == chat_id and (user is None or not self.db.is_admin(user.id)):
-                try:
-                    await event.answer(tr("⛔️ این دکمه‌ها فقط برای مدیران فعال است."), show_alert=True)
-                except Exception:
-                    logger.warning("پاسخ به دکمه‌ی غیرمجاز در گروه گزارش ناموفق بود.", exc_info=True)
-                return None
+            if message is not None and message.chat.id == chat_id:
+                if user is None or not self.db.is_admin(user.id):
+                    try:
+                        await event.answer(tr("⛔️ این دکمه‌ها فقط برای مدیران فعال است."), show_alert=True)
+                    except Exception:
+                        logger.warning("پاسخ به دکمه‌ی غیرمجاز در گروه گزارش ناموفق بود.", exc_info=True)
+                    return None
+                if not (event.data or "").startswith(GROUP_CALLBACK_PREFIXES):
+                    try:
+                        await event.answer(tr("⛔️ منوی مدیریت در گروه گزارش در دسترس نیست؛ از پی‌وی بات استفاده کن."), show_alert=True)
+                    except Exception:
+                        logger.warning("پاسخ به دکمه‌ی خارج از لیست مجاز در گروه گزارش ناموفق بود.", exc_info=True)
+                    return None
         return await handler(event, data)

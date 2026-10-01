@@ -1316,6 +1316,37 @@ class CatalogMixin:
             ).fetchone()
 
 
+    def find_custom_config_by_panel_username(self, panel_server_id: int, username: str):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_configs WHERE panel_server_id=? AND username=? ORDER BY id DESC LIMIT 1",
+                (panel_server_id, username),
+            ).fetchone()
+
+
+    def link_existing_custom_config(self, user_id: int, panel_server_id: int, username: str,
+                                     volume_gb: int, duration_days: int, subscription_url: str,
+                                     expires_at: str = None) -> int:
+        """ثبت کاربری که از قبل روی پنل بوده (نه خرید از بات) به حساب یک کاربر بات.
+        اگر همین کاربر پنل قبلاً برای کسی ثبت شده باشد 0 برمی‌گرداند."""
+        with self._get_conn() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM custom_configs WHERE panel_server_id=? AND username=?",
+                (panel_server_id, username),
+            ).fetchone()
+            if exists:
+                return 0
+            cur = conn.execute(
+                "INSERT INTO custom_configs (user_id, panel_server_id, username, volume_gb, duration_days, "
+                "subscription_url, expires_at, source, start_on_first_use) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'custom_config', 0)",
+                (user_id, panel_server_id, username, volume_gb, duration_days, subscription_url, expires_at),
+            )
+            new_id = cur.lastrowid
+        self.add_custom_config_history(new_id, "link", f"{user_id}")
+        return new_id
+
+
     def get_custom_config_by_id(self, custom_config_id: int):
         """مثل get_custom_config_owned ولی بدون فیلتر مالکیت - فقط برای سمت
         ادمین (پنل وب) که باید بتواند سرویس هر کاربری را مدیریت کند."""

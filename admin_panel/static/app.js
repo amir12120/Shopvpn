@@ -6792,6 +6792,8 @@ const SETTINGS_GROUPS = [
     { key: 'acct_show_orders', label: 'نمایش «سرویس‌ها و سفارش‌های من»', type: 'bool' },
     { key: 'acct_show_referral', label: 'نمایش «زیرمجموعه‌گیری من»', type: 'bool' },
     { key: 'acct_show_wallet', label: 'نمایش «کیف پول من»', type: 'bool' },
+    { key: 'acct_show_add_service', label: 'نمایش «افزودن حساب (اتصال کانفیگ قبلی)»', type: 'bool' },
+    { key: 'acct_add_service_by_username', label: 'افزودن حساب با نام کاربری کانفیگ (علاوه بر لینک ساب)', type: 'bool' },
   ]},
   { tab: 'services', title: '🛠 نمایش دکمه‌های سرویس', fields: [
     { key: 'svc_show_renew_full', label: 'دکمه «تمدید کامل سرویس»', type: 'bool' },

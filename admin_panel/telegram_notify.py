@@ -49,7 +49,7 @@ async def send_message(bot_token: str, chat_id: int, text: str, parse_mode: str 
         return False
 
 
-async def send_photo(bot_token: str, chat_id: int, photo_bytes: bytes, filename: str = "photo.png", caption: str = "") -> bool:
+async def send_photo(bot_token: str, chat_id: int, photo_bytes: bytes, filename: str = "photo.png", caption: str = "", parse_mode: str = None) -> bool:
     """ارسال عکس (مثلاً QR کد کانفیگ) به کاربر تلگرامی، بدون وابستگی به aiogram."""
     if not bot_token:
         return False
@@ -59,6 +59,8 @@ async def send_photo(bot_token: str, chat_id: int, photo_bytes: bytes, filename:
         form.add_field("chat_id", str(chat_id))
         if caption:
             form.add_field("caption", caption)
+            if parse_mode:
+                form.add_field("parse_mode", parse_mode)
         form.add_field("photo", photo_bytes, filename=filename, content_type="image/png")
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=20)) as resp:

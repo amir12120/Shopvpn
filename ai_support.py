@@ -1279,7 +1279,31 @@ _CACHEABLE_NOARG_TOOLS = frozenset({
 })
 
 
-async def _run_tool(db, user_tg_id: int, name: str, args: dict, cache: "dict | None" = None) -> dict:
+_BUSINESS_TOOL_NAMES = frozenset({
+    "check_account_status", "list_products", "list_payment_methods",
+    "request_test_config", "get_server_countries", "get_service_history",
+    "escalate_to_human",
+})
+
+_BUSINESS_PROMPT_SUFFIX = (
+    "\n\nمحدودیت این کانال (چت تلگرام بیزنس فروشنده): فقط ابزارهای خواندنی در دسترس است "
+    "(قیمت و محصولات، روش‌های پرداخت، وضعیت سرویس، کانفیگ تست). خرید، تمدید، پرداخت با کیف پول "
+    "و هر تغییر روی سرویس در این کانال انجام نمی‌شود. اگر مشتری خواست خرید یا تمدید کند یا "
+    "سرویسش را تغییر بدهد، escalate_to_human را صدا بزن تا فروشنده خودش ادامه دهد. "
+    "هرگز وانمود نکن کاری انجام شده است."
+)
+
+
+def _tools_for(business_mode: bool) -> list:
+    if not business_mode:
+        return _TOOLS
+    return [t for t in _TOOLS if t["name"] in _BUSINESS_TOOL_NAMES]
+
+
+async def _run_tool(db, user_tg_id: int, name: str, args: dict, cache: "dict | None" = None,
+                    business_mode: bool = False) -> dict:
+    if business_mode and name not in _BUSINESS_TOOL_NAMES:
+        return {"error": "این ابزار در این کانال در دسترس نیست."}
     if cache is not None and name in _CACHEABLE_NOARG_TOOLS and name in cache:
         return cache[name]
 
@@ -1361,8 +1385,8 @@ def _history_to_contents(history, user_message: str):
     return contents
 
 
-def _openai_tools():
-    return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in _TOOLS]
+def _openai_tools(tools=None):
+    return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in (_TOOLS if tools is None else tools)]
 
 
 def _history_to_openai(history, user_message: str, system_prompt: str):
@@ -1373,7 +1397,7 @@ def _history_to_openai(history, user_message: str, system_prompt: str):
     return messages
 
 
-async def _openai_chat(provider: str, api_key: str, model: str, messages: list):
+async def _openai_chat(provider: str, api_key: str, model: str, messages: list, tools=None):
     url = "https://api.groq.com/openai/v1/chat/completions" if provider == "groq" else "https://openrouter.ai/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     if provider == "openrouter":
@@ -1382,7 +1406,7 @@ async def _openai_chat(provider: str, api_key: str, model: str, messages: list):
     payload = {
         "model": model,
         "messages": messages,
-        "tools": _openai_tools(),
+        "tools": _openai_tools(tools),
         "tool_choice": "auto",
         "temperature": 0.2,
     }
@@ -1402,13 +1426,13 @@ async def _openai_chat(provider: str, api_key: str, model: str, messages: list):
                 raise RuntimeError(f"{provider} پاسخ JSON نامعتبر داد") from exc
 
 
-async def _run_gemini(db, user_tg_id: int, history: list, user_message: str, system_prompt: str):
+async def _run_gemini(db, user_tg_id: int, history: list, user_message: str, system_prompt: str, business_mode: bool = False):
     from google.genai import types
     api_keys = resolve_gemini_keys(db)
     if not api_keys:
         raise RuntimeError("Gemini API key تنظیم نشده")
     contents = _history_to_contents(history, user_message)
-    tool = types.Tool(function_declarations=_TOOLS)
+    tool = types.Tool(function_declarations=_tools_for(business_mode))
     gen_config = types.GenerateContentConfig(system_instruction=system_prompt, tools=[tool])
     model_name = resolve_gemini_model(db)
     last_exc = None
@@ -1436,7 +1460,7 @@ async def _run_gemini(db, user_tg_id: int, history: list, user_message: str, sys
                 # پس پردازشِ ui_action/contents زیر دقیقاً همان رفتار قبلی
                 # (ترتیبی) را حفظ می‌کند.
                 results = await asyncio.gather(
-                    *[_run_tool(db, user_tg_id, fc.name, dict(fc.args or {}), tool_cache) for fc in calls]
+                    *[_run_tool(db, user_tg_id, fc.name, dict(fc.args or {}), tool_cache, business_mode) for fc in calls]
                 )
                 for fc, result in zip(calls, results):
                     tools_used.append(fc.name)
@@ -1490,7 +1514,7 @@ async def _run_gemini(db, user_tg_id: int, history: list, user_message: str, sys
     raise last_exc or RuntimeError("Gemini failed")
 
 
-async def _run_openai_compatible(db, user_tg_id: int, history: list, user_message: str, system_prompt: str, provider: str):
+async def _run_openai_compatible(db, user_tg_id: int, history: list, user_message: str, system_prompt: str, provider: str, business_mode: bool = False):
     keys = resolve_provider_keys(db, provider)
     if not keys:
         raise RuntimeError(f"{provider} API key تنظیم نشده")
@@ -1504,7 +1528,7 @@ async def _run_openai_compatible(db, user_tg_id: int, history: list, user_messag
         try:
             ui_action = None
             for _ in range(_MAX_TOOL_ROUNDS):
-                data = await _openai_chat(provider, api_key, model, messages)
+                data = await _openai_chat(provider, api_key, model, messages, _tools_for(business_mode))
                 choice = (data.get("choices") or [{}])[0]
                 msg = choice.get("message") or {}
                 tool_calls = msg.get("tool_calls") or []
@@ -1531,7 +1555,7 @@ async def _run_openai_compatible(db, user_tg_id: int, history: list, user_messag
                 # چند ابزارِ مستقلِ درخواستی در یک دور، موازی اجرا می‌شوند
                 # (نگاه کن به توضیح مشابه در _run_gemini).
                 results = await asyncio.gather(
-                    *[_run_tool(db, user_tg_id, name, args, tool_cache) for _, name, args in parsed_calls]
+                    *[_run_tool(db, user_tg_id, name, args, tool_cache, business_mode) for _, name, args in parsed_calls]
                 )
                 for (tc, name, _args), result in zip(parsed_calls, results):
                     if name == "show_purchase_options" and result.get("ok"):
@@ -1582,12 +1606,14 @@ async def _run_openai_compatible(db, user_tg_id: int, history: list, user_messag
     raise last_exc or RuntimeError(f"{provider} failed")
 
 
-async def get_reply(db, user_tg_id: int, history: list, user_message: str) -> dict:
+async def get_reply(db, user_tg_id: int, history: list, user_message: str, business_mode: bool = False) -> dict:
     """Agent چند-Provider: Gemini، Groq و OpenRouter با چرخش کلید و fallback."""
     if not is_configured(db):
         return {"reply": "دستیار هوشمند در حال حاضر تنظیم نشده. پیامت مستقیم برای پشتیبانی ارسال می‌شود.", "escalate": True}
     faq = await asyncio.to_thread(db.build_ai_faq_text)
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(faq=faq)
+    if business_mode:
+        system_prompt += _BUSINESS_PROMPT_SUFFIX
     mode = resolve_provider_mode(db)
     providers = configured_providers(db) if mode == "auto" else [mode]
     last_exc = None
@@ -1595,9 +1621,9 @@ async def get_reply(db, user_tg_id: int, history: list, user_message: str) -> di
     for provider in providers:
         try:
             if provider == "gemini":
-                result = await _run_gemini(db, user_tg_id, history, user_message, system_prompt)
+                result = await _run_gemini(db, user_tg_id, history, user_message, system_prompt, business_mode)
             else:
-                result = await _run_openai_compatible(db, user_tg_id, history, user_message, system_prompt, provider)
+                result = await _run_openai_compatible(db, user_tg_id, history, user_message, system_prompt, provider, business_mode)
             if result.get("reply"):
                 # لاگِ آنالیتیکسِ سبک (بدون نیاز به تغییر اسکیمای دیتابیس):
                 # هر تِرن موفق دستیار، یک خط ساختاریافته در لاگ می‌نویسد -

@@ -2810,7 +2810,7 @@ async def _notify_block_change_from_web(tg_id: int, blocked: bool, actor_label: 
     try:
         user_row = await asyncio.to_thread(db.get_user, tg_id)
         text = report_router.build_block_toggle_text(user_row, tg_id, blocked, actor_label)
-        await report_router.send_raw_to_group(_bot_token(), db, "security", text)
+        await report_router.send_raw_to_group(_bot_token(), db, "security", text, "HTML")
     except Exception:
         logger.warning("ارسال کارت بلاک/آنبلاک (پنل وب) به گروه گزارش ناموفق بود.", exc_info=True)
 

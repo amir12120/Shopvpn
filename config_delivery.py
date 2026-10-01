@@ -16,7 +16,12 @@
 """
 
 import asyncio
+import html as html_lib
+import math
 import os
+import re
+import time
+import urllib.parse
 from datetime import datetime
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -28,7 +33,7 @@ from aiogram.types import BufferedInputFile
 import config
 from i18n import tr
 from jalali import to_jalali_str
-from sub_info import fetch_individual_links
+from sub_info import fetch_individual_links, fetch_sub_info, _CONFIG_SCHEMES
 from notification_i18n import localized, user_language
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -251,6 +256,180 @@ def get_post_delivery_text(db) -> str:
     return (db.get_setting("post_delivery_custom_text", "") or "").strip()
 
 
+# -----------------------------------------------------------------------
+# قالب جدید پیام تحویل سفارش (یک پیام واحد: عکس QR + کپشن)
+#
+#   سفارش جدید شما 😍
+#   ┃ اطلاعات سرویس: پروتکل / نام سرویس / حجم / مدت
+#   ┃ لینک های اتصال: config / subscription
+#   با لمس کردن هر یک از لینک ها، خودکار کپی میشود
+#
+# هر لینک داخل <code> است تا با یک لمس کپی شود. سقف کپشن تلگرام ۱۰۲۴ کاراکتر
+# است؛ اگر لینک‌ها (مثلاً چند کانفیگ داخل یک اشتراک) جا نشدند، عکس QR فقط با
+# بلوک «اطلاعات سرویس» ارسال می‌شود و بلوک «لینک های اتصال» بلافاصله به‌صورت
+# پیام بعدی (با همان ظاهر) می‌آید. پارس‌مود همه‌جا HTML است.
+# -----------------------------------------------------------------------
+CAPTION_LIMIT = 1024
+CHUNK_LIMIT = 3800
+
+
+def _h(value) -> str:
+    return html_lib.escape(str(value), quote=False)
+
+
+def _visible_len(markup: str) -> int:
+    """طول متنِ دیده‌شده (بعد از حذف تگ‌ها و decode شدن &amp; و...) - همان چیزی که تلگرام برای سقف کپشن می‌شمارد."""
+    return len(html_lib.unescape(re.sub(r"<[^>]+>", "", markup)))
+
+
+def strip_html(markup: str) -> str:
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", markup))
+
+
+def _format_volume(total_bytes):
+    if not total_bytes or total_bytes <= 0:
+        return "نامحدود"
+    gb = total_bytes / (1024 ** 3)
+    if gb >= 1:
+        return f"{round(gb, 2):g} گیگ"
+    return f"{round(total_bytes / (1024 ** 2)):g} مگ"
+
+
+def _format_duration(expire_ts):
+    if not expire_ts:
+        return "نامحدود"
+    remaining = expire_ts - time.time()
+    if remaining <= 0:
+        return None
+    return f"{max(1, math.ceil(remaining / 86400))} روز"
+
+
+def _protocol_of(uri):
+    if not uri or "://" not in uri:
+        return None
+    scheme = uri.split("://", 1)[0].lower()
+    return {"hy2": "hysteria2"}.get(scheme, scheme)
+
+
+def _remark_of(uri):
+    if not uri or "#" not in uri:
+        return None
+    frag = urllib.parse.unquote(uri.rsplit("#", 1)[1]).strip()
+    return frag or None
+
+
+async def collect_service_info(link: str, product_name: str = "") -> dict:
+    """مشخصات سرویس را مستقیماً از روی خودِ لینک اشتراک می‌خواند (مستقل از نوع پنل):
+    پروتکل و نام از کانفیگ‌های داخل ساب، حجم و مدت از هدر subscription-userinfo.
+    هر مقداری که پیدا نشود None می‌ماند و در پیام نمایش داده نمی‌شود (هیچ‌وقت عدد حدسی نشان نمی‌دهیم)."""
+    is_sub = link.startswith(("http://", "https://"))
+    configs, info = [], {}
+    if is_sub:
+        res = await asyncio.gather(
+            fetch_individual_links(link), fetch_sub_info(link), return_exceptions=True,
+        )
+        configs = res[0] if isinstance(res[0], list) else []
+        info = res[1] if isinstance(res[1], dict) and res[1].get("ok") else {}
+    elif link.startswith(_CONFIG_SCHEMES):
+        configs = [link]
+
+    first = configs[0] if configs else None
+    name = _remark_of(first) or (info.get("title") or "").strip() or (product_name or "").strip() or None
+    return {
+        "is_sub": is_sub,
+        "sub_url": link if is_sub else None,
+        "configs": configs,
+        "protocol": _protocol_of(first),
+        "name": name,
+        "volume": _format_volume(info.get("total")) if info else None,
+        "duration": _format_duration(info.get("expire")) if info else None,
+    }
+
+
+def build_delivery_message(svc: dict, idx: int, total: int, sub_link_on: bool,
+                           individual_on: bool, alternates=None, L=None):
+    """خروجی: (caption_html, [extra_html_messages]). L تابع ترجمه‌ی برچسب‌های ثابت است."""
+    L = L or (lambda t: t)
+    alternates = alternates or []
+
+    header = f"{L('سفارش جدید شما')} 😍"
+    if total > 1:
+        header += f" ({idx}/{total})"
+
+    rows = [
+        ("📡", "پروتکل", svc.get("protocol")),
+        ("🔮", "نام سرویس", svc.get("name")),
+        ("🔋", "حجم سرویس", L(svc["volume"]) if svc.get("volume") else None),
+        ("⏰", "مدت سرویس", L(svc["duration"]) if svc.get("duration") else None),
+    ]
+    info_lines = [f"{emoji} {L(label)}: {_h(value)}" for emoji, label, value in rows if value]
+    info_block = f"<blockquote><b>{L('اطلاعات سرویس')}</b>\n" + "\n".join(info_lines) + "</blockquote>"
+
+    link_lines = []
+    if svc["is_sub"]:
+        if individual_on:
+            link_lines += [f"💝 config : <code>{_h(c)}</code>" for c in svc["configs"]]
+        if sub_link_on:
+            link_lines.append(f"🌐 subscription : <code>{_h(svc['sub_url'])}</code>")
+            link_lines += [f"🔁 subscription : <code>{_h(u)}</code>" for u in alternates]
+    elif sub_link_on or individual_on:
+        for c in svc["configs"]:
+            link_lines.append(f"💝 config : <code>{_h(c)}</code>")
+
+    title = f"<b>{L('لینک های اتصال')}</b>"
+    hint = L("با لمس کردن هر یک از لینک ها، خودکار کپی میشود")
+
+    if not link_lines:
+        return f"{header}\n\n{info_block}", []
+
+    full = f"{header}\n\n{info_block}\n\n<blockquote>{title}\n\n" + "\n\n".join(link_lines) + f"</blockquote>\n\n{hint}"
+    if _visible_len(full) <= CAPTION_LIMIT:
+        return full, []
+
+    # جا نشد: کپشنِ عکس فقط اطلاعات سرویس، و لینک‌ها در پیام(های) بعدی
+    chunks, cur, cur_len = [], [], 0
+    for line in link_lines:
+        ln = _visible_len(line) + 2
+        if cur and cur_len + ln > CHUNK_LIMIT:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append(line)
+        cur_len += ln
+    if cur:
+        chunks.append(cur)
+    extras = [f"<blockquote>{title}\n\n" + "\n\n".join(c) + "</blockquote>" for c in chunks]
+    extras[-1] += f"\n\n{hint}"
+    return f"{header}\n\n{info_block}", extras
+
+
+async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
+                           db=None, user_tg_id: int = None):
+    """مرحله‌ی مشترک بین بات (aiogram) و پنل وب: جمع‌آوری مشخصات و ساخت کپشن/پیام‌های اضافه."""
+    sub_link_on, individual_on = _delivery_flags(db)
+    if db is not None and user_tg_id is not None:
+        L = lambda t: localized(t, db, user_tg_id)
+    else:
+        L = lambda t: t
+    svc = await collect_service_info(link, product_name)
+    alternates = []
+    if db is not None and sub_link_on and svc["is_sub"]:
+        try:
+            alternates = await asyncio.to_thread(db.get_alternate_sub_urls, link)
+        except Exception:
+            alternates = []
+    return build_delivery_message(svc, idx, total, sub_link_on, individual_on, alternates, L)
+
+
+async def _send_html(bot: Bot, chat_id: int, text: str) -> None:
+    try:
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+    except Exception:
+        try:
+            await bot.send_message(chat_id, strip_html(text))
+        except Exception:
+            pass
+
+
 async def deliver_config_to_user(
     bot: Bot,
     user_tg_id: int,
@@ -261,14 +440,13 @@ async def deliver_config_to_user(
     db=None,
 ) -> None:
     """
-    ارسال حرفه‌ای کانفیگ(های) خریداری‌شده به کاربر: عکس QR کد لینک اشتراک + مشخصات
-    کامل سفارش + پیام تشکر، و در پیام بعدی خودِ لینک به‌صورت متنی و قابل کپی.
+    ارسال کانفیگ(های) خریداری‌شده به کاربر در قالب یک پیام: عکس QR + کپشن
+    («سفارش جدید شما» / «اطلاعات سرویس» / «لینک های اتصال»)؛ جزئیات در بالای همین بخش.
     links می‌تواند یک لینک تکی (str) یا لیستی از لینک‌ها باشد (خرید با تعداد بیشتر از ۱)؛
-    در حالت لیست، هر کانفیگ با شماره‌ی خودش (کانفیگ N از M) جداگانه ارسال می‌شود.
+    در حالت لیست، برای هر کانفیگ یک پیام جدا (با شماره‌ی خودش) ارسال می‌شود.
 
-    ارسال متن لینک اشتراک و ارسال کانفیگ‌های تکی هرکدام جدا از طریق تنظیمات
-    deliver_sub_link_enabled / deliver_individual_configs_enabled قابل فعال/غیرفعال‌سازی‌اند؛
-    پارامتر db برای خواندن این دو تنظیم لازم است (اگر داده نشود، هر دو فعال فرض می‌شوند).
+    تنظیمات deliver_sub_link_enabled / deliver_individual_configs_enabled همچنان کنترل
+    می‌کنند که خطوط «subscription» و «config» در بلوک لینک‌ها بیایند یا نه.
 
     (نسخه‌ی aiogram - برای فراخوانی از داخل خودِ بات. برای پنل وب مستقل از
     admin_panel.config_delivery_web.deliver_config_to_user_web استفاده کن.)
@@ -276,59 +454,19 @@ async def deliver_config_to_user(
     if isinstance(links, str):
         links = [links]
     total = len(links)
-    sub_link_on, individual_on = _delivery_flags(db)
-
-    # برای خرید پلن آماده، دسته‌بندی را مستقیماً از سفارش می‌خوانیم تا همه‌ی
-    # مسیرهای پرداخت (درگاه‌ها، کارت‌به‌کارت و پرداخت کیف پول) خروجی یکسانی داشته
-    # باشند. برای کانفیگ شخصی، دسته‌بندی وجود ندارد و همان خروجی قبلی حفظ می‌شود.
-    category_name = None
-    if db is not None and order_id:
-        try:
-            order = db.get_order(order_id)
-            if order and not order["is_custom_config"] and order["product_id"]:
-                product = db.get_product(order["product_id"])
-                if product and product["category_id"]:
-                    category = db.get_category(product["category_id"])
-                    if category:
-                        category_name = category["name"]
-        except Exception:
-            # اطلاعات تکمیلی نباید جلوی تحویل موفق کانفیگ را بگیرد.
-            category_name = None
 
     for idx, link in enumerate(links, start=1):
-        caption = localized(
-            build_delivery_caption(product_name, idx, total, order_id, category_name=category_name),
-            db, user_tg_id,
-        )
+        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id)
 
         try:
             qr_photo = _build_qr_photo(link, db=db)
-            await bot.send_photo(user_tg_id, qr_photo, caption=caption)
+            await bot.send_photo(user_tg_id, qr_photo, caption=caption, parse_mode="HTML")
         except Exception:
             # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود
-            await bot.send_message(user_tg_id, localized(caption, db, user_tg_id))
+            await _send_html(bot, user_tg_id, caption)
 
-        if sub_link_on:
-            await bot.send_message(
-                user_tg_id,
-                localized(f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`", db, user_tg_id),
-                parse_mode="Markdown",
-            )
-            alternates = await asyncio.to_thread(db.get_alternate_sub_urls, link) if db is not None else []
-            if alternates:
-                await bot.send_message(
-                    user_tg_id,
-                    localized("🔁 لینک‌های جایگزین (اگر لینک بالا باز نشد):\n", db, user_tg_id) + "\n".join(f"`{u}`" for u in alternates),
-                    parse_mode="Markdown",
-                )
-
-        if individual_on and link.startswith(("http://", "https://")):
-            try:
-                individual_links = await fetch_individual_links(link)
-            except Exception:
-                individual_links = []
-            if individual_links:
-                await _send_individual_configs(bot, user_tg_id, individual_links, db=db)
+        for extra in extras:
+            await _send_html(bot, user_tg_id, extra)
 
     if final_price is not None:
         await bot.send_message(user_tg_id, localized(build_summary_text(final_price, total), db, user_tg_id))

@@ -574,6 +574,60 @@ class DatabaseBase:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS business_connections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    connection_id TEXT UNIQUE NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    user_chat_id INTEGER,
+                    user_name TEXT DEFAULT '',
+                    username TEXT DEFAULT '',
+                    can_reply INTEGER DEFAULT 1,
+                    can_read INTEGER DEFAULT 0,
+                    is_enabled INTEGER DEFAULT 1,
+                    auto_reply INTEGER DEFAULT 1,
+                    first_message TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS business_exceptions (
+                    conn_row INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    PRIMARY KEY (conn_row, user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS business_chats (
+                    conn_row INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    mode TEXT DEFAULT 'auto',
+                    greeted INTEGER DEFAULT 0,
+                    first_name TEXT DEFAULT '',
+                    username TEXT DEFAULT '',
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (conn_row, chat_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS business_ai_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conn_row INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_business_ai_chat ON business_ai_messages (conn_row, chat_id, id);
+
+                CREATE TABLE IF NOT EXISTS business_message_log (
+                    conn_row INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    from_user_id INTEGER,
+                    text TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (conn_row, chat_id, message_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS ai_faq_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     question TEXT NOT NULL,

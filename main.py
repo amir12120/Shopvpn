@@ -120,7 +120,7 @@ async def main():
         reconcile_task.cancel()
         try:
             await reconcile_task
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             pass
         await manager.stop_all()
         if manager.webhook_server:

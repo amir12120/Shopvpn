@@ -32,7 +32,17 @@ LT_PYTHON="${LT_PYTHON:-$TRANSLATION_VENV_DIR/bin/python3}"
 
 INSTALL_LIBRETRANSLATE="${SHOPVPN_INSTALL_LIBRETRANSLATE:-0}"
 SKIP_MODELS="${SHOPVPN_SKIP_MODELS:-0}"
-LANGS_SPEC="${SHOPVPN_TRANSLATION_LANGS:-fa}"
+
+# Language set: an explicit env var wins, otherwise reuse the set that was
+# saved in .env by a previous run (so "add tr,ar once" is remembered and the
+# update scripts keep installing the same models instead of falling back).
+# The env var wins; otherwise the value saved in .env is reused.
+ENV_FILE="$ROOT_DIR/.env"
+LANGS_SPEC="${SHOPVPN_TRANSLATION_LANGS:-}"
+if [ -z "$LANGS_SPEC" ] && [ -f "$ENV_FILE" ]; then
+  LANGS_SPEC="$(grep -m1 '^SHOPVPN_TRANSLATION_LANGS=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')"
+fi
+LANGS_SPEC="${LANGS_SPEC:-fa}"
 
 # Never let pip keep gigabytes of downloaded wheels around: this is one of the
 # biggest silent disk hogs on small VPS disks.
@@ -167,7 +177,6 @@ fi
 # ---------------------------------------------------------------------------
 # Environment file
 # ---------------------------------------------------------------------------
-ENV_FILE="$ROOT_DIR/.env"
 touch "$ENV_FILE"
 set_env() {
   local key="$1" value="$2"
@@ -184,6 +193,9 @@ unset_env() {
 # The local engine is the source of truth. Public providers stay disabled so
 # Google/MyMemory/OpenRouter rate limits can never break the UI.
 set_env SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS 0
+# Remember the language set that was just installed (menu options 27/29 and the
+# install/update scripts pass it in, so the next run picks it up automatically).
+set_env SHOPVPN_TRANSLATION_LANGS "$LANGS_SPEC"
 
 if [ "$LT_ENABLED" = "1" ]; then
   set_env SHOPVPN_TRANSLATION_PROVIDERS 'argos,libretranslate'

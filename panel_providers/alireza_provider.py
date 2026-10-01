@@ -84,6 +84,18 @@ class AlirezaProvider(BasePanelProvider):
                     return client, ib["id"], stats
         raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
 
+    async def find_username_by_sub_id(self, sub_id: str):
+        """email کلاینتی که subId آن برابر sub_id است (یا None)."""
+        async with await self._authed_session() as session:
+            for ib in await self._inbounds(session):
+                settings = load_json(ib.get("settings"), {})
+                if not isinstance(settings, dict):
+                    continue
+                for client in settings.get("clients") or []:
+                    if client.get("subId") == sub_id and client.get("email"):
+                        return client["email"]
+        return None
+
     @staticmethod
     def _payload(inbound_id, client: dict) -> dict:
         return {"id": int(inbound_id), "settings": json.dumps({"clients": [client], **_SETTINGS_TAIL})}

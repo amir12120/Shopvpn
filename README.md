@@ -32,6 +32,7 @@
 - [🧰 manage.sh](#manage-sh)
 - [🗂️ Project Structure](#project-structure)
 - [🧪 Technology Stack](#tech-stack)
+- [🆕 Recently Added Features](#new-features)
 - [🔎 Additional Features](#additional-features)
 - [🤝 Contributing & License](#contributing)
 
@@ -175,7 +176,7 @@ The AI layer answers repetitive customer questions before escalating to human su
 - 📚 Administrator-managed FAQ knowledge
 - 🔎 Real user-specific answers for services, expiration, wallet and orders
 - 🛒 Real purchase cards with current prices and payment buttons
-- 🔒 No direct financial/write operations by the AI
+- 🔒 Wallet purchases/renewals and service changes run only through the bot's validated flows after explicit user confirmation; refunds and complaints go to human support
 - 🙋 Automatic escalation for financial complaints or explicit human-support requests
 - ⚡ If no API provider is configured, requests can go directly to human support
 
@@ -504,6 +505,8 @@ Depending on the project version, it can handle:
 - 📋 Logs and diagnostics
 - 🔗 Integration API setup
 - 🌐 Persian/English management menu
+- 🌐 Local translation runtime install/repair and unused-language cleanup
+- 🏭 Full cleanup / factory reset
 
 After install, just type `shopvpn`:
 
@@ -571,6 +574,79 @@ Shopvpn/
 - **Telegram Mini Apps / WebApp authentication**
 - **Firebase Cloud Messaging**
 - **HTTP/API integrations for VPN panels, payments and AI providers**
+
+</details>
+
+---
+
+<a id="new-features"></a>
+
+## 🆕 Recently Added Features
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+### 🧾 AI Fake/Duplicate Receipt Detection
+
+Manual card-to-card receipts are screened before they reach the admin chat. Most findings are advisory notes; the final decision stays with the admin.
+
+- 🔁 Exact-duplicate detection through the file SHA-256 hash and the receipt reference number, plus a perceptual hash (dHash) that flags re-compressed or cropped reuse (warning only)
+- 🤖 Multi-model vision analysis: Gemini, plus Groq and OpenRouter in parallel when their keys are configured
+- 🔢 Deterministic OCR checks: card number (Luhn + known Iranian bank prefix), IBAN checksum, amount match in Toman or Rial, reference-number reuse
+- 🕵️ Forensics: Error Level Analysis on JPEGs, image-metadata scan, screenshot status-bar time vs. send time, bank/holder-name and amount-in-words consistency
+- ⚖️ Automatic rejection only for exact duplicates (when auto-reject is on) or when at least two independent signals agree
+- 🎛️ Admin toggles for the check, auto-reject, strict mode and multi-model, plus a learning report that tunes per-model weights from admin approve/reject decisions
+
+### 🌐 Automatic Translation Engine & 16 Languages
+
+- 🗺️ Built-in language catalog: Persian, English, Turkish, Arabic, Russian, German, French, Spanish, Italian, Portuguese, Chinese, Japanese, Korean, Dutch, Polish and Ukrainian
+- 🏠 Offline-first: local Argos Translate and LibreTranslate need no API key; public translation APIs are not used unless explicitly allowed; Gemini/OpenRouter are optional providers
+- 🛡️ Quality guard: placeholders, URLs, markup, code and emoji are protected and verified, and broken provider output is rejected
+- ⚡ Strings missing from a language catalog are translated on the fly just before a message is sent
+- 📊 Admin-panel translation dashboard: status, health, providers, history, live logs, per-language and bulk sync
+- ✍️ Admin-written content (broadcasts, product names, etc.) is never auto-translated; background notifications use each recipient's language
+- 🧰 Languages are chosen at install time; `manage.sh` options 27, 28 and 30 repair the runtime, remove LibreTranslate and delete unwanted languages to free disk space
+
+### 🧠 AI Assistant Account Actions
+
+Beyond answering questions, the assistant can prepare account actions that the bot then executes through its own validated flows.
+
+- 🛒 Purchase with wallet and 🔄 renewal from wallet (with cost calculation), only after a separate explicit confirmation message from the user
+- 🔁 Auto-renew toggle, QR code, individual configs, enable/disable, rename, new access link, transfer to another user and service history
+- 🗑️ Deleting a service always ends with a final confirmation button
+- 🎟️ Discount-code check, referral info, recent tickets and server countries
+- 🙋 Refunds, complaints and financial disputes are still escalated to human support
+
+### ➕ Add Existing Account
+
+- 🔗 Users attach a service they already own by pasting its subscription link or (optionally) the config username; it is matched against your connected panels
+- 🔒 Conflict protection: a config already linked to another account is refused, and repeated failures temporarily block the user
+- 🎛️ The button and the username option can be switched off separately from the admin panel
+
+### 📚 Contextual Tutorials
+
+- 📍 Tutorials can be attached to specific bot sections: main-menu buttons, the purchase flow, each payment method, wallet actions and more
+- 📚 A "Tutorial" button is added automatically under the matching page, with no handler changes needed
+- 🎁 A tutorial can also be offered right after a successful purchase
+
+### 📜 Terms & Conditions
+
+- ✅ Admins can require users to accept written terms before using the bot
+- 📲 The Mini App has its own accept flow, so acceptance is shared across both
+
+### 🧾 Renewal Warnings & Log
+
+- ⚠️ Users see the current state of a service (remaining time and traffic) before they confirm a renewal
+- 📣 Every renewal (full, volume, time or extra users) is logged to the admin report group with before/after values
+
+### 🧰 More `manage.sh` Options
+
+| Option | Action |
+|:---:|---|
+| 27 | Install/repair the local translation runtime (automatic) |
+| 28 | Remove LibreTranslate |
+| 29 | Full cleanup / factory reset |
+| 30 | Remove unwanted translation languages (free disk space) |
 
 </details>
 
@@ -659,4 +735,4 @@ Created by **Mehdi Rafatpanah**
 - 🇷🇺 **Russian:** `README.ru.md`
 - 🇨🇳 **Chinese:** `README.zh.md`
 
-The application supports multiple UI languages with persisted user language selection and automatic RTL/LTR switching. Additional languages (Vietnamese, Urdu, Kazakh, Uzbek, Turkmen, Belarusian and more) can be activated from the admin panel's language manager, which auto-generates the in-app translations; matching README translations can be added the same way on request.
+The application supports multiple UI languages with persisted user language selection and automatic RTL/LTR switching. The built-in catalog has 16 languages (Persian, English, Turkish, Arabic, Russian, German, French, Spanish, Italian, Portuguese, Chinese, Japanese, Korean, Dutch, Polish, Ukrainian); they are chosen at install time and managed from the admin panel's language manager, which auto-generates the in-app translations.

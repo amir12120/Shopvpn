@@ -28,6 +28,7 @@ from .panels import PanelsMixin
 from .tickets import TicketsMixin
 from .resellers import ResellersMixin
 from .system import SystemMixin
+from .business import BusinessMixin
 
 class Database(
     DatabaseBase,
@@ -39,6 +40,7 @@ class Database(
     TicketsMixin,
     ResellersMixin,
     SystemMixin,
+    BusinessMixin,
 ):
     pass
 

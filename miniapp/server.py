@@ -1891,8 +1891,13 @@ def api_close_my_ticket(ticket_id: int, auth=Depends(get_verified_user)):
 
 
 async def send_photo_to_admins(db: Database, bot_token: str, caption: str, reply_markup: str,
-                                photo_bytes: bytes, filename: str, content_type: str):
-    """رسید را برای همه‌ی ادمین‌های همین مستأجر ارسال می‌کند. (file_id, تعداد تحویل موفق، نتایج) را برمی‌گرداند."""
+                                photo_bytes: bytes, filename: str, content_type: str, topic_key: str = "purchase"):
+    """رسید را به تاپیک گروه گزارش و در غیاب آن برای همه‌ی ادمین‌های همین مستأجر ارسال می‌کند. (file_id, تعداد تحویل موفق، نتایج) را برمی‌گرداند."""
+    group_msg = await report_router.send_raw_photo_to_group(
+        bot_token, db, topic_key, caption, reply_markup, photo_bytes, filename, content_type
+    )
+    if group_msg:
+        return group_msg["photo"][-1]["file_id"], 1, [(group_msg["chat"]["id"], group_msg["message_id"])]
     admin_ids = db.list_admins()
     sent_file_id = None
     delivered = 0
@@ -1927,6 +1932,14 @@ async def send_photo_to_admins(db: Database, bot_token: str, caption: str, reply
 # get_payment_method_min_amount) که از داخل ربات هم استفاده می‌شود؛ این توابع
 # فقط همان چک را این‌جا (مینی‌اپ) هم اعمال می‌کنند تا هرجا خرید انجام شود
 # (بات یا مینی‌اپ)، یک قانون یکسان حاکم باشد.
+
+def _quick_action_buttons(user_id: int) -> list:
+    return [
+        {"text": "👤 پروفایل", "callback_data": f"qa_profile:{user_id}"},
+        {"text": "🚫 بلاک", "callback_data": f"qa_block:{user_id}"},
+        {"text": "✉️ پیام", "callback_data": f"qa_msg:{user_id}"},
+    ]
+
 
 def _payment_method_error(db: Database, amount: int, method_key: str, product_id: int = None,
                           order=None, custom_config: bool = False) -> Optional[str]:
@@ -4118,7 +4131,7 @@ async def api_topup_receipt(
         "inline_keyboard": [[
             {"text": "✅ تایید و شارژ کیف پول", "callback_data": f"topup_approve:{topup_id}"},
             {"text": "❌ رد کردن", "callback_data": f"topup_reject:{topup_id}"},
-        ]]
+        ], _quick_action_buttons(tg_id)]
     })
 
     admin_ids = db.list_admins()
@@ -4126,7 +4139,7 @@ async def api_topup_receipt(
         raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
 
     sent_file_id, delivered, results = await send_photo_to_admins(
-        db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type
+        db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "finance"
     )
     if delivered == 0:
         raise HTTPException(status_code=502, detail=tr("ارسال رسید به ادمین ناموفق بود. دوباره تلاش کنید."))
@@ -4191,6 +4204,7 @@ async def api_order_receipt(
             [
                 {"text": "🚫 فیش فیک + بلاک کاربر", "callback_data": f"order_fake_receipt:{order_id}"},
             ],
+            _quick_action_buttons(tg_id),
         ]
     })
 
@@ -4199,7 +4213,7 @@ async def api_order_receipt(
         raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
 
     sent_file_id, delivered, results = await send_photo_to_admins(
-        db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type
+        db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "purchase"
     )
     if delivered == 0:
         raise HTTPException(status_code=502, detail=tr("ارسال رسید به ادمین ناموفق بود. دوباره تلاش کنید."))
@@ -6557,7 +6571,7 @@ async def _notify_block_change_from_miniapp(tenant, db, telegram_id: int, blocke
         actor_row = db.get_user(actor_id)
         actor_label = (f"@{actor_row['username']}" if actor_row and actor_row["username"] else str(actor_id)) + " (مینی‌اپ)"
         text = report_router.build_block_toggle_text(user_row, telegram_id, blocked, actor_label)
-        await report_router.send_raw_to_group(tenant.bot_token, db, "security", text)
+        await report_router.send_raw_to_group(tenant.bot_token, db, "security", text, "HTML")
     except Exception:
         logging.getLogger("miniapp").warning("ارسال کارت بلاک/آنبلاک (مینی‌اپ) به گروه گزارش ناموفق بود.", exc_info=True)
 

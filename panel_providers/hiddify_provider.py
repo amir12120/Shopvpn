@@ -74,6 +74,26 @@ class HiddifyProvider(BasePanelProvider):
                 return u
         raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
 
+    async def find_username_by_uuid(self, user_uuid: str):
+        """نام (name) کاربری که uuid آن برابر user_uuid است (یا None)."""
+        async with self._session() as session:
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/v2/admin/user/",
+                    headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        raise PanelError(f"خطا در دریافت لیست کاربران (کد {resp.status}).")
+                    data = await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e or 'timeout'}") from e
+        users = data if isinstance(data, list) else data.get("users", [])
+        for u in users:
+            if str(u.get("uuid")) == user_uuid and u.get("name"):
+                return u["name"]
+        return None
+
     async def fetch_template_from_user(self, sample_username: str) -> dict:
         raise PanelError(
             "پنل Hiddify نیازی به «کاربر نمونه»/قالب ندارد؛ این مرحله برای این نوع پنل لازم نیست."

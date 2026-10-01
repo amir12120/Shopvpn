@@ -71,6 +71,11 @@ class AdminAIFaqAdd(StatesGroup):
     waiting_answer = State()
 
 
+class AdminBusiness(StatesGroup):
+    waiting_first_message = State()
+    waiting_exception_id = State()
+
+
 class AdminTutorialDeviceAdd(StatesGroup):
     waiting_name = State()
 
@@ -604,6 +609,10 @@ class ServiceRenameFlow(StatesGroup):
 
 class ServiceTransferFlow(StatesGroup):
     waiting_target_id = State()
+
+
+class AddServiceFlow(StatesGroup):
+    waiting_input = State()
 
 
 class RenewalFlow(StatesGroup):

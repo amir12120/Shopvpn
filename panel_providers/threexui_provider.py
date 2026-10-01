@@ -290,6 +290,27 @@ class ThreeXUIProvider(BasePanelProvider):
                     return PanelUserResult(username=username, subscription_url=sub_url, raw=client)
         raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
 
+    async def find_username_by_sub_id(self, sub_id: str):
+        """email کلاینتی که subId آن برابر sub_id است (یا None)."""
+        async with self._session() as session:
+            try:
+                async with session.get(f"{self._base_url()}/panel/api/inbounds/list") as resp:
+                    if resp.status >= 400:
+                        raise PanelError(f"خطا در دریافت لیست inbound (کد {resp.status}).")
+                    data = await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e or 'timeout'}") from e
+        for ib in (data.get("obj") or []):
+            raw = ib.get("settings")
+            try:
+                settings = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except (ValueError, TypeError):
+                continue
+            for client in (settings.get("clients") or []):
+                if client.get("subId") == sub_id and client.get("email"):
+                    return client["email"]
+        return None
+
     async def _find_client_all_inbounds(self, session: aiohttp.ClientSession, username: str) -> list:
         """همه‌ی نسخه‌های کلاینت با email==username را در تمام inbound هایی
         که کلاینت در آن‌ها ثبت شده برمی‌گرداند: [(client_dict, inbound_id), ...].

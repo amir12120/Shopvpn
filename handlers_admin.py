@@ -30,7 +30,7 @@ from force_join import is_channel_member
 
 import keyboards as kb
 from database import Database, MENU_BUTTON_META
-from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL, BOT_TOKEN
+from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL, BOT_TOKEN, DB_PATH as MAIN_DB_PATH
 from config_delivery import (
     deliver_config_to_user, build_qr_bytes, has_qr_background, qr_background_enabled,
     save_qr_background, remove_qr_background,
@@ -305,9 +305,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         except Exception:
             pass
 
-    async def _notify_admin_panel_menu(bot: Bot, admin_tg_id: int):
+    async def _notify_admin_panel_menu(bot: Bot, admin_tg_id: int, call: CallbackQuery = None):
         """بعد از تایید/رد یک رسید یا درخواست، پنل مدیریت (منوی شیشه‌ای) دوباره
-        برای همان مدیر ارسال می‌شود؛ چون آن منو به پیام رسید چسبیده بود، نه به چت."""
+        برای همان مدیر ارسال می‌شود؛ چون آن منو به پیام رسید چسبیده بود، نه به چت.
+        وقتی اکشن از داخل گروه گزارش زده شده باشد، پنل ارسال نمی‌شود."""
+        if call is not None and report_router.is_report_group_message(db, call.message):
+            return
         try:
             await bot.send_message(admin_tg_id, tr("🔧 پنل مدیریت:"), reply_markup=kb.admin_panel_kb(db, is_main_bot))
         except Exception:
@@ -1508,6 +1511,45 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer()
 
+    def _volume_credit_info():
+        """اعتبار حجمی و پنلِ اختصاص‌داده‌شده به مالک این بات (نمایندگی VIP) را از
+        دیتابیس بات اصلی می‌خواند. برای بات اصلی یا نمایندگی غیر-VIP None می‌دهد.
+        فقط نام پنل برمی‌گردد؛ آدرس/مشخصات پنل هرگز به نماینده نشان داده نمی‌شود."""
+        if is_main_bot:
+            return None
+        owner_id = db.get_owner_telegram_id()
+        if not owner_id:
+            return None
+        main_db = Database(MAIN_DB_PATH)
+        if not main_db.is_reseller(owner_id):
+            return None
+        if main_db.get_reseller_supply(owner_id)["model"] == "fixed_product":
+            return None
+        server = main_db.get_reseller_panel(owner_id)
+        return {
+            "credit_gb": int(main_db.get_reseller_credit(owner_id) or 0),
+            "panel_name": server["name"] if server and server["is_active"] else None,
+        }
+
+    @router.callback_query(F.data == "adm_my_volume")
+    async def cb_admin_my_volume(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        info = await asyncio.to_thread(_volume_credit_info)
+        if info is None:
+            await call.answer(tr("این بخش فقط برای نمایندگی VIP (اعتبار حجمی) فعال است."), show_alert=True)
+            return
+        panel_line = f"🖥 پنل شما: {info['panel_name']}" if info["panel_name"] else "🖥 پنل شما: هنوز توسط ادمین تنظیم نشده ⚠️"
+        text = (
+            "📊 حجم و پنل من\n\n"
+            f"📦 حجم باقی‌مانده: {info['credit_gb']:,} گیگابایت\n"
+            f"{panel_line}\n\n"
+            "هر محصولی که با «ساخت محصول با این حجم» بسازی، با هر فروش، حجمش از همین اعتبار "
+            "کم می‌شود و روی همین پنل ساخته می‌شود. قیمت فروش را خودت تعیین می‌کنی."
+        )
+        await replace_admin_view(call, tr(text), reply_markup=kb.admin_my_volume_kb())
+        await call.answer()
+
     @router.callback_query(F.data == "adm_prod_add")
     async def cb_admin_prod_add(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
@@ -1571,7 +1613,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminAddProduct.waiting_provision_choice)
             await message.answer(
                 db.get_text('handlers_admin.auto_3da796e7', 'منبع کانفیگ این محصول چیست؟\n\n📦 بانک کانفیگ: از لینک\u200cهای از پیش آماده\u200cشده تحویل داده می\u200cشود.\n🔌 اتصال مستقیم به پنل: هر بار خرید، همان لحظه یک کاربر واقعی روی پنل انتخابی ساخته می\u200cشود (نیازی به پر کردن بانک کانفیگ نیست).'),
-                reply_markup=kb.admin_new_product_source_kb(),
+                reply_markup=kb.admin_new_product_source_kb(
+                    show_credit=bool(await asyncio.to_thread(_volume_credit_info))
+                ),
             )
             return
 
@@ -1582,6 +1626,24 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     @router.callback_query(AdminAddProduct.waiting_provision_choice, F.data.startswith("adm_newprod_src:"))
     async def cb_pick_product_source(call: CallbackQuery, state: FSMContext):
         source = call.data.split(":", 1)[1]
+        if source == "credit":
+            info = await asyncio.to_thread(_volume_credit_info)
+            if info is None:
+                await call.answer(tr("این گزینه فقط برای نمایندگی VIP (اعتبار حجمی) فعال است."), show_alert=True)
+                return
+            if not info["panel_name"]:
+                await call.answer(tr("هنوز پنلی برای نمایندگی شما تنظیم نشده؛ با ادمین تماس بگیرید."), show_alert=True)
+                return
+            # بدون provision_server_id: تحویل خرید از مسیر provision_auto_config و از اعتبار حجمی نماینده انجام می‌شود
+            await state.update_data(provision_server_id=None)
+            await state.set_state(AdminAddProduct.waiting_auto_provision_volume)
+            await safe_edit(
+                call,
+                tr(f"📊 حجم باقی‌مانده شما: {info['credit_gb']:,} گیگ (پنل: {info['panel_name']})\n\n"
+                   "این محصول چند گیگابایت باشد؟ فقط عدد وارد کنید (مثال: 30):"),
+            )
+            await call.answer()
+            return
         if source == "bank":
             await state.update_data(payment_methods=None)
             await state.set_state(AdminAddProduct.waiting_payment_methods)
@@ -2690,14 +2752,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
             try:
-                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و سرویس تمدید شد.")
+                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و سرویس تمدید شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
             except Exception:
                 try:
-                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و سرویس تمدید شد.")
+                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و سرویس تمدید شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
                 except Exception:
                     pass
             await call.answer(db.get_text('handlers_admin.auto_a501e91f', 'سفارش تایید و سرویس تمدید شد.'))
-            await _notify_admin_panel_menu(bot, call.from_user.id)
+            await _notify_admin_panel_menu(bot, call.from_user.id, call)
             return
 
         # ===== سفارش کانفیگ شخصی: به‌جای برداشتن از انبار، کاربر روی پنل ساخته می‌شود =====
@@ -2756,14 +2818,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
             try:
-                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.")
+                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
             except Exception:
                 try:
-                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.")
+                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
                 except Exception:
                     pass
             await call.answer(db.get_text('handlers_admin.auto_2dfda996', 'سفارش تایید و کانفیگ شخصی روی پنل ساخته شد.'))
-            await _notify_admin_panel_menu(bot, call.from_user.id)
+            await _notify_admin_panel_menu(bot, call.from_user.id, call)
             return
 
         product = (await asyncio.to_thread(db.get_product, order["product_id"]))
@@ -2795,14 +2857,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
             try:
-                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.")
+                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
             except Exception:
                 try:
-                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.")
+                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و کانفیگ ساخته شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
                 except Exception:
                     pass
             await call.answer(db.get_text('handlers_admin.auto_c1fd6d87', 'سفارش تایید و کانفیگ به\u200cصورت خودکار ساخته شد.'))
-            await _notify_admin_panel_menu(bot, call.from_user.id)
+            await _notify_admin_panel_menu(bot, call.from_user.id, call)
             return
 
         quantity = order["quantity"] or 1
@@ -2847,14 +2909,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
 
         try:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و کانفیگ ارسال شد.")
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و کانفیگ ارسال شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
         except Exception:
             try:
-                await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و کانفیگ ارسال شد.")
+                await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و کانفیگ ارسال شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
             except Exception:
                 pass
         await call.answer(db.get_text('handlers_admin.auto_bcd7b5a4', 'سفارش تایید و کانفیگ برای کاربر ارسال شد.'))
-        await _notify_admin_panel_menu(bot, call.from_user.id)
+        await _notify_admin_panel_menu(bot, call.from_user.id, call)
 
     @router.callback_query(F.data.startswith("order_fake_receipt:"))
     async def cb_order_fake_receipt(call: CallbackQuery, bot: Bot):
@@ -2896,14 +2958,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
 
         try:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n🚫 فیش فیک؛ سفارش رد و کاربر بلاک شد.")
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n🚫 فیش فیک؛ سفارش رد و کاربر بلاک شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
         except Exception:
             try:
-                await safe_edit(call, (call.message.text or "") + "\n\n🚫 فیش فیک؛ سفارش رد و کاربر بلاک شد.")
+                await safe_edit(call, (call.message.text or "") + "\n\n🚫 فیش فیک؛ سفارش رد و کاربر بلاک شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
             except Exception:
                 pass
         await call.answer(tr("فیش فیک ثبت شد؛ کاربر بلاک و کانفیگ مرتبط حذف شد."))
-        await _notify_admin_panel_menu(bot, call.from_user.id)
+        await _notify_admin_panel_menu(bot, call.from_user.id, call)
 
     @router.callback_query(F.data.startswith("order_reject:"))
     async def cb_order_reject(call: CallbackQuery, bot: Bot):
@@ -2939,14 +3001,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
 
         try:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ رد شد.")
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ رد شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
         except Exception:
             try:
-                await safe_edit(call, (call.message.text or "") + "\n\n❌ رد شد.")
+                await safe_edit(call, (call.message.text or "") + "\n\n❌ رد شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
             except Exception:
                 pass
         await call.answer(db.get_text('handlers_admin.auto_94afef67', 'سفارش رد شد.'))
-        await _notify_admin_panel_menu(bot, call.from_user.id)
+        await _notify_admin_panel_menu(bot, call.from_user.id, call)
 
     # -------------------------------------------------------------------
     # درخواست‌های شارژ کیف پول
@@ -4027,14 +4089,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
 
         try:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید و شارژ شد.")
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید و شارژ شد.", reply_markup=kb.user_quick_actions_kb(topup["user_id"]))
         except Exception:
             try:
-                await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید و شارژ شد.")
+                await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید و شارژ شد.", reply_markup=kb.user_quick_actions_kb(topup["user_id"]))
             except Exception:
                 pass
         await call.answer(db.get_text('handlers_admin.auto_da8aa62a', 'شارژ کیف پول تایید شد.'))
-        await _notify_admin_panel_menu(bot, call.from_user.id)
+        await _notify_admin_panel_menu(bot, call.from_user.id, call)
 
     @router.callback_query(F.data.startswith("topup_reject:"))
     async def cb_topup_reject(call: CallbackQuery, bot: Bot):
@@ -4070,14 +4132,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
 
         try:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ رد شد.")
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ رد شد.", reply_markup=kb.user_quick_actions_kb(topup["user_id"]))
         except Exception:
             try:
-                await safe_edit(call, (call.message.text or "") + "\n\n❌ رد شد.")
+                await safe_edit(call, (call.message.text or "") + "\n\n❌ رد شد.", reply_markup=kb.user_quick_actions_kb(topup["user_id"]))
             except Exception:
                 pass
         await call.answer(db.get_text('handlers_admin.auto_cde89184', 'درخواست رد شد.'))
-        await _notify_admin_panel_menu(bot, call.from_user.id)
+        await _notify_admin_panel_menu(bot, call.from_user.id, call)
 
     # -------------------------------------------------------------------
     # مدیریت کدهای تخفیف
@@ -11570,11 +11632,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         code = call.data.split(":", 1)[1].strip().lower()
-        from i18n import LANGUAGE_CATALOG
+        from i18n import LANGUAGE_CATALOG, installed_languages
         if code in {"fa", "en"} or code not in LANGUAGE_CATALOG:
             return await call.answer(tr("⚠️ این زبان قابل تغییر نیست."), show_alert=True)
         row = await asyncio.to_thread(db.get_language, code)
         currently_enabled = bool(row["enabled"]) if row else False
+        if not currently_enabled and code not in installed_languages():
+            return await call.answer(
+                tr("⚠️ مدل این زبان نصب نشده. از manage.sh گزینه نصب/آپدیت موتور ترجمه را بزن و این زبان را انتخاب کن."),
+                show_alert=True,
+            )
         if currently_enabled:
             await asyncio.to_thread(db.disable_language, code)
             await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_disable", code)
@@ -12859,6 +12926,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         stats = await asyncio.to_thread(db.get_user_full_stats, tg_id)
         is_blocked = (user["is_blocked"] if "is_blocked" in user.keys() else 0) == 1
         text = _fmt_user_full_stats_report(stats)
+        if report_router.is_report_group_message(db, call.message):
+            try:
+                await call.bot.send_message(call.from_user.id, text)
+            except Exception:
+                await call.answer(tr("ارسال به پی‌وی ناموفق بود؛ ابتدا در پی‌وی بات /start بزن."), show_alert=True)
+                return
+            await call.answer(tr("پروفایل در پی‌وی بات برایت ارسال شد."))
+            return
         markup = kb.user_full_stats_kb(tg_id, is_blocked)
         try:
             await call.message.reply(text, reply_markup=markup)
@@ -12924,12 +12999,30 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await call.answer()
 
     @router.callback_query(F.data.startswith("qa_msg:"))
-    async def cb_quick_action_msg_ask(call: CallbackQuery, state: FSMContext):
+    async def cb_quick_action_msg_ask(call: CallbackQuery, state: FSMContext, bot: Bot):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         tg_id = callback_id(call.data, "qa_msg")
         if tg_id is None:
             await call.answer(tr("کاربر یافت نشد."), show_alert=True)
+            return
+        if report_router.is_report_group_message(db, call.message):
+            admin_id = call.from_user.id
+            private_state = FSMContext(
+                storage=state.storage,
+                key=StorageKey(bot_id=bot.id, chat_id=admin_id, user_id=admin_id),
+            )
+            try:
+                await bot.send_message(
+                    admin_id, tr(f"✉️ متن پیام برای کاربر {tg_id} را بفرست:"),
+                    reply_markup=ForceReply(input_field_placeholder="متن پیام...", selective=True),
+                )
+            except Exception:
+                await call.answer(tr("ارسال به پی‌وی ناموفق بود؛ ابتدا در پی‌وی بات /start بزن."), show_alert=True)
+                return
+            await private_state.set_state(AdminQuickAction.waiting_message_text)
+            await private_state.update_data(qa_target_user=tg_id)
+            await call.answer(tr("برای نوشتن پیام به پی‌وی بات برو."))
             return
         await state.set_state(AdminQuickAction.waiting_message_text)
         await state.update_data(qa_target_user=tg_id)

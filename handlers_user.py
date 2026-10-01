@@ -26,8 +26,9 @@ from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, Teleg
 
 from md_utils import escape_md, escape_html
 import keyboards as kb
-from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
+from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
+import account_link
 import receipt_ai_check
 from service_refund import (
     quote_service_refund, refund_quote_text, wallet_refund_amount, grant_service_refund_credit, refund_result_text,
@@ -620,6 +621,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             ref_username = (referrer_row["username"] if referrer_row else "") or ""
             ref_handle = f" (@{escape_html(ref_username)})" if ref_username else ""
             text += f"\n🤝 معرف: {ref_name}{ref_handle} — <code>{referred_by}</code>"
+        from datetime import datetime as _dt
+        from jalali import to_jalali_str as _jstr
+        text += (
+            "\n\n💡 پیشنهاد: یه پیام براش بفرست (تبلیغی یا خوش‌آمدگویی) 😍"
+            f"\n🕒 {_jstr(_dt.now(), with_time=True)}"
+        )
         try:
             await report_router.send_text(bot, db, "signup", text, kb.user_quick_actions_kb(message.from_user.id))
         except Exception:
@@ -3338,6 +3345,115 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         fake_message = call.message.model_copy(update={"from_user": call.from_user})
         await wallet_menu(fake_message)
 
+    @router.callback_query(F.data == "acct:addsvc")
+    async def cb_account_add_service(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "acct_show_add_service", "1")) != "1":
+            await call.answer(db.get_text('handlers_user.auto_877cd65e', 'این بخش غیرفعال است.'), show_alert=True)
+            return
+        by_username = (await asyncio.to_thread(db.get_setting, "acct_add_service_by_username", "1")) == "1"
+        await state.set_state(AddServiceFlow.waiting_input)
+        await state.update_data(addsvc_candidates=[])
+        prompt = (
+            tr("➕ افزودن حساب") + "\n\n"
+            + tr("اگر قبل از استفاده از این بات روی پنل کانفیگ داشتید، می‌توانید آن را به حساب خود اضافه کنید.") + "\n\n"
+            + (
+                tr("لینک اشتراک (ساب) یا نام کاربری کانفیگ را ارسال کنید.")
+                if by_username else tr("لینک اشتراک (ساب) کانفیگ را ارسال کنید.")
+            )
+        )
+        await _safe_edit(call.message, prompt, reply_markup=kb.add_service_cancel_kb())
+        await call.answer()
+
+    @router.callback_query(F.data == "acct:addsvc_cancel")
+    async def cb_account_add_service_cancel(call: CallbackQuery, state: FSMContext):
+        await state.clear()
+        text = await _account_hub_text(call.from_user.id)
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+        await call.answer()
+
+    @router.message(AddServiceFlow.waiting_input)
+    async def account_add_service_receive(message: Message, state: FSMContext):
+        user_id = message.from_user.id
+        if (await asyncio.to_thread(db.get_setting, "acct_show_add_service", "1")) != "1":
+            await state.clear()
+            await message.answer(db.get_text('handlers_user.auto_877cd65e', 'این بخش غیرفعال است.'))
+            return
+        if account_link.is_blocked(user_id):
+            await message.answer(tr("⛔ تعداد تلاش‌های ناموفق زیاد بود. کمی بعد دوباره امتحان کنید."))
+            return
+        by_username = (await asyncio.to_thread(db.get_setting, "acct_add_service_by_username", "1")) == "1"
+        kind, value = account_link.parse_input(message.text or "")
+        if kind is None or (kind == "username" and not by_username):
+            account_link.register_fail(user_id)
+            await message.answer(
+                tr("❌ ورودی نامعتبر است. لینک اشتراک (ساب) را کامل ارسال کنید.")
+                if not by_username else tr("❌ ورودی نامعتبر است. لینک اشتراک (ساب) یا نام کاربری کانفیگ را ارسال کنید."),
+                reply_markup=kb.add_service_cancel_kb(),
+            )
+            return
+        wait_msg = await message.answer(tr("⏳ در حال بررسی..."))
+        result = await account_link.resolve_account(db, user_id, kind, value)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        cands = result["candidates"]
+        if not cands:
+            if result["already_yours"]:
+                text = tr("ℹ️ این کانفیگ از قبل در حساب شما ثبت شده است.")
+            elif result["taken"]:
+                account_link.register_fail(user_id)
+                text = tr("⛔ این کانفیگ قبلاً به حساب دیگری متصل شده است. برای بررسی با پشتیبانی تماس بگیرید.")
+            elif result["unreachable"]:
+                text = tr("❌ اتصال به پنل برقرار نشد. کمی بعد دوباره تلاش کنید.")
+            else:
+                account_link.register_fail(user_id)
+                text = tr("❌ کانفیگی با این مشخصات پیدا نشد. ورودی را بررسی کنید و دوباره ارسال کنید.")
+            await message.answer(text, reply_markup=kb.add_service_cancel_kb())
+            return
+        await state.update_data(addsvc_candidates=cands)
+        blocks = []
+        for cand in cands:
+            info = {
+                "ok": True, "upload": cand["used_bytes"], "download": 0,
+                "total": cand["limit_bytes"], "expire": cand["expire"], "title": None,
+            }
+            blocks.append(
+                tr("🖥 سرور:") + f" {cand['server_name']}\n"
+                + tr("👤 نام کاربری:") + f" {cand['username']}\n"
+                + tr(format_sub_info_fa(info))
+            )
+        header = tr("🔎 کانفیگ پیدا شد:") if len(cands) == 1 else tr("🔎 چند کانفیگ پیدا شد؛ یکی را برای افزودن انتخاب کنید:")
+        await message.answer(
+            header + "\n\n" + "\n\n".join(blocks),
+            reply_markup=kb.add_service_pick_kb(cands),
+        )
+
+    @router.callback_query(F.data.startswith("acct_add_ok:"))
+    async def cb_account_add_service_confirm(call: CallbackQuery, state: FSMContext):
+        user_id = call.from_user.id
+        if (await asyncio.to_thread(db.get_setting, "acct_show_add_service", "1")) != "1":
+            await call.answer(db.get_text('handlers_user.auto_877cd65e', 'این بخش غیرفعال است.'), show_alert=True)
+            return
+        data = await state.get_data()
+        cands = data.get("addsvc_candidates") or []
+        try:
+            cand = cands[int(call.data.split(":", 1)[1])]
+        except (ValueError, IndexError):
+            await state.clear()
+            await call.answer(tr("این درخواست منقضی شده است؛ دوباره از «افزودن حساب» شروع کنید."), show_alert=True)
+            return
+        new_id = await asyncio.to_thread(
+            db.link_existing_custom_config, user_id, cand["server_id"], cand["username"],
+            cand["volume_gb"], cand["duration_days"], cand["sub_url"], cand["expires_at"],
+        )
+        await state.clear()
+        if not new_id:
+            await call.answer(tr("ℹ️ این کانفیگ قبلاً ثبت شده است."), show_alert=True)
+            return
+        await call.answer(tr("✅ کانفیگ به حساب شما اضافه شد."), show_alert=True)
+        await _show_my_orders_list(call.message, user_id, edit=True)
+
     @router.callback_query(F.data == "acct:main_menu")
     async def cb_account_back_to_main(call: CallbackQuery):
         await call.answer()
@@ -4459,7 +4575,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         _EVENT_LABEL = {
             "purchase": "🛒 خرید", "renewal": "🔄 تمدید", "toggle": "🟢 فعال/غیرفعال",
             "users": "👥 کاربر همزمان", "auto_renew_toggle": "🔁 تمدید خودکار", "rename": "✏️ تغییر نام", "transfer": "👤 انتقال",
-            "cut_access": "🚫 قطع دسترسی", "auto_renew": "🔄 تمدید خودکار (خودکار انجام‌شده)",
+            "link": "➕ افزوده‌شده به حساب", "cut_access": "🚫 قطع دسترسی", "auto_renew": "🔄 تمدید خودکار (خودکار انجام‌شده)",
         }
         if not rows:
             text = "📜 تاریخچه‌ای برای این سرویس ثبت نشده است."

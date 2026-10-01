@@ -34,6 +34,15 @@ LANGUAGE_CATALOG = {
 }
 
 
+def installed_languages() -> set:
+    """Language codes chosen at install time; all of them when no choice was recorded."""
+    raw = __import__("os").getenv("SHOPVPN_TRANSLATION_LANGS")
+    if raw is None:
+        return set(LANGUAGE_CATALOG)
+    chosen = {c.strip().lower() for c in raw.split(",") if c.strip()}
+    return (chosen & set(LANGUAGE_CATALOG)) | {"fa", "en"}
+
+
 _current_language = ContextVar("shopvpn_language", default=DEFAULT_LANGUAGE)
 _current_catalog = ContextVar("shopvpn_language_catalog", default={})
 
@@ -879,7 +888,9 @@ _PHRASE_TRANSLATIONS.update({
     "🎨 رنگ‌آمیزی دکمه‌های مسیر خرید": "🎨 Buy-flow button colors",
     # ADMIN_PANEL_ITEMS
     "📂 مدیریت دسته‌بندی‌ها": "📂 Manage categories",
+    "💼 تلگرام بیزنس": "💼 Telegram Business",
     "📦 مدیریت محصولات": "📦 Manage products",
+    "📊 حجم و پنل من": "📊 My volume & panel",
     "🔗 افزودن کانفیگ به محصول": "🔗 Add configs to a product",
     "🎲 دریافت کانفیگ رندوم": "🎲 Get a random config",
     "🧪 مدیریت کانفیگ تست": "🧪 Manage test configs",

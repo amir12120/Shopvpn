@@ -652,6 +652,7 @@ _ACCOUNT_HUB_CALLBACKS = {
     "acct_tutorial": ("acct_show_tutorial", "svc_tutorial"),
     "acct_referral": ("acct_show_referral", "acct:referral"),
     "acct_wallet": ("acct_show_wallet", "acct:wallet"),
+    "acct_add_service": ("acct_show_add_service", "acct:addsvc"),
 }
 
 
@@ -669,6 +670,21 @@ def account_hub_kb(db) -> InlineKeyboardMarkup:
         rows.append([_styled_inline(db, text, callback_data, f"{key}_style")])
     rows.append([InlineKeyboardButton(text=tr(LANGUAGE_BTN_TEXT), callback_data="acct:language")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به منوی اصلی"), callback_data="acct:main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def add_service_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="acct:addsvc_cancel")],
+    ])
+
+
+def add_service_pick_kb(candidates) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, cand in enumerate(candidates):
+        label = tr("✅ افزودن") + f": {cand['server_name']} - {cand['username']}"
+        rows.append([InlineKeyboardButton(text=label[:60], callback_data=f"acct_add_ok:{idx}")])
+    rows.append([InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="acct:addsvc_cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1153,12 +1169,15 @@ def translation_languages_kb(db) -> InlineKeyboardMarkup:
     """لیست همه‌ی زبان‌های قابل‌پشتیبانی با وضعیت فعال/غیرفعال و دکمه‌ی تغییر وضعیت.
 
     فارسی/انگلیسی همیشه فعال‌اند و دکمه‌ی تغییر وضعیت ندارند."""
-    from i18n import LANGUAGE_CATALOG
+    from i18n import LANGUAGE_CATALOG, installed_languages
     known = {r["code"]: r for r in db.list_languages()}
+    installed = installed_languages()
     rows = []
     for code, meta in LANGUAGE_CATALOG.items():
         row = known.get(code)
         enabled = bool(row["enabled"]) if row else (code in {"fa", "en"})
+        if code not in installed and not enabled:
+            continue
         label = f"{meta['flag']} {meta['native_name']}"
         if code in {"fa", "en"}:
             rows.append([
@@ -1409,6 +1428,7 @@ def support_contact_settings_kb(db) -> InlineKeyboardMarkup:
 ADMIN_PANEL_ITEMS = [
     ("adm_categories", "📂 مدیریت دسته‌بندی‌ها", "adm_categories"),
     ("adm_products", "📦 مدیریت محصولات", "adm_products"),
+    ("adm_my_volume", "📊 حجم و پنل من", "adm_my_volume"),
     ("adm_add_configs", "🔗 افزودن کانفیگ به محصول", "adm_add_configs"),
     ("adm_random_cfg", "🎲 دریافت کانفیگ رندوم", "adm_random_cfg"),
     ("adm_test_menu", "🧪 مدیریت کانفیگ تست", "adm_test_menu"),
@@ -1475,6 +1495,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_temp_message", "⏳ پیام موقت (خودحذف‌شونده)", "adm_temp_message"),
     ("adm_set_support_contact", "📞 روش‌های ارتباط با پشتیبانی", "adm_set_support_contact"),
     ("adm_ai_support_settings", "🤖 دستیار هوشمند (سوالات متداول)", "adm_ai_support_settings"),
+    ("adm_business_settings", "💼 تلگرام بیزنس", "adm_business_settings"),
     ("adm_translation_settings", "🌐 ترجمه خودکار", "adm_translation_settings"),
     ("adm_lang_settings", "🌐 زبان ادمین/کاربران", "adm_lang_settings"),
 ]
@@ -1514,6 +1535,7 @@ ADMIN_PANEL_CATEGORIES = [
     ("products", "📦 محصولات و کانفیگ", [
         "adm_categories",
         "adm_products",
+        "adm_my_volume",
         "adm_add_configs",
         "adm_random_cfg",
         "adm_test_menu",
@@ -1571,6 +1593,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_admins_menu",
         "adm_set_support_contact",
         "adm_ai_support_settings",
+        "adm_business_settings",
         "adm_translation_settings",
         "adm_lang_settings",
     ]),
@@ -1609,7 +1632,24 @@ def _admin_item_label_and_cb(key: str):
     return key, key
 
 
+def _is_volume_credit_owner(db) -> bool:
+    """مالکِ این بات (نمایندگی VIP/اعتبار حجمی) در بات اصلی اعتبار حجمی دارد؟"""
+    try:
+        from config import DB_PATH as _MAIN_DB_PATH
+        from database import Database as _Database
+        owner_id = db.get_owner_telegram_id()
+        if not owner_id:
+            return False
+        main_db = _Database(_MAIN_DB_PATH)
+        return bool(main_db.is_reseller(owner_id)) and main_db.get_reseller_supply(owner_id)["model"] != "fixed_product"
+    except Exception:
+        return False
+
+
 def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
+    if key == "adm_my_volume":
+        # فقط داخل بات اختصاصی نمایندگی VIP (اعتبار حجمی)؛ نه بات اصلی، نه طلایی
+        return (not is_main_bot) and _is_volume_credit_owner(db)
     if key.startswith(("adm_set_xgw_", "adm_xgw_pay_")) and not is_main_bot:
         return False
     if key in ("adm_resellers_menu", "adm_credit_resellers_menu", "adm_reseller_requests_menu", "adm_commission_resellers_menu") and not is_main_bot:
@@ -2569,13 +2609,25 @@ def admin_pick_category_kb(categories, prefix) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_new_product_source_kb() -> InlineKeyboardMarkup:
-    rows = [
+def admin_new_product_source_kb(show_credit: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if show_credit:
+        rows.append([InlineKeyboardButton(text=tr("📊 از حجم اعتباری من (پنل نمایندگی)"), callback_data="adm_newprod_src:credit")])
+    rows += [
         [InlineKeyboardButton(text=tr("📦 بانک کانفیگ (لینک‌های آماده)"), callback_data="adm_newprod_src:bank")],
         [InlineKeyboardButton(text=tr("🔌 اتصال مستقیم به پنل"), callback_data="adm_newprod_src:direct")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_my_volume_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("➕ ساخت محصول با این حجم"), callback_data="adm_prod_add")],
+        [InlineKeyboardButton(text=tr("📦 محصولات من"), callback_data="adm_products")],
+        [InlineKeyboardButton(text=tr("🔄 بروزرسانی"), callback_data="adm_my_volume")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")],
+    ])
 
 
 def admin_pick_provision_server_kb(servers) -> InlineKeyboardMarkup:
