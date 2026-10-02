@@ -666,14 +666,33 @@ Beyond answering questions, the assistant can prepare account actions that the b
 - ⚠️ Users see the current state of a service (remaining time and traffic) before they confirm a renewal
 - 📣 Every renewal (full, volume, time or extra users) is logged to the admin report group with before/after values
 
+### 📣 Campaign Manager & Win-Back Offers
+
+- 📣 Build a campaign from inside the bot: choose the target group, describe the goal in one line and the AI drafts the post (with variants) before you approve it
+- 🎯 Churn prediction ranks users by how far they are from their usual purchase rhythm and sends a personal renewal offer with a user-specific discount code
+- 📊 Targets are tracked per user, so nobody gets the same offer twice
+
+### 🧑‍🏫 In-Bot Admin Help & AI Admin Chat
+
+- 📚 A contextual **Help** button explains the page you are on, backed by a searchable admin guide
+- 🤖 The admin AI chat can answer questions and pull live numbers without leaving Telegram
+- 🖼️ Screenshots and photos can be sent to the AI for analysis
+- ✍️ Private-chat answers stream in live while they are being generated (Bot API 9.5 draft streaming, with a silent fallback)
+
+### 🔌 More AI Providers
+
+- 🟢 **OpenAI** and 🟠 **Anthropic (Claude)** join Gemini, Groq, OpenRouter, Mistral, Cohere and Cloudflare, each with its own model picker
+- ➕ Custom OpenAI-compatible providers can be added with your own base URL and key
+
 ### 🧰 More `manage.sh` Options
 
 | Option | Action |
 |:---:|---|
-| 27 | Install/repair the local translation runtime (automatic) |
+| 27 | Install/repair the translation models (Argos, optional LibreTranslate) |
 | 28 | Remove LibreTranslate |
-| 29 | Full cleanup / factory reset |
+| 29 | Install additional translation languages (Argos models) |
 | 30 | Remove unwanted translation languages (free disk space) |
+| 31 | Full cleanup / factory reset |
 
 </details>
 

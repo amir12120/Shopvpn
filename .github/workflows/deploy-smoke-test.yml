@@ -103,3 +103,23 @@ jobs:
         run: |
           "$HOME/v2ray_bot/venv/bin/python3" -c \
             "import aiogram, fastapi, argostranslate, PIL, qrcode; print('runtime deps import OK')"
+
+      - name: Runtime project-module import (merged upstream features)
+        # A lean install must be able to import every module the bot loads at
+        # start-up, including the ones merged from upstream. This catches a
+        # dependency that was added to the code but not to requirements.txt.
+        run: |
+          set -e
+          cd "$HOME/v2ray_bot"
+          venv/bin/python3 - <<'PY'
+          import importlib
+          modules = [
+              "bot_manager", "handlers_admin", "handlers_user", "admin_tools",
+              "admin_campaign", "admin_help", "ai_admin", "ai_media", "ai_text",
+              "ai_support", "campaign_ai", "churn_prediction", "draft_stream",
+              "db", "translation_engine", "renewal_reminders",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+          print("project modules import OK:", len(modules))
+          PY
