@@ -1520,6 +1520,23 @@ class OrdersMixin:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM discount_codes WHERE id=?", (code_id,))
 
+    def delete_all_discount_codes(self) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM discount_codes")
+            return cur.rowcount
+
+    def delete_discount_codes_by_category(self, category_id: int | None) -> int:
+        with self._get_conn() as conn:
+            if category_id is None:
+                cur = conn.execute(
+                    "DELETE FROM discount_codes WHERE category_id IS NULL OR category_id=0"
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM discount_codes WHERE category_id=?", (category_id,)
+                )
+            return cur.rowcount
+
 
     def increment_discount_usage(self, code_id: int):
         with self._get_conn() as conn:
@@ -2613,6 +2630,147 @@ class OrdersMixin:
             code, percent=settings["discount_percent"], max_uses=1, expires_at=expires_at, source="volume_reminder"
         )
         return code, expires_at, settings["discount_percent"], settings["discount_expiry_hours"]
+
+    # -----------------------------------------------------------------------
+    # پیش‌بینی ریزش و پیشنهاد تمدید شخصی
+    # -----------------------------------------------------------------------
+
+
+    def get_churn_settings(self) -> dict:
+        return {
+            "enabled": self.get_setting("churn_offer_enabled", "0") == "1",
+            "ai_enabled": self.get_setting("churn_offer_ai_enabled", "1") == "1",
+            "min_score": max(1, min(int(self.get_setting("churn_offer_min_score", "60") or 60), 100)),
+            "discount_percent": max(0, min(int(self.get_setting("churn_offer_discount_percent", "15") or 15), 100)),
+            "max_discount_percent": max(0, min(int(self.get_setting("churn_offer_max_discount_percent", "25") or 25), 100)),
+            "discount_expiry_hours": max(1, int(self.get_setting("churn_offer_expiry_hours", "72") or 72)),
+            "cooldown_days": max(1, int(self.get_setting("churn_offer_cooldown_days", "30") or 30)),
+            "max_per_run": max(1, int(self.get_setting("churn_offer_max_per_run", "20") or 20)),
+            "default_cycle_days": max(7, int(self.get_setting("churn_offer_default_cycle_days", "30") or 30)),
+        }
+
+
+    def _ensure_churn_offers_table(self, conn):
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS churn_offers ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, score REAL, "
+            "code TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+        )
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(churn_offers)").fetchall()}
+        for column, ddl in (("action", "TEXT"), ("reason", "TEXT"), ("ai", "INTEGER DEFAULT 0"), ("discount_percent", "INTEGER")):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE churn_offers ADD COLUMN {column} {ddl}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_churn_offers_user ON churn_offers(user_id, created_at)")
+
+
+    def get_churn_candidates(self, cooldown_days: int, default_cycle_days: int, limit: int = 200) -> list:
+        """کاربران دارای حداقل یک خرید تاییدشده که از ۹۰٪ فاصله‌ی معمول خریدهای خودشان بیشتر گذشته،
+        در بازه‌ی cooldown پیشنهاد نگرفته‌اند و در ۳ روز اخیر هم AI آن‌ها را «بدون اقدام» ارزیابی نکرده است،
+        به‌ترتیب بیشترین نسبت تأخیر."""
+        with self._get_conn() as conn:
+            self._ensure_churn_offers_table(conn)
+            rows = conn.execute(
+                "SELECT o.user_id AS user_id, COUNT(*) AS orders_count, "
+                "julianday('now') - julianday(MAX(o.created_at)) AS days_since_last, "
+                "CASE WHEN COUNT(*) > 1 THEN (julianday(MAX(o.created_at)) - julianday(MIN(o.created_at))) / (COUNT(*) - 1) "
+                "ELSE ? END AS avg_interval_days, "
+                "(SELECT p.name FROM orders o2 JOIN products p ON p.id = o2.product_id "
+                " WHERE o2.user_id = o.user_id AND o2.status='approved' ORDER BY o2.created_at DESC, o2.id DESC LIMIT 1) AS last_product "
+                "FROM orders o JOIN users u ON u.telegram_id = o.user_id "
+                "WHERE o.status='approved' AND u.is_blocked=0 "
+                "AND NOT EXISTS (SELECT 1 FROM churn_offers c WHERE c.user_id = o.user_id AND ("
+                "  (COALESCE(c.action, 'offer') != 'skip' AND datetime(c.created_at) >= datetime('now', ?)) "
+                "  OR (c.action = 'skip' AND datetime(c.created_at) >= datetime('now', '-3 days')))) "
+                "GROUP BY o.user_id "
+                "HAVING days_since_last >= 0.9 * MAX(avg_interval_days, 7) "
+                "ORDER BY days_since_last / MAX(avg_interval_days, 7) DESC LIMIT ?",
+                (float(default_cycle_days), f"-{int(cooldown_days)} days", int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+
+    def get_churn_user_facts(self, user_tg_id: int) -> dict:
+        """داده‌های واقعیِ کاربر برای ارزیابی AI: تاریخچه‌ی خرید، حساسیت به تخفیف، کیف پول، تیکت و پیشنهادهای قبلی."""
+        with self._get_conn() as conn:
+            self._ensure_churn_offers_table(conn)
+            orders = conn.execute(
+                "SELECT o.created_at AS at, p.name AS product, COALESCE(o.final_price, o.base_price, p.price) AS price, "
+                "CASE WHEN o.discount_code_id IS NOT NULL THEN 1 ELSE 0 END AS used_discount "
+                "FROM orders o JOIN products p ON p.id = o.product_id "
+                "WHERE o.user_id=? AND o.status='approved' ORDER BY o.created_at DESC, o.id DESC LIMIT 10",
+                (user_tg_id,),
+            ).fetchall()
+            totals = conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(final_price, base_price, 0)), 0) AS spent, "
+                "COALESCE(SUM(CASE WHEN discount_code_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS discounted "
+                "FROM orders WHERE user_id=? AND status='approved'",
+                (user_tg_id,),
+            ).fetchone()
+            tickets = conn.execute(
+                "SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND datetime(created_at) >= datetime('now', '-90 days')",
+                (user_tg_id,),
+            ).fetchone()
+            previous = conn.execute(
+                "SELECT c.created_at AS at, c.discount_percent AS percent, "
+                "(SELECT d.used_count FROM discount_codes d WHERE d.code = c.code) AS used "
+                "FROM churn_offers c WHERE c.user_id=? AND COALESCE(c.action, 'offer') = 'offer' "
+                "ORDER BY c.id DESC LIMIT 3",
+                (user_tg_id,),
+            ).fetchall()
+        return {
+            "orders": [dict(r) for r in orders],
+            "orders_total": totals["n"],
+            "total_spent": totals["spent"],
+            "orders_with_discount": totals["discounted"],
+            "tickets_90d": tickets["n"],
+            "wallet_balance": self.get_wallet_credit(user_tg_id),
+            "previous_offers": [dict(r) for r in previous],
+        }
+
+
+    def get_user_subscription_links(self, user_tg_id: int, limit: int = 5) -> list:
+        """لینک Subscription سرویس‌های کاربر (انبار کانفیگ و کانفیگ‌های پنلی)، جدیدترین‌ها اول."""
+        with self._get_conn() as conn:
+            stock = conn.execute(
+                "SELECT link FROM configs WHERE assigned_user_id=? AND is_used=1 "
+                "AND link IS NOT NULL AND TRIM(link) != '' ORDER BY id DESC LIMIT ?",
+                (user_tg_id, limit),
+            ).fetchall()
+            panel = conn.execute(
+                "SELECT subscription_url AS link FROM custom_configs WHERE user_id=? AND source != 'test' "
+                "AND subscription_url IS NOT NULL AND TRIM(subscription_url) != '' ORDER BY id DESC LIMIT ?",
+                (user_tg_id, limit),
+            ).fetchall()
+        return [r["link"] for r in list(panel) + list(stock)][:limit]
+
+
+    def record_churn_offer(
+        self, user_tg_id: int, score: float, code: str = None, action: str = "offer",
+        reason: str = "", ai: bool = False, discount_percent: int = None,
+    ):
+        with self._get_conn() as conn:
+            self._ensure_churn_offers_table(conn)
+            conn.execute(
+                "INSERT INTO churn_offers (user_id, score, code, action, reason, ai, discount_percent) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_tg_id, float(score), code, action, (reason or "")[:500], 1 if ai else 0, discount_percent),
+            )
+
+
+    def generate_churn_discount_code(self, user_tg_id: int, percent: int = None, expiry_hours: int = None) -> tuple:
+        """یک کد تخفیف یکبارمصرف و محدود به زمان برای پیشنهاد بازگشت کاربر در خطر ریزش.
+        percent و expiry_hours اختیاری‌اند (پیشنهاد AI)؛ پیش‌فرض از تنظیمات خوانده می‌شود.
+        خروجی: (code, expires_at, percent, expiry_hours)"""
+        settings = self.get_churn_settings()
+        percent = settings["discount_percent"] if percent is None else int(percent)
+        expiry_hours = settings["discount_expiry_hours"] if expiry_hours is None else int(expiry_hours)
+        expires_at = (datetime.utcnow() + timedelta(hours=expiry_hours)).isoformat()
+        code = f"BACK{user_tg_id}{secrets.randbelow(9000) + 1000}"
+        self.create_discount_code(
+            code, percent=percent, max_uses=1, expires_at=expires_at,
+            source="churn_offer", per_user_limit=1,
+        )
+        return code, expires_at, percent, expiry_hours
 
     # -----------------------------------------------------------------------
     # هشدار اتصال / عدم‌اتصال به کانفیگ

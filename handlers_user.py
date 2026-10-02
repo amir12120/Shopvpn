@@ -28,6 +28,8 @@ from md_utils import escape_md, escape_html
 import keyboards as kb
 from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
+import ai_media
+from draft_stream import DraftStreamer
 import account_link
 import receipt_ai_check
 from service_refund import (
@@ -6739,6 +6741,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await _safe_edit(call.message, (call.message.text or "") + "\n\n❌ انصراف داده شد.")
         await call.answer()
 
+    @router.message(AIChatFlow.chatting, F.photo | F.document)
+    async def ai_chat_media_early(message: Message, state: FSMContext, bot: Bot):
+        await ai_chat_receive(message, state, bot)
+
     @router.message(F.photo | F.document)
     async def reseller_request_receipt_catch(message: Message, state: FSMContext, bot: Bot):
         # این کاربر عکس رسید نمایندگی را می‌فرستد؛ چون مبلغ برای هر نماینده متفاوت
@@ -7360,7 +7366,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(AIChatFlow.chatting)
     async def ai_chat_receive(message: Message, state: FSMContext, bot: Bot):
         user = message.from_user
-        if not message.text:
+        if not message.text and not ai_media.has_media(message):
             await message.answer(db.get_text('handlers_user.auto_56d5e115', 'فعلاً فقط پیام متنی رو می\u200cفهمم؛ لطفاً سوالت رو بنویس.'))
             return
 
@@ -7371,10 +7377,32 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         _ai_last_call_at[user.id] = now
 
-        history = await asyncio.to_thread(db.get_ai_conversation, user.id)
-        thinking_msg = await message.answer(db.get_text('handlers_user.auto_ba4923c8', 'در حال بررسی... ⏳'))
+        streamer = None
+        if message.chat.type == "private" and (await asyncio.to_thread(db.get_setting, "ai_stream_enabled", "1")) == "1":
+            streamer = DraftStreamer(bot, message.chat.id)
+            await streamer.start()
+            if streamer.disabled:
+                streamer = None
+        thinking_msg = None if streamer else await message.answer(db.get_text('handlers_user.auto_ba4923c8', 'در حال بررسی... ⏳'))
         try:
-            result = await ai_support.get_reply(db, user.id, history, message.text)
+            user_text = await ai_media.message_to_text(bot, db, message)
+        except Exception as exc:
+            if not isinstance(exc, ai_media.MediaError):
+                logging.getLogger("handlers_user").exception("خطا در پردازش رسانه‌ی چت AI کاربر %s.", user.id)
+            if streamer:
+                await streamer.close()
+            try:
+                await thinking_msg.delete()
+            except Exception:
+                pass
+            await message.answer(ai_media.error_text(exc), reply_markup=kb.ai_chat_kb())
+            return
+
+        history = await asyncio.to_thread(db.get_ai_conversation, user.id)
+        try:
+            result = await ai_support.get_reply(
+                db, user.id, history, user_text, on_text=streamer.update if streamer else None
+            )
         except Exception:
             logging.getLogger("handlers_user").exception(
                 "خطای غیرمنتظره در دستیار هوشمند برای کاربر %s.", user.id
@@ -7384,9 +7412,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "escalate": True,
             }
 
-        await asyncio.to_thread(db.add_ai_message, user.id, "user", message.text)
+        await asyncio.to_thread(db.add_ai_message, user.id, "user", user_text)
         await asyncio.to_thread(db.add_ai_message, user.id, "model", result["reply"])
 
+        if streamer:
+            await streamer.close()
         try:
             await thinking_msg.delete()
         except Exception:

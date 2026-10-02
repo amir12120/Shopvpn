@@ -49,7 +49,14 @@ import extra_gateway_registry
 from admin_panel.security import hash_password, verify_password, create_session_token, verify_session_token
 from admin_panel import mobile_auth
 from asset_versioning import file_digest, static_version, ApiNoStoreMiddleware
-from admin_panel.telegram_notify import send_message as tg_send, send_document as tg_send_document, fetch_telegram_file, get_me as tg_get_me
+from admin_panel.telegram_notify import (
+    send_message as tg_send,
+    send_photo as tg_send_photo,
+    send_voice as tg_send_voice,
+    send_document as tg_send_document,
+    fetch_telegram_file,
+    get_me as tg_get_me,
+)
 from admin_panel.config_delivery_web import deliver_config_to_user_web
 from admin_panel.webpush import PUSH_ENABLED, send_push
 import fcm_client
@@ -1695,13 +1702,15 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"title": "عمومی", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
                     {"key": "enabled", "label": "فعال بودن دستیار هوشمند", "type": "bool"},
                     {"key": "provider", "label": "مسیر انتخاب مدل", "type": "select", "options": [
-                        ["auto", "خودکار (Gemini → Groq → OpenRouter)"], ["gemini", "فقط Gemini"],
+                        ["auto", "خودکار (همه ارائه‌دهنده‌های تنظیم‌شده)"], ["gemini", "فقط Gemini"],
                         ["groq", "فقط Groq"], ["openrouter", "فقط OpenRouter"],
+                        ["openai", "فقط OpenAI"], ["anthropic", "فقط Claude (Anthropic)"],
+                        ["custom", "فقط ارائه‌دهنده‌های سفارشی"],
                     ]},
                 ]},
                 {"title": "🔷 Gemini", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
                     {"key": "gemini_model", "label": "مدل", "type": "select", "options": [
-                        [m, label] for prov, m, label in ai_support.MODEL_CHOICES if prov == "gemini"
+                        [m, label] for m, label in ai_support.gemini_model_options(db)
                     ]},
                     {"key": "gemini_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                 ]},
@@ -1717,14 +1726,59 @@ def api_app_config(admin=Depends(get_current_admin)):
                     ]},
                     {"key": "openrouter_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                 ]},
+                {"title": "🟢 OpenAI", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
+                    {"key": "openai_model", "label": "نام مدل (دقیقاً مطابق مستندات OpenAI)", "type": "text"},
+                    {"key": "openai_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
+                ]},
+                {"title": "🟠 Claude (Anthropic)", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
+                    {"key": "anthropic_model", "label": "نام مدل (دقیقاً مطابق مستندات Anthropic)", "type": "text"},
+                    {"key": "anthropic_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
+                ]},
                 {"title": "🧾 ایجنت‌های اضافی تشخیص رسید", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
-                    {"key": "github_models_api_key", "label": "GitHub Models - توکن (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                     {"key": "mistral_api_key", "label": "Mistral - کلید API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                     {"key": "cohere_api_key", "label": "Cohere - کلید API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                     {"key": "cloudflare_api_token", "label": "Cloudflare Workers AI - توکن (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                     {"key": "cloudflare_account_id", "label": "Cloudflare Workers AI - Account ID", "type": "text"},
                 ]},
             ],
+        })
+        tabs.append({
+            "id": "aiproviders", "title": "ارائه‌دهنده‌های AI سفارشی", "icon": "dns", "screen": "list",
+            "section": "تنظیمات و سیستم",
+            "source": "/api/ai-providers", "item_id_field": "id",
+            "fields": [
+                {"key": "name", "label": "نام", "type": "title"},
+                {"key": "base_url", "label": "آدرس API", "type": "text"},
+                {"key": "model", "label": "مدل", "type": "text"},
+            ],
+            "actions": [
+                {"id": "test", "label": "تست اتصال", "method": "POST",
+                 "endpoint": "/api/ai-providers/{id}/test", "style": "default", "confirm": True},
+                {"id": "delete", "label": "حذف", "method": "DELETE",
+                 "endpoint": "/api/ai-providers/{id}", "style": "danger", "confirm": True},
+            ],
+            "create_form": {
+                "title": "افزودن ارائه‌دهنده سفارشی (سازگار با OpenAI)",
+                "submit_url": "/api/ai-providers",
+                "method": "POST",
+                "fields": [
+                    {"key": "name", "label": "نام", "type": "text"},
+                    {"key": "base_url", "label": "آدرس پایه API (مثلاً https://example.com/v1)", "type": "text"},
+                    {"key": "model", "label": "نام مدل", "type": "text"},
+                    {"key": "api_key", "label": "کلید(های) API (هر خط یک کلید)", "type": "textarea"},
+                ],
+            },
+            "edit_form": {
+                "title": "ویرایش ارائه‌دهنده سفارشی",
+                "submit_url": "/api/ai-providers/{id}",
+                "method": "PUT",
+                "fields": [
+                    {"key": "name", "label": "نام", "type": "text"},
+                    {"key": "base_url", "label": "آدرس پایه API", "type": "text"},
+                    {"key": "model", "label": "نام مدل", "type": "text"},
+                    {"key": "api_key", "label": "کلید(های) API (خالی=بدون تغییر)", "type": "textarea"},
+                ],
+            },
         })
         tabs.append({
             "id": "aifaq", "title": "سوالات متداول دستیار", "icon": "chat", "screen": "list",
@@ -1783,12 +1837,14 @@ def api_app_config(admin=Depends(get_current_admin)):
                 ]},
                 {"title": "یادآوری تمدید", "load_url": "/api/settings/renewal", "submit_url": "/api/settings/renewal", "fields": [
                     {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "send_discount_code", "label": "ارسال کد تخفیف همراه اعلان", "type": "bool"},
                     {"key": "days_before", "label": "چند روز قبل از انقضا", "type": "number"},
                     {"key": "discount_percent", "label": "درصد تخفیف", "type": "number"},
                     {"key": "discount_expiry_hours", "label": "اعتبار کد (ساعت)", "type": "number"},
                 ]},
                 {"title": "یادآوری حجم", "load_url": "/api/settings/volume-reminder", "submit_url": "/api/settings/volume-reminder", "fields": [
                     {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "send_discount_code", "label": "ارسال کد تخفیف همراه اعلان", "type": "bool"},
                     {"key": "mode", "label": "مبنا: percent یا gb", "type": "text"},
                     {"key": "percent", "label": "درصد آستانه", "type": "number"},
                     {"key": "gb_left", "label": "گیگ باقی‌مانده", "type": "number"},
@@ -2108,14 +2164,18 @@ class AiSupportSettingsBody(BaseModel):
     # با مقدار پیش‌فرض غیر-None، ذخیره‌ی مثلاً کارت Gemini به‌غلط enabled/provider
     # را به پیش‌فرض برمی‌گرداند.
     enabled: Optional[bool] = None
+    stream_enabled: Optional[bool] = None
     provider: Optional[str] = None
     gemini_model: str = ""
     groq_model: str = ""
     openrouter_model: str = ""
+    openai_model: str = ""
+    anthropic_model: str = ""
     gemini_api_key: str = ""
     groq_api_key: str = ""
     openrouter_api_key: str = ""
-    github_models_api_key: str = ""
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
     mistral_api_key: str = ""
     cohere_api_key: str = ""
     cloudflare_api_token: str = ""
@@ -2126,17 +2186,21 @@ class AiSupportSettingsBody(BaseModel):
 def api_get_ai_support_settings(admin=Depends(require_permission("settings"))):
     return {
         "enabled": db.get_setting("ai_support_enabled", "1") == "1",
+        "stream_enabled": db.get_setting("ai_stream_enabled", "1") == "1",
         "provider": ai_support.resolve_provider_mode(db),
         "gemini_model": ai_support.resolve_gemini_model(db),
         "groq_model": ai_support.resolve_groq_model(db),
         "openrouter_model": ai_support.resolve_openrouter_model(db),
+        "openai_model": ai_support.resolve_openai_model(db),
+        "anthropic_model": ai_support.resolve_anthropic_model(db),
         # کلیدها هیچ‌وقت خام برنمی‌گردند، فقط ماسک‌شده - برای این‌که فرم نشان
         # بدهد کلیدی تنظیم شده یا نه. اگر ادمین این متن ماسک‌شده را دست‌نخورده
         # بگذارد، ذخیره تغییری در کلید نمی‌دهد.
         "gemini_api_key": _mask_key_lines(db.get_setting("gemini_api_key", "")),
         "groq_api_key": _mask_key_lines(db.get_setting("groq_api_key", "")),
         "openrouter_api_key": _mask_key_lines(db.get_setting("openrouter_api_key", "")),
-        "github_models_api_key": _mask_key_lines(db.get_setting("github_models_api_key", "")),
+        "openai_api_key": _mask_key_lines(db.get_setting("openai_api_key", "")),
+        "anthropic_api_key": _mask_key_lines(db.get_setting("anthropic_api_key", "")),
         "mistral_api_key": _mask_key_lines(db.get_setting("mistral_api_key", "")),
         "cohere_api_key": _mask_key_lines(db.get_setting("cohere_api_key", "")),
         "cloudflare_api_token": _mask_key_lines(db.get_setting("cloudflare_api_token", "")),
@@ -2150,6 +2214,8 @@ def api_set_ai_support_settings(body: AiSupportSettingsBody, admin=Depends(requi
         raise HTTPException(400, tr("مسیر انتخاب مدل نامعتبر است."))
     if body.enabled is not None:
         db.set_setting("ai_support_enabled", "1" if body.enabled else "0")
+    if body.stream_enabled is not None:
+        db.set_setting("ai_stream_enabled", "1" if body.stream_enabled else "0")
     if body.provider is not None:
         db.set_setting("ai_provider", body.provider)
     if body.gemini_model:
@@ -2158,11 +2224,16 @@ def api_set_ai_support_settings(body: AiSupportSettingsBody, admin=Depends(requi
         db.set_setting("groq_model", body.groq_model)
     if body.openrouter_model:
         db.set_setting("openrouter_model", body.openrouter_model)
+    if body.openai_model.strip():
+        db.set_setting("openai_model", body.openai_model.strip())
+    if body.anthropic_model.strip():
+        db.set_setting("anthropic_model", body.anthropic_model.strip())
     for field, setting_key in (
         ("gemini_api_key", "gemini_api_key"),
         ("groq_api_key", "groq_api_key"),
         ("openrouter_api_key", "openrouter_api_key"),
-        ("github_models_api_key", "github_models_api_key"),
+        ("openai_api_key", "openai_api_key"),
+        ("anthropic_api_key", "anthropic_api_key"),
         ("mistral_api_key", "mistral_api_key"),
         ("cohere_api_key", "cohere_api_key"),
         ("cloudflare_api_token", "cloudflare_api_token"),
@@ -2176,6 +2247,97 @@ def api_set_ai_support_settings(body: AiSupportSettingsBody, admin=Depends(requi
         db.set_setting("cloudflare_account_id", body.cloudflare_account_id.strip())
     db.log_admin_action(admin["id"], "ai_support_settings_change", f"تنظیمات دستیار هوشمند تغییر کرد (پنل وب - {admin['username']}).")
     return {"ok": True}
+
+
+class AiCustomProviderBody(BaseModel):
+    name: str = ""
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+
+
+def _custom_provider_view(row: dict) -> dict:
+    return {
+        "id": row["id"], "name": row["name"], "base_url": row["base_url"],
+        "model": row["model"], "api_key": _mask_key_lines(row["api_key"]),
+    }
+
+
+@app.get("/api/ai-providers")
+def api_list_ai_providers(admin=Depends(require_permission("settings"))):
+    return [_custom_provider_view(r) for r in ai_support.custom_providers(db)]
+
+
+@app.post("/api/ai-providers")
+def api_add_ai_provider(body: AiCustomProviderBody, admin=Depends(require_permission("settings"))):
+    name, model = body.name.strip(), body.model.strip()
+    if not name or not model or not body.api_key.strip():
+        raise HTTPException(400, tr("نام، مدل و کلید API الزامی هستند."))
+    if not ai_support.normalize_chat_url(body.base_url):
+        raise HTTPException(400, tr("آدرس API باید با http:// یا https:// شروع شود."))
+    rows = ai_support.custom_providers(db)
+    if len(rows) >= 10:
+        raise HTTPException(400, tr("حداکثر ۱۰ ارائه‌دهنده سفارشی مجاز است."))
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")[:24] or "provider"
+    taken = {r["id"] for r in rows}
+    pid, n = slug, 2
+    while pid in taken:
+        pid = f"{slug}-{n}"
+        n += 1
+    rows.append({
+        "id": pid, "name": name, "base_url": body.base_url.strip(), "model": model,
+        "api_key": "\n".join(ai_support._split_keys(body.api_key)),
+    })
+    ai_support.save_custom_providers(db, rows)
+    db.log_admin_action(admin["id"], "ai_provider_add", f"ارائه‌دهنده هوش مصنوعی سفارشی اضافه شد: {name} (پنل وب - {admin['username']}).")
+    return {"ok": True, "id": pid}
+
+
+@app.put("/api/ai-providers/{provider_id}")
+def api_update_ai_provider(provider_id: str, body: AiCustomProviderBody, admin=Depends(require_permission("settings"))):
+    rows = ai_support.custom_providers(db)
+    row = next((r for r in rows if r["id"] == provider_id), None)
+    if not row:
+        raise HTTPException(404, tr("یافت نشد."))
+    if body.name.strip():
+        row["name"] = body.name.strip()
+    if body.base_url.strip():
+        if not ai_support.normalize_chat_url(body.base_url):
+            raise HTTPException(400, tr("آدرس API باید با http:// یا https:// شروع شود."))
+        row["base_url"] = body.base_url.strip()
+    if body.model.strip():
+        row["model"] = body.model.strip()
+    if body.api_key.strip() and body.api_key.strip() != _mask_key_lines(row["api_key"]).strip():
+        row["api_key"] = "\n".join(ai_support._split_keys(body.api_key))
+    ai_support.save_custom_providers(db, rows)
+    db.log_admin_action(admin["id"], "ai_provider_edit", f"ارائه‌دهنده هوش مصنوعی سفارشی ویرایش شد: {row['name']} (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+@app.delete("/api/ai-providers/{provider_id}")
+def api_delete_ai_provider(provider_id: str, admin=Depends(require_permission("settings"))):
+    rows = ai_support.custom_providers(db)
+    if not any(r["id"] == provider_id for r in rows):
+        raise HTTPException(404, tr("یافت نشد."))
+    ai_support.save_custom_providers(db, [r for r in rows if r["id"] != provider_id])
+    db.log_admin_action(admin["id"], "ai_provider_delete", f"ارائه‌دهنده هوش مصنوعی سفارشی حذف شد: {provider_id} (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+@app.post("/api/ai-providers/{provider_id}/test")
+async def api_test_ai_provider(provider_id: str, admin=Depends(require_permission("settings"))):
+    provider = ai_support.CUSTOM_PREFIX + provider_id
+    keys = ai_support.resolve_provider_keys(db, provider)
+    url = ai_support.resolve_provider_url(db, provider)
+    model = ai_support.resolve_provider_model(db, provider)
+    if not keys or not url or not model:
+        raise HTTPException(404, tr("یافت نشد."))
+    try:
+        data = await ai_support._openai_chat(provider, keys[0], model, [{"role": "user", "content": "ping"}], [], url)
+    except Exception as exc:
+        raise HTTPException(502, str(exc)[:300])
+    reply = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    return {"ok": True, "reply": reply[:200]}
 
 
 class AiFaqItemBody(BaseModel):
@@ -3758,6 +3920,28 @@ def api_add_discount(body: DiscountBody, admin=Depends(require_permission("disco
     return {"id": code_id}
 
 
+class DiscountBulkDeleteBody(BaseModel):
+    category_id: Optional[int] = None
+
+
+@app.post("/api/discounts/delete-all")
+def api_delete_all_discounts(admin=Depends(require_permission("discounts"))):
+    count = db.delete_all_discount_codes()
+    db.log_admin_action(admin["id"], "discount_delete_all", f"حذف همه کدهای تخفیف ({count})", "discount", None)
+    return {"ok": True, "deleted": count}
+
+
+@app.post("/api/discounts/delete-category")
+def api_delete_category_discounts(
+    body: DiscountBulkDeleteBody,
+    admin=Depends(require_permission("discounts")),
+):
+    count = db.delete_discount_codes_by_category(body.category_id)
+    label = f"دسته #{body.category_id}" if body.category_id is not None else "بدون دسته‌بندی"
+    db.log_admin_action(admin["id"], "discount_delete_category", f"حذف کدهای {label} ({count})", "discount", body.category_id)
+    return {"ok": True, "deleted": count}
+
+
 @app.post("/api/discounts/{code_id}/toggle")
 def api_toggle_discount(code_id: int, admin=Depends(require_permission("discounts"))):
     db.toggle_discount_code(code_id)
@@ -3819,32 +4003,66 @@ def api_ticket_close(ticket_id: int, admin=Depends(require_permission("tickets")
 
 
 class BroadcastBody(BaseModel):
-    message: str
+    message: str = ""
+    media_type: str = ""
 
 
 @app.post("/api/broadcast")
-async def api_broadcast(body: BroadcastBody, admin=Depends(require_permission("broadcast"))):
-    text = (body.message or "").strip()
-    if not text:
-        raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
+async def api_broadcast(
+    message: str = Form(""),
+    media_type: str = Form(""),
+    file: UploadFile | None = File(None),
+    admin=Depends(require_permission("broadcast")),
+):
+    text = (message or "").strip()
+    media_type = (media_type or "").strip().lower()
     if len(text) > 4000:
         raise HTTPException(400, tr("متن پیام بیش از حد طولانی است."))
 
-    user_ids = (await asyncio.to_thread(db.get_all_user_ids))
-    sem = asyncio.Semaphore(20)
+    media_bytes = None
+    filename = None
+    content_type = None
+    if file is not None:
+        filename = file.filename or "media"
+        content_type = file.content_type or "application/octet-stream"
+        media_bytes = await file.read()
+        if not media_bytes:
+            raise HTTPException(400, tr("فایل انتخاب‌شده خالی است."))
+        if media_type not in ("photo", "voice"):
+            raise HTTPException(400, tr("نوع فایل پیام همگانی نامعتبر است."))
+        max_size = 10 * 1024 * 1024 if media_type == "photo" else 50 * 1024 * 1024
+        if len(media_bytes) > max_size:
+            raise HTTPException(400, tr("حجم فایل بیش از حد مجاز است."))
+
+    if not text and media_bytes is None:
+        raise HTTPException(400, tr("متن یا فایل پیام نمی‌تواند خالی باشد."))
+
+    user_ids = await asyncio.to_thread(db.get_all_user_ids)
+    sem = asyncio.Semaphore(10 if media_bytes is not None else 20)
     counters = {"success": 0, "failed": 0}
 
     async def _send(uid):
         async with sem:
-            ok = await tg_send(_bot_token(), uid, text)
+            if media_bytes is None:
+                ok = await tg_send(_bot_token(), uid, text)
+            elif media_type == "photo":
+                ok = await tg_send_photo(
+                    _bot_token(), uid, media_bytes, filename=filename,
+                    caption=text, content_type=content_type,
+                )
+            else:
+                ok = await tg_send_voice(
+                    _bot_token(), uid, media_bytes, filename=filename, caption=text,
+                )
             counters["success" if ok else "failed"] += 1
 
     await asyncio.gather(*[_send(uid) for uid in user_ids])
-    (await asyncio.to_thread(db.log_admin_action, 
+    await asyncio.to_thread(
+        db.log_admin_action,
         admin["id"], "broadcast",
-        f"ارسال به {len(user_ids)} کاربر | موفق: {counters['success']} | ناموفق: {counters['failed']} "
+        f"ارسال {media_type or 'متن'} به {len(user_ids)} کاربر | موفق: {counters['success']} | ناموفق: {counters['failed']} "
         f"(پنل وب - {admin['username']})",
-    ))
+    )
     return {"total": len(user_ids), "success": counters["success"], "failed": counters["failed"]}
 
 
@@ -6155,6 +6373,7 @@ def api_set_wheel_settings(body: WheelSettingsBody, admin=Depends(require_permis
 
 class RenewalSettingsBody(BaseModel):
     enabled: bool
+    send_discount_code: bool = True
     days_before: int
     discount_percent: int
     discount_expiry_hours: int
@@ -6172,6 +6391,7 @@ def api_set_renewal_settings(body: RenewalSettingsBody, admin=Depends(require_pe
     if body.days_before <= 0 or body.discount_expiry_hours <= 0:
         raise HTTPException(400, tr("مقادیر روز/ساعت باید بزرگ‌تر از صفر باشند."))
     db.set_setting("renewal_reminder_enabled", "1" if body.enabled else "0")
+    db.set_setting("renewal_send_discount_code", "1" if body.send_discount_code else "0")
     db.set_setting("renewal_reminder_days_before", str(body.days_before))
     db.set_setting("renewal_discount_percent", str(body.discount_percent))
     db.set_setting("renewal_discount_expiry_hours", str(body.discount_expiry_hours))
@@ -6179,8 +6399,45 @@ def api_set_renewal_settings(body: RenewalSettingsBody, admin=Depends(require_pe
     return {"ok": True}
 
 
+class ChurnSettingsBody(BaseModel):
+    enabled: bool
+    ai_enabled: bool = True
+    max_discount_percent: int = 25
+    min_score: int
+    discount_percent: int
+    discount_expiry_hours: int
+    cooldown_days: int
+    max_per_run: int
+
+
+@app.get("/api/settings/churn")
+def api_get_churn_settings(admin=Depends(require_permission("settings"))):
+    return db.get_churn_settings()
+
+
+@app.post("/api/settings/churn")
+def api_set_churn_settings(body: ChurnSettingsBody, admin=Depends(require_permission("settings"))):
+    if not (1 <= body.min_score <= 100):
+        raise HTTPException(400, tr("حداقل امتیاز ریزش باید بین ۱ تا ۱۰۰ باشد."))
+    if not (0 <= body.discount_percent <= 100) or not (0 <= body.max_discount_percent <= 100):
+        raise HTTPException(400, tr("درصد تخفیف باید بین ۰ تا ۱۰۰ باشد."))
+    if body.discount_expiry_hours <= 0 or body.cooldown_days <= 0 or body.max_per_run <= 0:
+        raise HTTPException(400, tr("مقادیر ساعت/روز/تعداد باید بزرگ‌تر از صفر باشند."))
+    db.set_setting("churn_offer_enabled", "1" if body.enabled else "0")
+    db.set_setting("churn_offer_ai_enabled", "1" if body.ai_enabled else "0")
+    db.set_setting("churn_offer_max_discount_percent", str(body.max_discount_percent))
+    db.set_setting("churn_offer_min_score", str(body.min_score))
+    db.set_setting("churn_offer_discount_percent", str(body.discount_percent))
+    db.set_setting("churn_offer_expiry_hours", str(body.discount_expiry_hours))
+    db.set_setting("churn_offer_cooldown_days", str(body.cooldown_days))
+    db.set_setting("churn_offer_max_per_run", str(body.max_per_run))
+    db.log_admin_action(admin["id"], "setting_change", "churn offer settings updated (پنل وب)", "setting", "churn_offer")
+    return {"ok": True}
+
+
 class VolumeReminderSettingsBody(BaseModel):
     enabled: bool
+    send_discount_code: bool = True
     mode: str
     percent: int
     gb_left: int
@@ -6206,6 +6463,7 @@ def api_set_volume_reminder_settings(body: VolumeReminderSettingsBody, admin=Dep
     if body.discount_expiry_hours <= 0:
         raise HTTPException(400, tr("اعتبار کد تخفیف باید بزرگ‌تر از صفر باشد."))
     db.set_setting("volume_reminder_enabled", "1" if body.enabled else "0")
+    db.set_setting("volume_send_discount_code", "1" if body.send_discount_code else "0")
     db.set_setting("volume_reminder_mode", body.mode)
     db.set_setting("volume_reminder_percent", str(body.percent))
     db.set_setting("volume_reminder_gb_left", str(body.gb_left))

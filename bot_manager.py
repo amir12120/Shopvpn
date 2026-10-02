@@ -32,6 +32,7 @@ from business_chat import create_business_router
 from handlers_admin import create_admin_router
 from renewal_reminders import renewal_reminder_loop
 from connect_alerts import connect_alert_loop
+from churn_prediction import churn_offer_loop
 from backup import backup_loop
 from temp_messages import temp_message_cleanup_loop
 import extra_gateway_payment
@@ -453,6 +454,7 @@ class BotManager:
         await self._sync_menu_button(bot, db)
         reminder_task = asyncio.create_task(renewal_reminder_loop(bot, db))
         connect_alert_task = asyncio.create_task(connect_alert_loop(bot, db))
+        churn_offer_task = asyncio.create_task(churn_offer_loop(bot, db))
         backup_task = asyncio.create_task(backup_loop(bot, db, db_path))
         # جلوگیری از فریز کل بات هنگام انقضای کش تنظیمات/ادمین‌ها (رجوع کنید
         # به توضیح داخل Database.cache_autorefresh_loop)
@@ -471,7 +473,7 @@ class BotManager:
 
         self.instances[token] = {
             "bot": bot, "dp": dp, "task": task, "reminder_task": reminder_task,
-            "connect_alert_task": connect_alert_task,
+            "connect_alert_task": connect_alert_task, "churn_offer_task": churn_offer_task,
             "backup_task": backup_task, "cache_refresh_task": cache_refresh_task,
             "temp_msg_task": temp_msg_task, "extra_gateway_task": extra_gateway_task,
             "panel_health_task": panel_health_task, "daily_report_task": daily_report_task,
@@ -484,7 +486,7 @@ class BotManager:
         return True
 
     _STOP_TASK_KEYS = (
-        "reminder_task", "connect_alert_task", "backup_task",
+        "reminder_task", "connect_alert_task", "churn_offer_task", "backup_task",
         "scheduled_broadcast_task", "cache_refresh_task", "temp_msg_task",
         "extra_gateway_task", "panel_health_task", "daily_report_task",
         "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task",

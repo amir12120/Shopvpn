@@ -99,6 +99,25 @@ class AdminSetOpenRouterKey(StatesGroup):
     waiting_key = State()
 
 
+class AdminSetOpenAIKey(StatesGroup):
+    waiting_key = State()
+
+
+class AdminSetAnthropicKey(StatesGroup):
+    waiting_key = State()
+
+
+class AdminSetAIModelName(StatesGroup):
+    waiting_model = State()
+
+
+class AdminAICustomProviderAdd(StatesGroup):
+    waiting_name = State()
+    waiting_url = State()
+    waiting_model = State()
+    waiting_key = State()
+
+
 class AdminSetReceiptAgentKey(StatesGroup):
     waiting_key = State()
 
@@ -254,6 +273,14 @@ class AdminChannelButton(StatesGroup):
     waiting_forward = State()
     waiting_button_text = State()
     waiting_custom_param = State()
+
+
+class AdminCampaign(StatesGroup):
+    waiting_goal = State()
+    choosing = State()
+    waiting_photo = State()
+    waiting_channel = State()
+    confirming = State()
 
 
 class AdminAddAdmin(StatesGroup):
@@ -688,3 +715,7 @@ class AdminSettingInput(StatesGroup):
     waiting_value = State()
     waiting_prizes = State()
     waiting_report_chat = State()
+
+
+class AdminAIChat(StatesGroup):
+    chatting = State()

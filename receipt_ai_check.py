@@ -206,14 +206,12 @@ _log = logging.getLogger("receipt_ai_check")
 # هوشمند» (که ممکن است اصلاً بینایی/تصویر پشتیبانی نکند).
 _GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 _OPENROUTER_VISION_MODEL = "openrouter/free"
-_GITHUB_VISION_MODEL = "openai/gpt-4o-mini"
 _MISTRAL_VISION_MODEL = "mistral-small-latest"
 _COHERE_VISION_MODEL = "command-a-vision-07-2025"
 _CLOUDFLARE_VISION_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-_GITHUB_URL = "https://models.github.ai/inference/chat/completions"
 _MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 _COHERE_URL = "https://api.cohere.com/v2/chat"
 _CLOUDFLARE_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions"
@@ -1635,7 +1633,7 @@ async def _run_gemini_text(db, image_bytes: bytes, mime_type: str, prompt: str, 
     raise last_exc or RuntimeError("Gemini failed")
 
 
-_JSON_MODE_PROVIDERS = {"groq", "openrouter", "github", "mistral"}
+_JSON_MODE_PROVIDERS = {"groq", "openrouter", "mistral"}
 
 
 async def _post_chat(url: str, headers: dict, payload: dict, timeout):
@@ -1724,10 +1722,15 @@ def _extra_vision_specs(db) -> list:
     add("Groq", "groq", ai_support.resolve_groq_keys(db), _GROQ_VISION_MODEL, _GROQ_URL)
     add("OpenRouter", "openrouter", ai_support.resolve_openrouter_keys(db), _OPENROUTER_VISION_MODEL, _OPENROUTER_URL,
         {"HTTP-Referer": "https://telegram.org/", "X-Title": "ShopVPN Receipt AI Check"})
-    add("GitHub Models", "github", ai_support.resolve_github_keys(db), _GITHUB_VISION_MODEL, _GITHUB_URL,
-        {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
     add("Mistral", "mistral", ai_support.resolve_mistral_keys(db), _MISTRAL_VISION_MODEL, _MISTRAL_URL)
     add("Cohere", "cohere", ai_support.resolve_cohere_keys(db), _COHERE_VISION_MODEL, _COHERE_URL)
+    for pid in ("openai", "anthropic"):
+        if ai_support.resolve_provider_model(db, pid):
+            add(ai_support.provider_display_name(db, pid), pid, ai_support.resolve_provider_keys(db, pid),
+                ai_support.resolve_provider_model(db, pid), ai_support.resolve_provider_url(db, pid))
+    for row in ai_support.custom_providers(db):
+        if row["model"]:
+            add("Custom: " + row["name"], ai_support.CUSTOM_PREFIX + row["id"], row["keys"], row["model"], row["url"])
     account_id = ai_support.resolve_cloudflare_account_id(db)
     if account_id:
         add("Cloudflare", "cloudflare", ai_support.resolve_cloudflare_keys(db), _CLOUDFLARE_VISION_MODEL,

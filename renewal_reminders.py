@@ -103,7 +103,16 @@ async def _send_single_reminder(bot, db, row, mark_fn, cache) -> bool:
     real_days_left = int(seconds_left // (24 * 60 * 60))
     days_left = max(0, real_days_left)
 
-    code, discount_expires_at, percent, expiry_hours = await _db(db.generate_renewal_discount_code, user_id)
+    discount_line = ""
+    if settings["send_discount_code"]:
+        code, discount_expires_at, percent, expiry_hours = await _db(
+            db.generate_renewal_discount_code, user_id
+        )
+        discount_line = (
+            f"🎁 برای اینکه دچار قطعی نشوید، یک کد تخفیف اختصاصی {percent}٪ برایتان صادر شد:\n"
+            f"🎟 کد تخفیف: `{code}`\n"
+            f"⏳ این کد فقط تا {expiry_hours} ساعت آینده معتبر است.\n\n"
+        )
 
     days_line = (
         f"⌛ حدود {days_left} روز از سرویس شما باقی مانده (انقضا: {to_jalali_str(exp_dt)}).\n\n"
@@ -114,12 +123,8 @@ async def _send_single_reminder(bot, db, row, mark_fn, cache) -> bool:
         "⏰ یادآوری اتمام سرویس\n\n"
         f"📦 سرویس «{row['product_name']}» شما به‌زودی منقضی می‌شود.\n\n"
         f"{days_line}"
-        f"🎁 برای اینکه دچار قطعی نشوید، یک کد تخفیف اختصاصی {percent}٪ برایتان صادر شد:\n"
-        f"🎟 کد تخفیف: `{code}`\n"
-        f"⏳ این کد فقط تا {expiry_hours} ساعت آینده معتبر است.\n\n"
-        "✅ اگر همین امروز تمدید کنید، از این تخفیف بهره‌مند خواهید شد.\n"
-        "برای تمدید، از منوی اصلی «🛒 خرید کانفیگ» را بزنید و هنگام خرید، دکمه‌ی "
-        "«🎟 وارد کردن کد تخفیف» را زده و این کد را وارد کنید."
+        f"{discount_line}"
+        "برای تمدید، از منوی اصلی «🛒 خرید کانفیگ» را بزنید و سرویس خود را تمدید کنید."
     )
 
     try:
@@ -198,18 +203,23 @@ async def _send_single_volume_reminder(bot, db, row, mark_fn, cache) -> bool:
     if row["sent"]:
         return False
 
-    code, discount_expires_at, percent, expiry_hours = await _db(db.generate_volume_discount_code, user_id)
+    discount_line = ""
+    if settings["send_discount_code"]:
+        code, discount_expires_at, percent, expiry_hours = await _db(
+            db.generate_volume_discount_code, user_id
+        )
+        discount_line = (
+            f"🎁 برای اینکه دچار قطعی نشوید، یک کد تخفیف اختصاصی {percent}٪ برایتان صادر شد:\n"
+            f"🎟 کد تخفیف: `{code}`\n"
+            f"⏳ این کد فقط تا {expiry_hours} ساعت آینده معتبر است.\n\n"
+        )
 
     text = (
         "📉 یادآوری اتمام حجم\n\n"
         f"📦 حجم سرویس «{row['product_name']}» شما رو به اتمام است.\n\n"
         f"📊 حدود {remaining_gb:.2f} گیگابایت ({100 - round(percent_used)}٪) از حجم شما باقی مانده.\n\n"
-        f"🎁 برای اینکه دچار قطعی نشوید، یک کد تخفیف اختصاصی {percent}٪ برایتان صادر شد:\n"
-        f"🎟 کد تخفیف: `{code}`\n"
-        f"⏳ این کد فقط تا {expiry_hours} ساعت آینده معتبر است.\n\n"
-        "✅ اگر همین امروز تمدید کنید، از این تخفیف بهره‌مند خواهید شد.\n"
-        "برای تمدید، از منوی اصلی «🛒 خرید کانفیگ» را بزنید و هنگام خرید، دکمه‌ی "
-        "«🎟 وارد کردن کد تخفیف» را زده و این کد را وارد کنید."
+        f"{discount_line}"
+        "برای تمدید، از منوی اصلی «🛒 خرید کانفیگ» را بزنید و سرویس خود را تمدید کنید."
     )
 
     try:

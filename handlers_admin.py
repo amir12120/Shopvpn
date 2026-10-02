@@ -47,7 +47,11 @@ import blupal_payment
 import noapay_payment
 import extra_gateway_admin
 import ai_support
+import ai_admin
+import admin_help
+import ai_media
 import admin_tools
+import admin_campaign
 import bulk_gifts
 import report_router
 from test_config_provision import format_plan_amount
@@ -63,6 +67,7 @@ from reseller_auto_provision import provision_auto_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from renewal_engine import execute_renewal, RenewalError
 from states import (
+    AdminAIChat,
     AdminCreateDiscount,
     AdminBulkDiscount,
     AdminUserManage,
@@ -114,6 +119,10 @@ from states import (
     AdminSetGeminiKey,
     AdminSetGroqKey,
     AdminSetOpenRouterKey,
+    AdminSetOpenAIKey,
+    AdminSetAnthropicKey,
+    AdminSetAIModelName,
+    AdminAICustomProviderAdd,
     AdminSetReceiptAgentKey,
     AdminSetTranslationGeminiKey,
     AdminSetTranslationOpenRouterKey,
@@ -334,6 +343,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     async def safe_edit(call: CallbackQuery, text: str, reply_markup=None, parse_mode=None) -> bool:
         """ویرایش امن پیام؛ خطای message is not modified نباید کل callback را خراب کند."""
+        reply_markup = admin_help.attach_button(call.from_user.id, reply_markup)
         try:
             kwargs = {"reply_markup": reply_markup}
             if parse_mode is not None:
@@ -360,6 +370,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if call.message is None:
             return False
 
+        reply_markup = admin_help.attach_button(call.from_user.id, reply_markup)
         kwargs = {"reply_markup": reply_markup}
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
@@ -385,6 +396,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         except Exception:
             return False
         return True
+
+    async def _track_admin_section(handler, event: CallbackQuery, data: dict):
+        if admin_only(event.from_user.id):
+            admin_help.track(event.from_user.id, event.data)
+        return await handler(event, data)
+
+    router.callback_query.outer_middleware(_track_admin_section)
 
     def callback_id(data: str, prefix: str):
         """استخراج امن ID از callback_data و بررسی پیشوند."""
@@ -7372,6 +7390,17 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             tr(f"✅ یادآوری روی {text} روز قبل از اتمام سرویس تنظیم شد."), reply_markup=kb.renewal_settings_kb(db)
         )
 
+    @router.callback_query(F.data == "adm_renewal_discount_toggle")
+    async def cb_admin_renewal_discount_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "renewal_send_discount_code", "1"))
+        await asyncio.to_thread(
+            db.set_setting, "renewal_send_discount_code", "0" if current == "1" else "1"
+        )
+        await safe_edit(call, tr("⏳ یادآوری تمدید:"), reply_markup=kb.renewal_settings_kb(db))
+        await call.answer("🎟 ارسال کد تخفیف " + ("روشن شد." if current != "1" else "خاموش شد."))
+
     @router.callback_query(F.data == "adm_renewal_edit_percent")
     async def cb_admin_renewal_edit_percent(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
@@ -7494,6 +7523,17 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(
             tr(f"✅ آستانه‌ی یادآوری حجم روی {value} گیگ باقی‌مانده تنظیم شد."), reply_markup=kb.volume_reminder_settings_kb(db)
         )
+
+    @router.callback_query(F.data == "adm_volume_discount_toggle")
+    async def cb_admin_volume_discount_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "volume_send_discount_code", "1"))
+        await asyncio.to_thread(
+            db.set_setting, "volume_send_discount_code", "0" if current == "1" else "1"
+        )
+        await safe_edit(call, tr("📉 یادآوری اتمام حجم:"), reply_markup=kb.volume_reminder_settings_kb(db))
+        await call.answer("🎟 ارسال کد تخفیف " + ("روشن شد." if current != "1" else "خاموش شد."))
 
     @router.callback_query(F.data == "adm_volume_edit_discount_percent")
     async def cb_admin_volume_edit_discount_percent(call: CallbackQuery, state: FSMContext):
@@ -9681,14 +9721,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data == "adm_receipt_agents")
     async def cb_admin_receipt_agents(call: CallbackQuery, state: FSMContext):
+        # ایجنت‌های رسید به بخش جدا «ایجنت‌های هوش مصنوعی» منتقل شدند؛ این کال‌بک قدیمی همان‌جا هدایت می‌کند.
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await state.clear()
-        await safe_edit(
-            call,
-            tr("🧾 ایجنت‌های اضافی تشخیص رسید\n\nهر ایجنتی که کلیدش تنظیم شده باشد، روی هر رسید به‌صورت موازی و مستقل اجرا می‌شود."),
-            reply_markup=kb.receipt_agents_kb(db),
-        )
+        await _show_ai_agents_hub(call, state)
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_rcpt_agent:"))
@@ -9713,7 +9749,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             call,
             tr(f"🔑 {title}\n\nمقدار را بفرست؛ برای چند کلید هر کلید در یک خط."
                f"\n🔗 راهنما/ثبت‌نام: {link}\n\nمقدار فعلی:\n{masked}\n\nبرای حذف: «حذف»\n\nENV جایگزین: {env_name}"),
-            reply_markup=kb.admin_back_kb("adm_receipt_agents"),
+            reply_markup=kb.admin_back_kb("adm_ai_agents"),
         )
         await call.answer()
 
@@ -9737,7 +9773,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await message.delete()
         except Exception:
             pass
-        await message.answer(tr(f"✅ {title} {'حذف شد.' if not value else 'ذخیره شد.'}"), reply_markup=kb.receipt_agents_kb(db))
+        await message.answer(tr(f"✅ {title} {'حذف شد.' if not value else 'ذخیره شد.'}"), reply_markup=kb.ai_agents_hub_kb(db))
 
     @router.callback_query(F.data == "adm_set_card_edit")
     async def cb_admin_set_card_edit(call: CallbackQuery, state: FSMContext):
@@ -11377,54 +11413,88 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # -------------------------------------------------------------------
 
     async def _show_ai_faq_menu(call: CallbackQuery):
+        """منوی دستیار هوشمند پشتیبانی: فقط روشن/خاموش و سوالات متداول.
+        کلیدها/مدل‌ها/ارائه‌دهنده‌ها در «ایجنت‌های هوش مصنوعی» (adm_ai_agents) هستند."""
         items = await asyncio.to_thread(db.get_ai_faq_items)
-        # این بخش عمداً در برابر تنظیمات ناقص/قدیمی DB مقاوم است؛ اگر یکی از
-        # تنظیمات جدید در دیتابیس وجود نداشته باشد، باز شدن منوی مدیر نباید کرش کند.
+        enabled = db.get_setting("ai_support_enabled", "1") == "1"
         try:
-            provider = ai_support.resolve_provider_mode(db)
+            ready = bool(ai_support.is_configured(db))
         except Exception:
-            provider = "auto"
+            ready = False
+        text = (
+            f"{tr('🤖 دستیار هوشمند پشتیبانی')}\n\n"
+            f"{tr('وضعیت')}: {tr('🟢 فعال') if enabled else tr('🔴 غیرفعال')}\n"
+            f"{tr('ایجنت آماده')}: {tr('🟢 بله') if ready else tr('⚪️ نه (کلیدی تنظیم نشده)')}\n\n"
+            f"{tr('🔑 کلیدها، مدل‌ها و ارائه‌دهنده‌ها را از «⚙️ تنظیم ایجنت‌های هوش مصنوعی» تنظیم کن.')}\n\n"
+        )
+        if items:
+            text += tr("سوالات متداولی که به دستیار آموزش داده شده (برای حذف، روی 🗑 بزن):")
+        else:
+            text += tr("هنوز سوالی ثبت نشده. با «➕ افزودن سوال جدید» شروع کن.")
+        await replace_admin_view(call, text, reply_markup=kb.ai_faq_admin_kb(db, items))
+
+    def _ai_agents_hub_text() -> str:
         try:
-            provider_label = ai_support.PROVIDER_LABELS.get(provider, ai_support.PROVIDER_LABELS.get("auto", "🤖 خودکار"))
+            provider_label = ai_support.PROVIDER_LABELS.get(ai_support.resolve_provider_mode(db), "🤖 خودکار")
         except Exception:
             provider_label = "🤖 خودکار"
         statuses = []
-        for name, label in (("gemini", "Gemini"), ("groq", "Groq"), ("openrouter", "OpenRouter")):
+        for name, label in (("gemini", "Gemini"), ("groq", "Groq"), ("openrouter", "OpenRouter"), ("openai", "OpenAI"), ("anthropic", "Claude")):
             try:
                 configured = bool(ai_support.resolve_provider_keys(db, name))
+                if name in ("openai", "anthropic"):
+                    configured = configured and bool(ai_support.resolve_provider_model(db, name))
             except Exception:
                 configured = False
             statuses.append(f"{'🟢' if configured else '⚪️'} {label}")
         try:
-            gemini_model = ai_support.resolve_gemini_model(db)
+            custom_count = len([r for r in ai_support.custom_providers(db) if r["keys"] and r["model"]])
         except Exception:
-            gemini_model = "gemini-3.5-flash-lite"
-        try:
-            groq_model = ai_support.resolve_groq_model(db)
-        except Exception:
-            groq_model = "openai/gpt-oss-20b"
-        try:
-            openrouter_model = ai_support.resolve_openrouter_model(db)
-        except Exception:
-            openrouter_model = "openrouter/free"
-        text = (
-            "🤖 مدیریت دستیار هوشمند پشتیبانی\n\n"
-            f"🔀 مسیر: {provider_label}\n"
+            custom_count = 0
+        statuses.append(f"{'🟢' if custom_count else '⚪️'} {tr('سفارشی')}: {custom_count}")
+        rcpt = []
+        for _id, title, setting_key, env_name, _link, _secret in ai_support.RECEIPT_AGENT_FIELDS:
+            if _id == "cfa":
+                continue
+            ok = ai_support.receipt_agent_configured(db, setting_key, env_name)
+            rcpt.append(f"{'🟢' if ok else '⚪️'} {title.split(' - ')[0]}")
+
+        def _model(fn, default):
+            try:
+                return fn(db) or default
+            except Exception:
+                return default
+
+        return (
+            f"{tr('🧬 ایجنت‌های هوش مصنوعی')}\n\n"
+            f"{tr('همه‌ی کلیدها و مدل‌های هوش مصنوعی ربات یک‌جا تنظیم می‌شوند. هر ایجنتی که کلید دارد، در بخش‌هایی مثل پشتیبان مشتری، دستیار مدیر، تلگرام بیزنس، کمپین/پست کانال، پیشنهاد ریزش و درک تصویر/صدا استفاده می‌شود.')}\n\n"
+            f"{tr('🔀 مسیر')}: {tr(provider_label)}\n"
             f"{' | '.join(statuses)}\n\n"
-            f"🧠 Gemini: {gemini_model}\n"
-            f"🚀 Groq: {groq_model}\n"
-            f"🌐 OpenRouter: {openrouter_model}\n\n"
-            "📖 راهنمای مدیر\n"
-            "🔷 Gemini: https://aistudio.google.com/ — ورود و ساخت API Key\n"
-            "🚀 Groq: https://console.groq.com/ — ورود و ساخت API Key\n"
-            "🌐 OpenRouter: https://openrouter.ai/ — ورود و ساخت API Key\n\n"
-            "💡 پیشنهاد: مسیر «خودکار» را بگذار تا در صورت خطای سهمیه/اختلال، Agent بعدی را امتحان کند.\n\n"
+            f"🔷 Gemini: {_model(ai_support.resolve_gemini_model, '—')}\n"
+            f"🚀 Groq: {_model(ai_support.resolve_groq_model, '—')}\n"
+            f"🌐 OpenRouter: {_model(ai_support.resolve_openrouter_model, '—')}\n"
+            f"🟢 OpenAI: {_model(ai_support.resolve_openai_model, '—')}\n"
+            f"🟠 Claude: {_model(ai_support.resolve_anthropic_model, '—')}\n\n"
+            f"{tr('🧾 ایجنت‌های تشخیص رسید')}: {' | '.join(rcpt)}\n"
+            f"{tr('(هر ایجنتی که کلید دارد روی هر رسید به‌صورت موازی و مستقل بررسی می‌کند. Gemini/Groq/OpenRouter بالا هم در رسید شرکت می‌کنند.)')}\n\n"
+            f"{tr('📖 دریافت کلید')}\n"
+            "🔷 Gemini: https://aistudio.google.com/\n"
+            "🚀 Groq: https://console.groq.com/\n"
+            "🌐 OpenRouter: https://openrouter.ai/\n\n"
+            f"{tr('💡 پیشنهاد: مسیر «خودکار» را بگذار تا در صورت خطای سهمیه/اختلال، ایجنت بعدی امتحان شود.')}"
         )
-        if items:
-            text += "سوالات متداولی که به دستیار آموزش داده شده (برای حذف، روی 🗑 بزن):"
-        else:
-            text += "هنوز سوالی ثبت نشده. با «➕ افزودن سوال جدید» شروع کن."
-        await replace_admin_view(call, text, reply_markup=kb.ai_faq_admin_kb(db, items))
+
+    async def _show_ai_agents_hub(call: CallbackQuery, state: FSMContext = None):
+        if state is not None:
+            await state.clear()
+        await replace_admin_view(call, _ai_agents_hub_text(), reply_markup=kb.ai_agents_hub_kb(db))
+
+    @router.callback_query(F.data == "adm_ai_agents")
+    async def cb_admin_ai_agents(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await _show_ai_agents_hub(call, state)
+        await call.answer()
 
     @router.callback_query(F.data == "adm_ai_support_settings")
     async def cb_admin_ai_support_settings(call: CallbackQuery):
@@ -11446,7 +11516,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_ai_set_provider(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, tr("🔀 مسیر انتخاب مدل\n\n«خودکار» بهترین حالت است: به‌ترتیب Gemini → Groq → OpenRouter را امتحان می‌کند و با خطای سهمیه/اختلال به بعدی می‌رود."), reply_markup=kb.ai_provider_choice_kb(db))
+        await replace_admin_view(call, tr("🔀 مسیر انتخاب مدل\n\n«خودکار» بهترین حالت است: همه ارائه‌دهنده‌های تنظیم‌شده را به‌ترتیب امتحان می‌کند و با خطای سهمیه/اختلال به بعدی می‌رود."), reply_markup=kb.ai_provider_choice_kb(db))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ai_provider_pick:"))
@@ -11458,14 +11528,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer(db.get_text('handlers_admin.auto_91c4bad2', '❌ مسیر نامعتبر'), show_alert=True)
         await asyncio.to_thread(db.set_setting, "ai_provider", mode)
         await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ai_provider_change", f"مسیر Agent: {mode}")
-        await _show_ai_faq_menu(call)
+        await _show_ai_agents_hub(call)
         await call.answer(db.get_text('handlers_admin.auto_0479b78b', '✅ ذخیره شد'))
 
     @router.callback_query(F.data == "adm_ai_set_model")
     async def cb_admin_ai_set_model(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, tr("🧠 انتخاب مدل\n\nبرای ۵۰۰ پیام روزانه، مدل‌های سریع را انتخاب کن. در حالت خودکار اگر Provider فعلی 429/5xx بدهد، Agent به Provider بعدی می‌رود. توضیح هر مدل کنار دکمه آمده است."), reply_markup=kb.ai_model_choice_kb(db))
+        await replace_admin_view(call, tr("🧠 انتخاب مدل\n\nبرای ۵۰۰ پیام روزانه، مدل‌های سریع را انتخاب کن. در حالت خودکار اگر Provider فعلی 429/5xx بدهد، Agent به Provider بعدی می‌رود. توضیح هر مدل کنار دکمه آمده است."), reply_markup=kb.ai_model_choice_kb(db, await asyncio.to_thread(ai_support.gemini_model_options, db)))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ai_model_pick:"))
@@ -11477,12 +11547,15 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer(db.get_text('handlers_admin.auto_bc1a559a', '❌ مدل نامعتبر'), show_alert=True)
         provider, model = parts[1], parts[2]
         valid = {(p, m) for p, m, _ in ai_support.MODEL_CHOICES}
+        gemini_rows = await asyncio.to_thread(ai_support.gemini_model_options, db)
+        if provider == "gemini":
+            valid |= {("gemini", m) for m, _ in gemini_rows}
         if (provider, model) not in valid:
             return await call.answer(db.get_text('handlers_admin.auto_bc1a559a', '❌ مدل نامعتبر'), show_alert=True)
         key = {"gemini":"gemini_model", "groq":"groq_model", "openrouter":"openrouter_model"}[provider]
         await asyncio.to_thread(db.set_setting, key, model)
         await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ai_model_change", f"{provider}: {model}")
-        await replace_admin_view(call, tr(f"✅ مدل {provider} روی «{model}» تنظیم شد."), reply_markup=kb.ai_model_choice_kb(db))
+        await replace_admin_view(call, tr(f"✅ مدل {provider} روی «{model}» تنظیم شد."), reply_markup=kb.ai_model_choice_kb(db, gemini_rows))
         await call.answer(db.get_text('handlers_admin.auto_0479b78b', '✅ ذخیره شد'))
 
     async def _show_ai_key_prompt(call, state, provider, state_cls, setting_key, title, source_env):
@@ -11493,6 +11566,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "GEMINI_API_KEY": "https://aistudio.google.com/",
             "GROQ_API_KEY": "https://console.groq.com/",
             "OPENROUTER_API_KEY": "https://openrouter.ai/",
+            "OPENAI_API_KEY": "https://platform.openai.com/api-keys",
+            "ANTHROPIC_API_KEY": "https://console.anthropic.com/",
         }
         link = links.get(source_env, "")
         guide = f"\n🔗 راهنما/ثبت‌نام: {link}" if link else ""
@@ -11500,7 +11575,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             call,
             tr(f"{title}\n\nکلید یا چند کلید را بفرست؛ هر کلید در یک خط. در صورت 429 کلید بعدی امتحان می‌شود."
             f"{guide}\n\nکلیدهای فعلی:\n{masked}\n\nبرای حذف: «حذف»\n\nENV جایگزین: {source_env}"),
-            reply_markup=kb.admin_back_kb("adm_ai_support_settings"),
+            reply_markup=kb.admin_back_kb("adm_ai_agents"),
         )
         await call.answer()
 
@@ -11518,6 +11593,154 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_ai_set_openrouter_key(call: CallbackQuery, state: FSMContext):
         if not full_admin_only(call.from_user.id): return await deny_support(call)
         await _show_ai_key_prompt(call, state, "openrouter", AdminSetOpenRouterKey, "openrouter_api_key", "🔑 کلیدهای OpenRouter", "OPENROUTER_API_KEY")
+
+    @router.callback_query(F.data == "adm_ai_set_openai_key")
+    async def cb_admin_ai_set_openai_key(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        await _show_ai_key_prompt(call, state, "openai", AdminSetOpenAIKey, "openai_api_key", "🔑 کلیدهای OpenAI", "OPENAI_API_KEY")
+
+    @router.callback_query(F.data == "adm_ai_set_anthropic_key")
+    async def cb_admin_ai_set_anthropic_key(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        await _show_ai_key_prompt(call, state, "anthropic", AdminSetAnthropicKey, "anthropic_api_key", "🔑 کلیدهای Claude", "ANTHROPIC_API_KEY")
+
+    @router.callback_query(F.data.startswith("adm_ai_set_modelname:"))
+    async def cb_admin_ai_set_modelname(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        provider = call.data.split(":", 1)[1]
+        if provider not in ("openai", "anthropic"):
+            return await call.answer(db.get_text('handlers_admin.auto_bc1a559a', '❌ مدل نامعتبر'), show_alert=True)
+        current = ai_support.resolve_provider_model(db, provider) or "—"
+        await state.set_state(AdminSetAIModelName.waiting_model)
+        await state.update_data(ai_model_provider=provider)
+        label = "OpenAI" if provider == "openai" else "Claude"
+        await replace_admin_view(
+            call,
+            tr(f"🧠 نام مدل {label}\n\nنام دقیق مدل را مطابق مستندات رسمی بفرست.\n\nمدل فعلی: {current}"),
+            reply_markup=kb.admin_back_kb("adm_ai_agents"),
+        )
+        await call.answer()
+
+    @router.message(AdminSetAIModelName.waiting_model)
+    async def process_set_ai_model_name(message: Message, state: FSMContext):
+        data = await state.get_data()
+        provider = data.get("ai_model_provider")
+        model = (message.text or "").strip()
+        if provider not in ("openai", "anthropic") or not model or len(model) > 120 or any(ch.isspace() for ch in model):
+            await message.answer(tr("⚠️ نام مدل نامعتبر است؛ دوباره بفرست."))
+            return
+        await state.clear()
+        await asyncio.to_thread(db.set_setting, f"{provider}_model", model)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "ai_model_change", f"{provider}: {model}")
+        await message.answer(tr(f"✅ مدل روی «{model}» تنظیم شد."), reply_markup=kb.ai_agents_hub_kb(db))
+
+    async def _show_ai_custom_menu(call: CallbackQuery):
+        rows = ai_support.custom_providers(db)
+        text = (
+            f"{tr('🔌 ارائه‌دهنده‌های سفارشی')}\n\n"
+            f"{tr('هر سرویسی که API سازگار با OpenAI دارد (نمایندگی‌های فروش API، گیت‌وی‌ها، سرور شخصی) را می‌توانی با آدرس پایه، مدل و کلید اضافه کنی. این ارائه‌دهنده‌ها در همه‌ی بخش‌های هوش مصنوعی ربات استفاده می‌شوند.')}\n\n"
+            f"{tr('🧪 تست اتصال')} | {tr('🗑 حذف')}"
+        )
+        if not rows:
+            text += "\n\n" + tr("هنوز موردی اضافه نشده.")
+        await replace_admin_view(call, text, reply_markup=kb.ai_custom_providers_kb(db))
+
+    @router.callback_query(F.data == "adm_ai_custom")
+    async def cb_admin_ai_custom(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        await _show_ai_custom_menu(call)
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_ai_cust_add")
+    async def cb_admin_ai_cust_add(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        if len(ai_support.custom_providers(db)) >= 10:
+            return await call.answer(tr("حداکثر ۱۰ ارائه‌دهنده مجاز است."), show_alert=True)
+        await state.set_state(AdminAICustomProviderAdd.waiting_name)
+        await replace_admin_view(call, tr("🔌 نام ارائه‌دهنده را بفرست (مثلاً My Gateway):"), reply_markup=kb.admin_back_kb("adm_ai_custom"))
+        await call.answer()
+
+    @router.message(AdminAICustomProviderAdd.waiting_name)
+    async def process_ai_cust_name(message: Message, state: FSMContext):
+        name = (message.text or "").strip()
+        if not name or len(name) > 40:
+            await message.answer(tr("⚠️ نام باید بین ۱ تا ۴۰ کاراکتر باشد."))
+            return
+        await state.update_data(cust_name=name)
+        await state.set_state(AdminAICustomProviderAdd.waiting_url)
+        await message.answer(tr("🔗 آدرس پایه API را بفرست (مثلاً https://api.example.com/v1):"))
+
+    @router.message(AdminAICustomProviderAdd.waiting_url)
+    async def process_ai_cust_url(message: Message, state: FSMContext):
+        url = (message.text or "").strip()
+        if not ai_support.normalize_chat_url(url):
+            await message.answer(tr("⚠️ آدرس باید با http:// یا https:// شروع شود."))
+            return
+        await state.update_data(cust_url=url)
+        await state.set_state(AdminAICustomProviderAdd.waiting_model)
+        await message.answer(tr("🧠 نام مدل را دقیقاً مطابق مستندات آن سرویس بفرست:"))
+
+    @router.message(AdminAICustomProviderAdd.waiting_model)
+    async def process_ai_cust_model(message: Message, state: FSMContext):
+        model = (message.text or "").strip()
+        if not model or len(model) > 120 or any(ch.isspace() for ch in model):
+            await message.answer(tr("⚠️ نام مدل نامعتبر است؛ دوباره بفرست."))
+            return
+        await state.update_data(cust_model=model)
+        await state.set_state(AdminAICustomProviderAdd.waiting_key)
+        await message.answer(tr("🔑 کلید API را بفرست (برای چند کلید، هر کدام در یک خط). پیام بعد از ذخیره پاک می‌شود:"))
+
+    @router.message(AdminAICustomProviderAdd.waiting_key)
+    async def process_ai_cust_key(message: Message, state: FSMContext):
+        keys = ai_support._split_keys(message.text or "")
+        if not keys:
+            await message.answer(tr("⚠️ کلید نامعتبر است؛ دوباره بفرست."))
+            return
+        data = await state.get_data()
+        await state.clear()
+        rows = ai_support.custom_providers(db)
+        name = data["cust_name"]
+        slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")[:24] or "provider"
+        taken = {r["id"] for r in rows}
+        pid, n = slug, 2
+        while pid in taken:
+            pid = f"{slug}-{n}"
+            n += 1
+        rows.append({"id": pid, "name": name, "base_url": data["cust_url"], "model": data["cust_model"], "api_key": "\n".join(keys)})
+        await asyncio.to_thread(ai_support.save_custom_providers, db, rows)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "ai_provider_add", f"ارائه‌دهنده سفارشی: {name}")
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await message.answer(tr(f"✅ «{name}» اضافه شد. با دکمه‌ی 🧪 اتصالش را تست کن."), reply_markup=kb.ai_custom_providers_kb(db))
+
+    @router.callback_query(F.data.startswith("adm_ai_cust_del:"))
+    async def cb_admin_ai_cust_del(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        pid = call.data.split(":", 1)[1]
+        rows = ai_support.custom_providers(db)
+        await asyncio.to_thread(ai_support.save_custom_providers, db, [r for r in rows if r["id"] != pid])
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ai_provider_delete", pid)
+        await _show_ai_custom_menu(call)
+        await call.answer(db.get_text('handlers_admin.auto_0479b78b', '✅ ذخیره شد'))
+
+    @router.callback_query(F.data.startswith("adm_ai_cust_test:"))
+    async def cb_admin_ai_cust_test(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        provider = ai_support.CUSTOM_PREFIX + call.data.split(":", 1)[1]
+        keys = ai_support.resolve_provider_keys(db, provider)
+        url = ai_support.resolve_provider_url(db, provider)
+        model = ai_support.resolve_provider_model(db, provider)
+        if not keys or not url or not model:
+            return await call.answer(tr("❌ ارائه‌دهنده پیدا نشد."), show_alert=True)
+        await call.answer(tr("⏳ در حال تست..."))
+        try:
+            resp = await ai_support._openai_chat(provider, keys[0], model, [{"role": "user", "content": "ping"}], [], url)
+            reply = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            await call.message.answer(tr(f"✅ اتصال موفق بود.\nپاسخ: {reply[:200] or '(خالی)'}"))
+        except Exception as exc:
+            await call.message.answer(tr(f"❌ تست ناموفق: {str(exc)[:300]}"))
 
     @router.callback_query(F.data == "adm_translation_settings")
     async def cb_admin_translation_settings(call: CallbackQuery):
@@ -11756,14 +11979,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if text in ("حذف", "/حذف", "-"):
             await asyncio.to_thread(db.set_setting, setting_key, "")
             await asyncio.to_thread(db.log_admin_action, message.from_user.id, action, "کلیدها حذف شدند.")
-            await message.answer(db.get_text('handlers_admin.auto_3f0ed323', '✅ کلیدها حذف شدند.'), reply_markup=kb.ai_faq_admin_kb(db, await asyncio.to_thread(db.get_ai_faq_items)))
+            await message.answer(db.get_text('handlers_admin.auto_3f0ed323', '✅ کلیدها حذف شدند.'), reply_markup=kb.ai_agents_hub_kb(db))
             return
         keys = ai_support._split_keys(text)
         await asyncio.to_thread(db.set_setting, setting_key, "\n".join(keys))
         await asyncio.to_thread(db.log_admin_action, message.from_user.id, action, f"{len(keys)} کلید ذخیره شد.")
         try: await message.delete()
         except Exception: pass
-        await message.answer(tr(f"✅ {len(keys)} کلید ذخیره شد."), reply_markup=kb.ai_faq_admin_kb(db, await asyncio.to_thread(db.get_ai_faq_items)))
+        await message.answer(tr(f"✅ {len(keys)} کلید ذخیره شد."), reply_markup=kb.ai_agents_hub_kb(db))
 
     @router.message(AdminSetGeminiKey.waiting_key)
     async def process_set_gemini_key(message: Message, state: FSMContext):
@@ -11776,6 +11999,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     @router.message(AdminSetOpenRouterKey.waiting_key)
     async def process_set_openrouter_key(message: Message, state: FSMContext):
         await _save_ai_key(message, state, "openrouter_api_key", "openrouter_key_change")
+
+    @router.message(AdminSetOpenAIKey.waiting_key)
+    async def process_set_openai_key(message: Message, state: FSMContext):
+        await _save_ai_key(message, state, "openai_api_key", "openai_key_change")
+
+    @router.message(AdminSetAnthropicKey.waiting_key)
+    async def process_set_anthropic_key(message: Message, state: FSMContext):
+        await _save_ai_key(message, state, "anthropic_api_key", "anthropic_key_change")
 
     @router.callback_query(F.data == "adm_ai_faq_add")
     async def cb_admin_ai_faq_add(call: CallbackQuery, state: FSMContext):
@@ -13783,10 +14014,120 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         await message.answer(db.get_text('handlers_admin.auto_4741add8', '🔧 پنل مدیریت:'), reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
+    def _ai_admin_end_kb():
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ پایان گفتگو", callback_data="adm_ai_end")]])
+
+    _AI_ADMIN_INTRO = (
+        "🧠 دستیار هوشمند مدیر آماده است. متن یا ویس بفرست؛ مثلاً:\n"
+        "• فروش این هفته نسبت به هفته قبل؟\n"
+        "• اطلاعات کاربر @username\n"
+        "• چند سفارش و تیکت منتظر بررسی است؟\n"
+        "• کدام محصولات کم‌موجودی‌اند؟\n\n"
+        "فقط می‌خواند و هیچ تغییری نمی‌دهد."
+    )
+    _AI_ADMIN_NOT_CONFIGURED = "دستیار هوشمند تنظیم نشده؛ ابتدا کلید API را از بخش دستیار هوشمند وارد کن."
+
+    @router.message(Command("ai"))
+    async def cmd_admin_ai(message: Message, state: FSMContext):
+        if not senior_admin_only(message.from_user.id):
+            return
+        if not ai_support.is_configured(db):
+            await message.answer(_AI_ADMIN_NOT_CONFIGURED)
+            return
+        ai_admin.reset(message.from_user.id)
+        await state.set_state(AdminAIChat.chatting)
+        await message.answer(_AI_ADMIN_INTRO, reply_markup=_ai_admin_end_kb())
+
+    @router.callback_query(F.data == "adm_ai_admin_chat")
+    async def cb_admin_ai_start(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            await call.answer("این بخش فقط برای مالک و مدیر کامل است.", show_alert=True)
+            return
+        if not ai_support.is_configured(db):
+            await call.answer(_AI_ADMIN_NOT_CONFIGURED, show_alert=True)
+            return
+        ai_admin.reset(call.from_user.id)
+        await state.set_state(AdminAIChat.chatting)
+        await call.message.answer(_AI_ADMIN_INTRO, reply_markup=_ai_admin_end_kb())
+        await call.answer()
+
+    @router.callback_query(F.data == admin_help.HELP_CB)
+    async def cb_admin_help(call: CallbackQuery, state: FSMContext):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        section = admin_help.current(call.from_user.id)
+        if not section:
+            await call.answer("برای دیدن راهنما اول وارد یکی از بخش‌های پنل شو.", show_alert=True)
+            return
+        await state.clear()
+        can_ask = senior_admin_only(call.from_user.id) and ai_support.is_configured(db)
+        text = admin_help.guide_text(section, db, is_main_bot)
+        await replace_admin_view(call, text, reply_markup=admin_help.guide_kb(section, can_ask))
+        await call.answer()
+
+    @router.callback_query(F.data == admin_help.HELP_ASK_CB)
+    async def cb_admin_help_ask(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            await call.answer("این بخش فقط برای مالک و مدیر کامل است.", show_alert=True)
+            return
+        section = admin_help.current(call.from_user.id)
+        if not section:
+            await call.answer()
+            return
+        if not ai_support.is_configured(db):
+            await call.answer(_AI_ADMIN_NOT_CONFIGURED, show_alert=True)
+            return
+        ai_admin.reset(call.from_user.id)
+        ai_admin.set_context(call.from_user.id, admin_help.assistant_context(section, db, is_main_bot))
+        await state.set_state(AdminAIChat.chatting)
+        await call.message.answer(
+            "🧠 درباره‌ی همین بخش هر سؤالی داری بپرس (متن یا ویس). فقط می‌خواند و هیچ تغییری نمی‌دهد.",
+            reply_markup=_ai_admin_end_kb(),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_ai_end")
+    async def cb_admin_ai_end(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            await call.answer()
+            return
+        ai_admin.reset(call.from_user.id)
+        await state.clear()
+        await safe_edit(call, "گفتگو با دستیار هوشمند مدیر پایان یافت.")
+        await call.answer()
+
+    @router.message(AdminAIChat.chatting, F.text | F.voice | F.audio)
+    async def admin_ai_receive(message: Message, state: FSMContext, bot: Bot):
+        user_id = message.from_user.id
+        if not senior_admin_only(user_id):
+            await state.clear()
+            return
+        if message.text and message.text.startswith("/"):
+            await message.answer("برای خروج از گفتگو دکمه‌ی پایان را بزن یا /admin را بفرست.", reply_markup=_ai_admin_end_kb())
+            return
+        thinking = await message.answer("در حال بررسی... ⏳")
+        try:
+            text = await ai_media.message_to_text(bot, db, message)
+            reply = await ai_admin.get_reply(db, user_id, text)
+        except Exception as exc:
+            if not isinstance(exc, ai_media.MediaError):
+                logging.getLogger("handlers_admin").exception("خطای دستیار هوشمند مدیر")
+            reply = ai_media.error_text(exc) if isinstance(exc, ai_media.MediaError) else "یه مشکلی پیش اومد؛ دوباره امتحان کن."
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        reply = html.escape(reply)
+        chunks = [reply[i:i + 3900] for i in range(0, len(reply), 3900)] or ["—"]
+        for i, chunk in enumerate(chunks):
+            await message.answer(chunk, reply_markup=_ai_admin_end_kb() if i == len(chunks) - 1 else None)
+
     admin_tools.register(
         router, db, is_main_bot, full_admin_only, senior_admin_only,
         deny_support, deny_mid, safe_edit, replace_admin_view,
     )
+
+    admin_campaign.register(router, db, senior_admin_only, deny_mid)
 
     extra_gateway_admin.register(
         router, db, is_main_bot, admin_only, full_admin_only, deny_support, replace_admin_view,

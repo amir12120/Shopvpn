@@ -519,10 +519,14 @@ class _OpenRouterProvider(_Provider):
     """
     name = "openrouter"
 
-    def __init__(self, keys: list[str], model: str, source_name: str = "English"):
+    def __init__(self, keys: list[str], model: str, source_name: str = "English",
+                 url: str = "https://openrouter.ai/api/v1/chat/completions", name: str | None = None):
         self.keys = keys
         self.model = model
         self.source_name = source_name
+        self.url = url
+        if name:
+            self.name = name
 
     def _instruction(self, target: str) -> str:
         name = "English" if target == "en" else LANGUAGE_CATALOG.get(target, {}).get("name", target)
@@ -551,7 +555,7 @@ class _OpenRouterProvider(_Provider):
         for key in self.keys:
             try:
                 req = urllib.request.Request(
-                    "https://openrouter.ai/api/v1/chat/completions",
+                    self.url,
                     data=body,
                     headers={
                         "Content-Type": "application/json",
@@ -567,7 +571,29 @@ class _OpenRouterProvider(_Provider):
                 return [by_id.get(i, "") for i in range(len(texts))]
             except Exception as exc:
                 last = exc
-        raise TranslationProviderError(f"openrouter: {last}")
+        raise TranslationProviderError(f"{self.name}: {last}")
+
+
+_CHAT_PROVIDER_NAMES = {"openai", "anthropic", "custom"}
+
+
+def _chat_providers(db, name: str, source_name: str = "English") -> list[_Provider]:
+    """OpenAI/Claude/custom OpenAI-compatible providers configured for the AI assistant."""
+    if db is None:
+        return []
+    try:
+        import ai_support
+        ids = [ai_support.CUSTOM_PREFIX + r["id"] for r in ai_support.custom_providers(db)] if name == "custom" else [name]
+        out: list[_Provider] = []
+        for pid in ids:
+            keys = ai_support.resolve_provider_keys(db, pid)
+            model = ai_support.resolve_provider_model(db, pid)
+            url = ai_support.resolve_provider_url(db, pid)
+            if keys and model and url:
+                out.append(_OpenRouterProvider(keys, model, source_name, url, pid))
+        return out
+    except Exception:
+        return []
 
 
 def _provider_order() -> list[str]:
@@ -661,6 +687,8 @@ def _providers(target: str, db=None, *, local_only: bool = False) -> list[_Provi
                 providers.append(_OpenRouterProvider(
                     keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
                 ))
+        elif name in _CHAT_PROVIDER_NAMES and public_allowed:
+            providers.extend(_chat_providers(db, name))
         elif name == "google" and GoogleTranslator and public_allowed:
             # Google's free web endpoint allows ~5 req/s; stay safely under that.
             providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3))
@@ -710,6 +738,8 @@ def _fa_en_providers(db=None, *, local_only: bool = False) -> list[_Provider]:
                     keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
                     source_name="Persian",
                 ))
+        elif name in _CHAT_PROVIDER_NAMES and public_allowed:
+            providers.extend(_chat_providers(db, name, "Persian"))
         elif name == "google" and GoogleTranslator and public_allowed:
             providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3, source="fa"))
         elif name in {"mymemory", "my-memory"} and MyMemoryTranslator and public_allowed:
@@ -814,6 +844,11 @@ def provider_status(db=None) -> list[dict]:
             out.append(item)
         elif name in {"gemini", "openrouter"}:
             key = bool(_gemini_keys(db) if name == "gemini" else _openrouter_keys(db))
+            item = {"name": name, "configured": key and _public_translation_allowed(), "local": False, "network": True, "status": "disabled_by_default" if not _public_translation_allowed() else ("configured" if key else "no_key")}
+            item.update({k: v for k, v in _PROVIDER_RUNTIME.get(name, {}).items() if k in {"attempts", "successes", "failures", "last_error", "last_status"}})
+            out.append(item)
+        elif name in _CHAT_PROVIDER_NAMES:
+            key = bool(_chat_providers(db, name))
             item = {"name": name, "configured": key and _public_translation_allowed(), "local": False, "network": True, "status": "disabled_by_default" if not _public_translation_allowed() else ("configured" if key else "no_key")}
             item.update({k: v for k, v in _PROVIDER_RUNTIME.get(name, {}).items() if k in {"attempts", "successes", "failures", "last_error", "last_status"}})
             out.append(item)

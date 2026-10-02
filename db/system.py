@@ -1206,6 +1206,7 @@ class SystemMixin:
     def get_renewal_settings(self) -> dict:
         return {
             "enabled": self.get_setting("renewal_reminder_enabled", "1") == "1",
+            "send_discount_code": self.get_setting("renewal_send_discount_code", "1") == "1",
             "days_before": int(self.get_setting("renewal_reminder_days_before", "5") or 5),
             "discount_percent": int(self.get_setting("renewal_discount_percent", "20") or 20),
             "discount_expiry_hours": int(self.get_setting("renewal_discount_expiry_hours", "24") or 24),
@@ -1221,6 +1222,7 @@ class SystemMixin:
     def get_volume_reminder_settings(self) -> dict:
         return {
             "enabled": self.get_setting("volume_reminder_enabled", "1") == "1",
+            "send_discount_code": self.get_setting("volume_send_discount_code", "1") == "1",
             "mode": self.get_setting("volume_reminder_mode", "percent"),
             "percent": int(self.get_setting("volume_reminder_percent", "80") or 80),
             "gb_left": float(self.get_setting("volume_reminder_gb_left", "2") or 2),
