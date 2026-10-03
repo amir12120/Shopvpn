@@ -46,6 +46,9 @@ jobs:
       - name: Unit smoke tests
         run: python -m pytest tests -q
 
+      - name: English catalog coverage (no Persian string may reach an English user)
+        run: python check_i18n_coverage.py
+
   installer-smoke:
     name: Full install on fresh Ubuntu 22.04 (disk-lean)
     runs-on: ubuntu-22.04

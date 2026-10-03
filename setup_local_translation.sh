@@ -66,6 +66,52 @@ pip_q() {
   "$1" -m pip install -q --no-cache-dir --disable-pip-version-check "${@:2}"
 }
 
+# ---------------------------------------------------------------------------
+# Whose HOME do the Argos models belong to?
+#
+# The systemd unit runs the bot as a specific user, and Argos keeps the
+# *installed* models under that user's HOME
+# (~/.local/share/argos-translate/packages). When this script runs as root
+# (`sudo shopvpn`, `sudo bash install.sh`) while the unit runs as somebody
+# else, argospm downloads a SECOND full copy of every model into /root — a few
+# hundred megabytes wasted on a small VPS, while the running bot still looks in
+# its own home and never sees them. So the models are always installed as the
+# unit's user, with that user's HOME, and with any inherited XDG_* override
+# dropped (an empty XDG_* would make Argos resolve to a relative path).
+# ---------------------------------------------------------------------------
+SERVICE_NAME="${SHOPVPN_SERVICE_NAME:-v2raybot}"
+SERVICE_USER="${SHOPVPN_SERVICE_USER:-}"
+if [ -z "$SERVICE_USER" ] && command -v systemctl >/dev/null 2>&1; then
+  SERVICE_USER="$(systemctl show -p User --value "$SERVICE_NAME" 2>/dev/null || true)"
+fi
+[ -z "$SERVICE_USER" ] && SERVICE_USER="root"
+SERVICE_HOME="$(getent passwd "$SERVICE_USER" 2>/dev/null | cut -d: -f6 || true)"
+if [ -z "$SERVICE_HOME" ]; then
+  SERVICE_USER="$(id -un)"
+  SERVICE_HOME="$HOME"
+fi
+
+# as_service_user <cmd...> — run a command as the bot's user with its HOME.
+as_service_user() {
+  if [ "$(id -un)" = "$SERVICE_USER" ]; then
+    "$@"
+    return $?
+  fi
+  local -a as_user=()
+  if command -v sudo >/dev/null 2>&1; then
+    as_user=(sudo -u "$SERVICE_USER" --)
+  elif command -v runuser >/dev/null 2>&1; then
+    as_user=(runuser -u "$SERVICE_USER" --)
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    as_root "${as_user[@]+"${as_user[@]}"}" env -u XDG_DATA_HOME -u XDG_CACHE_HOME -u XDG_CONFIG_HOME \
+      HOME="$SERVICE_HOME" USER="$SERVICE_USER" LOGNAME="$SERVICE_USER" "$@"
+  else
+    "${as_user[@]+"${as_user[@]}"}" env -u XDG_DATA_HOME -u XDG_CACHE_HOME -u XDG_CONFIG_HOME \
+      HOME="$SERVICE_HOME" USER="$SERVICE_USER" LOGNAME="$SERVICE_USER" "$@"
+  fi
+}
+
 human() { if [ -e "$1" ]; then du -sh "$1" 2>/dev/null | cut -f1; else echo "-"; fi; }
 
 install_system_prereqs() {
@@ -134,18 +180,21 @@ PY
 fi
 
 install_pair() {
-  local pair="$1"
-  echo "[translation] Installing Argos model: $pair"
-  if ! "$VENV_DIR/bin/argospm" install "translate-${pair}"; then
-    echo "[translation] Warning: model translate-${pair} is unavailable; continuing." >&2
+    local pair="$1"
+    echo "[translation] Installing Argos model: $pair"
+    if ! as_service_user "$VENV_DIR/bin/argospm" install "translate-${pair}"; then
+        echo "[translation] Warning: model translate-${pair} is unavailable; continuing." >&2
   fi
 }
 
 if [ "$SKIP_MODELS" = "1" ]; then
   echo "[translation] SHOPVPN_SKIP_MODELS=1 -> skipping model downloads."
 else
+  if [ "$SERVICE_USER" != "$(id -un)" ]; then
+    echo "[translation] Installing models as the bot's user: $SERVICE_USER (HOME=$SERVICE_HOME)"
+  fi
   # Argos package metadata is public/open and does not require an API key.
-  "$VENV_DIR/bin/argospm" update
+  as_service_user "$VENV_DIR/bin/argospm" update
 
   # en -> fa is what the Persian UI needs; fa -> en completes the admin panel,
   # which can contain raw Persian strings.
@@ -201,10 +250,10 @@ if [ "$LT_ENABLED" = "1" ]; then
   set_env SHOPVPN_TRANSLATION_PROVIDERS 'argos,libretranslate'
   set_env SHOPVPN_LIBRETRANSLATE_URL 'http://127.0.0.1:5000'
 
-  # Run LibreTranslate as the installing user with the SAME HOME as the main
-  # venv, so it reuses the Argos packages already downloaded instead of
-  # fetching a second multi-hundred-MB copy into a private home directory.
-  LT_USER="$(id -un)"
+  # Run LibreTranslate as the bot's user with the SAME HOME as the main venv, so
+  # it reuses the Argos packages already downloaded instead of fetching a second
+  # multi-hundred-MB copy into a private home directory.
+  LT_USER="$SERVICE_USER"
   LT_LOAD_ONLY="en,fa"
   for lang in "${TARGETS[@]}"; do
     [ "$lang" = "fa" ] && continue
@@ -222,7 +271,7 @@ After=network.target
 Type=simple
 User=$LT_USER
 WorkingDirectory=$ROOT_DIR
-Environment=HOME=$HOME
+Environment=HOME=$SERVICE_HOME
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$TRANSLATION_VENV_DIR/bin/libretranslate --host 127.0.0.1 --port 5000 --load-only $LT_LOAD_ONLY --disable-web-ui
 Restart=on-failure
@@ -285,6 +334,14 @@ if [ "${#TARGETS[@]}" -gt 0 ]; then
 else
   echo "[translation] Installed Argos pairs: en_fa, fa_en"
 fi
-echo "[translation] Disk used -> venv: $(human "$VENV_DIR") | translation-venv: $(human "$TRANSLATION_VENV_DIR") | Argos models: $(human "$HOME/.local/share/argos-translate") $(human "$HOME/.local/cache/argos-translate")"
+echo "[translation] Disk used -> venv: $(human "$VENV_DIR") | translation-venv: $(human "$TRANSLATION_VENV_DIR") | Argos models: $(human "$SERVICE_HOME/.local/share/argos-translate") $(human "$SERVICE_HOME/.local/cache/argos-translate")"
+if [ "$SERVICE_USER" != "$(id -un)" ]; then
+  stale_home="$HOME/.local/share/argos-translate"
+  if [ -d "$stale_home" ]; then
+    echo "[translation] NOTE: a second Argos copy also exists in $stale_home ($(human "$stale_home"))"
+    echo "[translation]       It belongs to the account you ran this script with, not to the bot;"
+    echo "[translation]       it is safe to delete it and free that space."
+  fi
+fi
 echo "[translation] Add more languages later with: SHOPVPN_TRANSLATION_LANGS=tr,ar bash setup_local_translation.sh"
 echo "[translation] Local translation setup completed."

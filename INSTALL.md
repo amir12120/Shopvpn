@@ -157,6 +157,24 @@ success. If it never comes up, the last 25 journal lines are printed instead of
 a misleading "done" — the same check is applied to the Mini App, panel and API
 units.
 
+### The two places that used to fill a small disk
+
+1. **A second copy of the translation models in `/root`.** Argos stores installed
+   models under the HOME of the account that installs them, so running the menu
+   with root while the unit runs as another account downloaded every model
+   again into `/root`. Models are now always installed as the unit's user (see
+   `systemctl show -p User v2raybot`), and the script prints where they landed.
+2. **The systemd journal.** It keeps rotated logs until 10% of the whole
+   filesystem is used. The installer drops in
+   `/etc/systemd/journald.conf.d/shopvpn-disk.conf` (`SystemMaxUse=200M`,
+   `SystemKeepFree=1G`) and every cleanup vacuums it back to that size.
+
+Skip the journal cap with `SHOPVPN_SKIP_JOURNAL_LIMIT=1` or change its size with
+`SHOPVPN_JOURNAL_MAX=500M`. `cleanup.sh` also removes the abandoned
+`/tmp/restore_*`, `/tmp/restore_full_*`, `/tmp/xui_restore_*` and `/tmp/qr_bg_*`
+directories older than a day — each of them holds a full database copy — and it
+reports where the remaining disk went.
+
 Run it manually any time (e.g. when the disk is full):
 
 ```bash

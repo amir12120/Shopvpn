@@ -708,6 +708,14 @@ Beyond answering questions, the assistant can prepare account actions that the b
 - 🆕 New users pick Persian or English on their first `/start` and are never asked again
 - 🔁 Existing users are migrated automatically (`language_selected`) and skip the question
 
+### 🧹 Why the Disk Used to Fill Up
+
+- 🏠 **Translation models are installed in the HOME of the account the service runs as.** Running the management menu with root while the unit runs as another user used to download a second full copy of every Argos model into `/root` (a few hundred megabytes wasted) and still left the running bot without its models.
+- 🧹 **Cleanup now sweeps every home:** the pip cache and the Argos download cache of the account you ran the command with, of the service account, and of `/root`.
+- 🗑️ **Abandoned restore/QR temp directories** — each one a full database copy, left behind when an admin walks away from a flow — are removed after a day.
+- 📰 **The systemd journal is capped** (it defaults to 10% of the whole filesystem) and the cleanup vacuums it to 200 MB.
+- 📊 The cleanup report now shows the size of the venv, models, backups, journal and free space on `/`, and warns when it finds a stray duplicate model directory.
+
 ### 🧹 Install and Update Now Do the Same Job
 
 - 🧹 An update frees disk space too (pip/apt caches, temp files, `__pycache__`), not just the initial install

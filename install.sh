@@ -22,6 +22,8 @@
 #   SHOPVPN_SKIP_MODELS=1               skip Argos model downloads
 #   SHOPVPN_SKIP_SERVICE_START=1        create the systemd unit but don't start it
 #   SHOPVPN_SKIP_MENU=1                 don't auto-open the CLI menu at the end
+#   SHOPVPN_SKIP_JOURNAL_LIMIT=1        don't cap the systemd journal size
+#   SHOPVPN_JOURNAL_MAX=200M            how much rotated log to keep
 # ============================================================================
 
 set -e
@@ -226,6 +228,23 @@ fi
 # This only removes regenerable files and does not touch the running bot.
 if [ -f "$INSTALL_DIR/cleanup.sh" ]; then
     bash "$INSTALL_DIR/cleanup.sh" "$INSTALL_DIR" || true
+fi
+
+# systemd keeps rotated logs until 10% of the whole filesystem is used, which on
+# a small VPS is a lot of disk for log text nobody reads. Cap it with a drop-in
+# (leaving any other journald setting untouched) and keep a floor of free space.
+if [ "${SHOPVPN_SKIP_JOURNAL_LIMIT:-0}" != "1" ] && command -v journalctl >/dev/null 2>&1; then
+    JOURNAL_MAX="${SHOPVPN_JOURNAL_MAX:-200M}"
+    if sudo mkdir -p /etc/systemd/journald.conf.d && \
+       sudo bash -c "cat > /etc/systemd/journald.conf.d/shopvpn-disk.conf" <<EOF
+[Journal]
+SystemMaxUse=${JOURNAL_MAX}
+SystemKeepFree=1G
+EOF
+    then
+        sudo systemctl restart systemd-journald >/dev/null 2>&1 || true
+        echo "📰 system journal capped at ${JOURNAL_MAX} (SHOPVPN_SKIP_JOURNAL_LIMIT=1 to undo)"
+    fi
 fi
 echo "💾 Disk used -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1) | project: $(du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1)"
 

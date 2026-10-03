@@ -150,3 +150,44 @@ def test_install_waits_until_the_bot_really_came_up():
     assert "BOT_READY" in text
     assert "cleanup.sh" in text
     assert "journalctl" in text, "a failed start must show what went wrong"
+
+
+def test_cleanup_sweeps_every_home_the_journal_and_abandoned_tmp_dirs():
+    """The disk fillers this fork exists for.
+
+    Caches live in the HOME of whoever ran the command (the management menu
+    under root) *and* in the HOME of the account the systemd unit runs as, so
+    both have to be swept. Rotated journal files and the restore/QR temp dirs
+    the bot abandoned grow without anyone noticing.
+    """
+    text = _read("cleanup.sh")
+    assert "pip cache purge" in text
+    assert "systemctl show -p User --value" in text, "the service account's cache must be swept too"
+    assert "IFS= read -r h" in text, "home paths must be read line by line (they may contain spaces)"
+    assert "journalctl --vacuum-size" in text and "SHOPVPN_JOURNAL_MAX" in text
+    assert "-mtime +1" in text and "restore_" in text
+    assert "$INSTALL_DIR/backups" in text, "the report should show what the backups cost"
+
+
+def test_translation_models_install_into_the_bots_own_home():
+    """The model install must follow the bot's account, not the caller's.
+
+    Argos keeps installed models under the HOME of the running account, so
+    running argospm as root while the unit runs as somebody else downloads a
+    second full copy (a few hundred MB) and still leaves the bot without its
+    models. HOME must therefore follow the unit, and any inherited XDG_*
+    override must be dropped, because an empty XDG_* makes Argos resolve to a
+    relative path.
+    """
+    text = _read("setup_local_translation.sh")
+    assert 'systemctl show -p User --value "$SERVICE_NAME"' in text
+    assert 'as_service_user "$VENV_DIR/bin/argospm" install' in text
+    assert 'as_service_user "$VENV_DIR/bin/argospm" update' in text
+    assert "-u XDG_DATA_HOME" in text
+
+
+def test_installer_caps_the_system_journal():
+    text = _read("install.sh")
+    assert "journald.conf.d/shopvpn-disk.conf" in text
+    assert "SystemMaxUse=" in text
+    assert "SHOPVPN_SKIP_JOURNAL_LIMIT" in text, "the cap must stay opt-out"

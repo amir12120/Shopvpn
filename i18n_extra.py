@@ -818,6 +818,7 @@ EXTRA_PHRASES.update({
     '\n🎟 کد تخفیف «{label}» به\u200cصورت خودکار اعمال شد: -{amount} تومان\n': '\n🎟 Discount code "{label}" applied automatically: -{amount} Toman\n',
     '💵 مبلغ پس از تخفیف: {total} تومان\n': '💵 Amount after discount: {total} Toman\n',
     '\n👛 موجودی کیف پول شما: {amount} تومان (به\u200cصورت خودکار در پرداخت اعمال می\u200cشود)\n': '\n👛 Your wallet balance: {amount} Toman (applied automatically at payment)\n',
+    '\n👛 موجودی کیف پول شما: {amount} تومان (⛔️ پرداخت با کیف پول برای این محصول غیرفعال است)\n': '\n👛 Your wallet balance: {amount} Toman (⛔️ wallet payment is disabled for this product)\n',
     'این گزینه در دسترس نیست.': 'This option is not available.',
     'این محصول در حال حاضر موجود نیست.': 'This product is currently unavailable.',
     'محصول معتبر نیست. لطفاً دوباره از منو شروع کنید.': 'Invalid product. Please start again from the menu.',
