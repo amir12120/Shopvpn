@@ -1537,6 +1537,22 @@ class OrdersMixin:
                 )
             return cur.rowcount
 
+    def list_discount_code_sources(self):
+        """منابع واقعی تولید کدهای تخفیف، همراه با تعداد هر نوع."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT COALESCE(source, 'admin') AS source, COUNT(*) AS count "
+                "FROM discount_codes GROUP BY COALESCE(source, 'admin') ORDER BY count DESC, source"
+            ).fetchall()
+
+    def delete_discount_codes_by_source(self, source: str) -> int:
+        """حذف فقط کدهایی که توسط یک منبع/روش تولید مشخص ساخته شده‌اند."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM discount_codes WHERE COALESCE(source, 'admin')=?", (source,)
+            )
+            return cur.rowcount
+
 
     def increment_discount_usage(self, code_id: int):
         with self._get_conn() as conn:

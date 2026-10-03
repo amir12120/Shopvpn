@@ -46,6 +46,7 @@ from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLI
 from database import Database, WEB_ADMIN_PERMISSIONS, MENU_BUTTON_META
 import button_registry
 import extra_gateway_registry
+import extra_settings_schema
 from admin_panel.security import hash_password, verify_password, create_session_token, verify_session_token
 from admin_panel import mobile_auth
 from asset_versioning import file_digest, static_version, ApiNoStoreMiddleware
@@ -1739,6 +1740,9 @@ def api_app_config(admin=Depends(get_current_admin)):
                     {"key": "cohere_api_key", "label": "Cohere - کلید API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                     {"key": "cloudflare_api_token", "label": "Cloudflare Workers AI - توکن (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
                     {"key": "cloudflare_account_id", "label": "Cloudflare Workers AI - Account ID", "type": "text"},
+                    {"key": "cloudflare_model", "label": "Cloudflare Workers AI - مدل بینایی‌دار (🆓 رایگان، 💳 نیازمند پلن پولی)", "type": "select", "options": [
+                        [m, label] for m, label in ai_support.cloudflare_model_options(db)
+                    ]},
                 ]},
             ],
         })
@@ -1752,6 +1756,8 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"key": "model", "label": "مدل", "type": "text"},
             ],
             "actions": [
+                {"id": "discover", "label": "دریافت مدل‌ها", "method": "POST",
+                 "endpoint": "/api/ai-providers/{id}/discover", "style": "default", "confirm": False},
                 {"id": "test", "label": "تست اتصال", "method": "POST",
                  "endpoint": "/api/ai-providers/{id}/test", "style": "default", "confirm": True},
                 {"id": "delete", "label": "حذف", "method": "DELETE",
@@ -1764,7 +1770,7 @@ def api_app_config(admin=Depends(get_current_admin)):
                 "fields": [
                     {"key": "name", "label": "نام", "type": "text"},
                     {"key": "base_url", "label": "آدرس پایه API (مثلاً https://example.com/v1)", "type": "text"},
-                    {"key": "model", "label": "نام مدل", "type": "text"},
+                    {"key": "model", "label": "نام مدل (اختیاری؛ اگر خالی باشد از /models خودکار انتخاب می‌شود)", "type": "text"},
                     {"key": "api_key", "label": "کلید(های) API (هر خط یک کلید)", "type": "textarea"},
                 ],
             },
@@ -2180,6 +2186,7 @@ class AiSupportSettingsBody(BaseModel):
     cohere_api_key: str = ""
     cloudflare_api_token: str = ""
     cloudflare_account_id: Optional[str] = None
+    cloudflare_model: Optional[str] = None
 
 
 @app.get("/api/settings/ai-support")
@@ -2205,6 +2212,7 @@ def api_get_ai_support_settings(admin=Depends(require_permission("settings"))):
         "cohere_api_key": _mask_key_lines(db.get_setting("cohere_api_key", "")),
         "cloudflare_api_token": _mask_key_lines(db.get_setting("cloudflare_api_token", "")),
         "cloudflare_account_id": db.get_setting("cloudflare_account_id", ""),
+        "cloudflare_model": ai_support.resolve_cloudflare_model(db),
     }
 
 
@@ -2245,6 +2253,11 @@ def api_set_ai_support_settings(body: AiSupportSettingsBody, admin=Depends(requi
         db.set_setting(setting_key, "\n".join(ai_support._split_keys(raw)))
     if body.cloudflare_account_id is not None:
         db.set_setting("cloudflare_account_id", body.cloudflare_account_id.strip())
+    if body.cloudflare_model is not None and body.cloudflare_model.strip():
+        cf_model = body.cloudflare_model.strip()
+        if len(cf_model) > 120 or any(ch.isspace() for ch in cf_model) or not cf_model.startswith(("@cf/", "@hf/")):
+            raise HTTPException(400, tr("نام مدل Workers AI نامعتبر است."))
+        db.set_setting("cloudflare_model", cf_model)
     db.log_admin_action(admin["id"], "ai_support_settings_change", f"تنظیمات دستیار هوشمند تغییر کرد (پنل وب - {admin['username']}).")
     return {"ok": True}
 
@@ -2269,10 +2282,16 @@ def api_list_ai_providers(admin=Depends(require_permission("settings"))):
 
 
 @app.post("/api/ai-providers")
-def api_add_ai_provider(body: AiCustomProviderBody, admin=Depends(require_permission("settings"))):
+async def api_add_ai_provider(body: AiCustomProviderBody, admin=Depends(require_permission("settings"))):
     name, model = body.name.strip(), body.model.strip()
-    if not name or not model or not body.api_key.strip():
-        raise HTTPException(400, tr("نام، مدل و کلید API الزامی هستند."))
+    if not name or not body.api_key.strip():
+        raise HTTPException(400, tr("نام و کلید API الزامی هستند."))
+    if not model:
+        discovered = await ai_support.discover_openai_compatible_models(body.base_url, ai_support._split_keys(body.api_key)[0])
+        if discovered:
+            model = discovered[0][0]
+        else:
+            raise HTTPException(400, tr("مدل پیدا نشد؛ دریافت خودکار مدل ناموفق بود و باید مدل را دستی وارد کنید."))
     if not ai_support.normalize_chat_url(body.base_url):
         raise HTTPException(400, tr("آدرس API باید با http:// یا https:// شروع شود."))
     rows = ai_support.custom_providers(db)
@@ -2322,6 +2341,39 @@ def api_delete_ai_provider(provider_id: str, admin=Depends(require_permission("s
     ai_support.save_custom_providers(db, [r for r in rows if r["id"] != provider_id])
     db.log_admin_action(admin["id"], "ai_provider_delete", f"ارائه‌دهنده هوش مصنوعی سفارشی حذف شد: {provider_id} (پنل وب - {admin['username']}).")
     return {"ok": True}
+
+
+class AiModelDiscoveryBody(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+
+
+@app.get("/api/settings/ai-support/models/{provider}")
+async def api_discover_builtin_ai_models(provider: str, admin=Depends(require_permission("settings"))):
+    allowed = {"gemini", "groq", "openrouter", "openai", "anthropic"}
+    if provider not in allowed:
+        raise HTTPException(400, tr("ارائه‌دهنده نامعتبر است."))
+    rows = await ai_support.discover_provider_models(db, provider, force=True)
+    return {"ok": bool(rows), "models": [{"id": m, "label": l} for m, l in rows]}
+
+
+@app.post("/api/ai-providers/discover")
+async def api_discover_ai_provider(body: AiModelDiscoveryBody, admin=Depends(require_permission("settings"))):
+    keys = ai_support._split_keys(body.api_key)
+    if not ai_support.normalize_base_url(body.base_url) or not keys:
+        raise HTTPException(400, tr("آدرس API و کلید API الزامی هستند."))
+    rows = await ai_support.discover_openai_compatible_models(body.base_url, keys[0], force=True)
+    return {"ok": bool(rows), "models": [{"id": m, "label": l} for m, l in rows]}
+
+
+@app.post("/api/ai-providers/{provider_id}/discover")
+async def api_discover_saved_ai_provider(provider_id: str, admin=Depends(require_permission("settings"))):
+    provider = ai_support.CUSTOM_PREFIX + provider_id
+    entry = ai_support._custom_entry(db, provider)
+    if not entry or not entry.get("keys"):
+        raise HTTPException(404, tr("ارائه‌دهنده یا کلید API پیدا نشد."))
+    rows = await ai_support.discover_provider_models(db, provider, force=True)
+    return {"ok": bool(rows), "models": [{"id": m, "label": l} for m, l in rows]}
 
 
 @app.post("/api/ai-providers/{provider_id}/test")
@@ -5832,6 +5884,31 @@ def api_set_setting(body: SettingBody, admin=Depends(require_permission("setting
     return {"ok": True}
 
 
+class ExtraSettingsBody(BaseModel):
+    values: Dict[str, Any]
+
+
+@app.get("/api/settings/extra")
+def api_get_extra_settings(admin=Depends(require_permission("settings"))):
+    return {
+        "groups": extra_settings_schema.groups_for("web"),
+        "values": extra_settings_schema.load_values(db, "web"),
+    }
+
+
+@app.post("/api/settings/extra")
+def api_set_extra_settings(body: ExtraSettingsBody, admin=Depends(require_permission("settings"))):
+    try:
+        changed = extra_settings_schema.save_values(db, "web", body.values)
+    except extra_settings_schema.SettingsValidationError as e:
+        raise HTTPException(400, detail=str(e))
+    # فقط نام کلیدها لاگ می‌شود؛ مقدار (مخصوصاً رمزها/کلیدها) هرگز.
+    db.log_admin_action(admin["id"], "setting_change",
+                        f"extra settings: {', '.join(changed)} (پنل وب - {admin['username']})",
+                        "setting", "extra")
+    return {"ok": True, "changed": changed}
+
+
 # قابلیت ۵۰: «متن‌های ربات» - رجیستری کامل (کاربر + ادمین) که با اسکن خودکار
 # کد ساخته می‌شود (نگاه کن: text_scanner.py، Database.list_text_registry).
 @app.get("/api/texts")
@@ -6682,15 +6759,16 @@ class StockAlertSettingsBody(BaseModel):
 
 @app.get("/api/settings/stock-alert")
 def api_get_stock_alert_settings(admin=Depends(require_permission("settings"))):
-    return {"threshold": int(db.get_setting("stock_alert_threshold", "5") or 5)}
+    # کلید واقعی‌ای که بات می‌خواند low_stock_threshold است (قبلاً اشتباهاً stock_alert_threshold ذخیره می‌شد و هیچ اثری نداشت)
+    return {"threshold": int(db.get_setting("low_stock_threshold", "3") or 3)}
 
 
 @app.post("/api/settings/stock-alert")
 def api_set_stock_alert_settings(body: StockAlertSettingsBody, admin=Depends(require_permission("settings"))):
     if body.threshold < 0:
         raise HTTPException(400, tr("آستانه نمی‌تواند منفی باشد."))
-    db.set_setting("stock_alert_threshold", str(body.threshold))
-    db.log_admin_action(admin["id"], "setting_change", f"stock_alert_threshold={body.threshold} (پنل وب - {admin['username']})", "setting", "stock_alert")
+    db.set_setting("low_stock_threshold", str(body.threshold))
+    db.log_admin_action(admin["id"], "setting_change", f"low_stock_threshold={body.threshold} (پنل وب - {admin['username']})", "setting", "stock_alert")
     return {"ok": True}
 
 

@@ -6851,6 +6851,7 @@ const SETTINGS_TABS = [
   { key: 'payment', label: '💳 پرداخت و مالی' },
   { key: 'services', label: '⚙️ سرویس‌های ویژه' },
   { key: 'mobile_app', label: '📱 اپ موبایل' },
+  { key: 'extra', label: '⚙️ تنظیمات تکمیلی' },
 ];
 // نکته: تنظیمات رفرال، گردونه‌شانس، کریپتو، یادآوری تمدید/حجم، کانفیگ تست خودکار،
 // عضویت اجباری و هشدار موجودی همگی به‌طور کامل‌تر در صفحه‌ی «تنظیمات فروش» هستند؛
@@ -6873,6 +6874,18 @@ const SETTINGS_GROUPS = [
   { tab: 'payment', title: 'کارت بانکی', fields: [
     { key: 'card_number', label: 'شماره کارت', type: 'text' },
     { key: 'card_holder', label: 'نام صاحب کارت', type: 'text' },
+  ]},
+  { tab: 'payment', title: '🏦 استعلام بانکی رسید (کارت↔شبا، نام صاحب کارت)', fields: [
+    { key: 'bank_inquiry_enabled', label: 'فعال بودن استعلام بانکی (پیش‌فرض خاموش؛ چک محلی کد بانک شبا همیشه فعال است)', type: 'bool' },
+    { key: 'bank_inquiry_url', label: 'آدرس API سرویس استعلام (می‌تواند {card} داشته باشد)', type: 'text' },
+    { key: 'bank_inquiry_method', label: 'متد: GET یا POST', type: 'text' },
+    { key: 'bank_inquiry_headers_json', label: 'هدرها (JSON، مثلاً {"Authorization":"Bearer ..."})', type: 'password' },
+    { key: 'bank_inquiry_body_json', label: 'بدنه‌ی JSON برای POST (مثلاً {"card":"{card}"})', type: 'textarea' },
+    { key: 'bank_inquiry_iban_path', label: 'مسیر شبا در پاسخ (مثلاً data.iban)', type: 'text' },
+    { key: 'bank_inquiry_owner_path', label: 'مسیر نام صاحب کارت؛ چند مسیر با ویرگول (مثلاً data.first_name,data.last_name)', type: 'text' },
+    { key: 'bank_inquiry_timeout', label: 'مهلت پاسخ (ثانیه)', type: 'number' },
+    { key: 'bank_inquiry_cache_hours', label: 'مدت کش نتیجه (ساعت)', type: 'number' },
+    { key: 'bank_inquiry_auto_reject', label: 'رد خودکار رسید وقتی مقصد طبق استعلام قطعاً اشتباه است (پیش‌فرض خاموش = فقط هشدار)', type: 'bool' },
   ]},
   { tab: 'payment', title: 'نرخ ارز پشتیبان (عمومی فروشگاه)', fields: [
     { key: 'manual_usd_rate_toman', label: 'نرخ دلار دستی — فقط وقتی همه‌ی منابع زنده شکست بخورند استفاده می‌شود', type: 'number' },
@@ -7120,6 +7133,127 @@ function switchSettingsTab(tab, root) {
   settingsActiveTab = tab;
   $$('#settings-tabs-nav .tab-btn, #settings-tabs-nav .bru-seg-btn, #settings-tabs-nav .bn-seg-btn', root).forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   $$('[data-settings-tab]', root).forEach(el => { el.style.display = el.dataset.settingsTab === tab ? '' : 'none'; });
+  syncExtraSettingsTab(root);
+}
+
+/* ---------------------------------------------- تب «تنظیمات تکمیلی» -- */
+// اسکیمای این تب از سرور می‌آید (GET /api/settings/extra) و هر گروه جداگانه
+// با POST /api/settings/extra ذخیره می‌شود. عمداً از data-xkey (نه data-key)
+// استفاده می‌شود تا دکمه‌ی عمومیِ «ذخیره تغییرات» این فیلدها را (مخصوصاً
+// رمزهای ماسک‌شده را) از مسیر /settings ننویسد.
+const EXTRA_SECRET_MASK = '••••••••';
+
+function extraSettingsTabHtml() {
+  return `<div data-settings-tab="extra" id="extra-settings-root" style="${settingsActiveTab === 'extra' ? '' : 'display:none'}"></div>`;
+}
+
+function extraFieldHtml(f, values) {
+  const T = settingsUiText;
+  const ff = { ...f, key: '__XK__' + f.key, label: f.label };
+  let html = settingsFieldHtml(ff, { ['__XK__' + f.key]: values[f.key] ?? f.default ?? '' });
+  html = html.split('data-key="__XK__').join('data-xkey="');
+  if (f.type === 'password') {
+    html = html.replace('type="password"', `type="password" autocomplete="new-password" placeholder="${esc(T('خالی = بدون تغییر'))}"`);
+  } else if (f.type === 'number') {
+    if (f.min !== undefined) html = html.replace('type="number"', `type="number" min="${esc(f.min)}"`);
+    if (f.max !== undefined) html = html.replace('type="number"', `type="number" max="${esc(f.max)}"`);
+  }
+  const hint = f.hint ? `<div class="card-sub extra-hint">${esc(T(f.hint))}</div>` : '';
+  const search = esc(`${f.label} ${f.hint || ''} ${f.key}`.toLowerCase());
+  return `<div class="extra-field" data-extra-search="${search}">${html}${hint}</div>`;
+}
+
+function extraSettingsHtml(data) {
+  const T = settingsUiText;
+  const values = data.values || {};
+  // کلیدهایی که فرم عمومی همین صفحه از قبل دارد دوباره نمایش داده نمی‌شوند تا
+  // دو فرم روی یک کلید همدیگر را بازنویسی نکنند.
+  const existing = new Set();
+  SETTINGS_GROUPS.forEach(g => g.fields.forEach(f => existing.add(f.key)));
+  const groups = (data.groups || []).map(g => ({ ...g, fields: (g.fields || []).filter(f => !existing.has(f.key)) }))
+    .filter(g => g.fields.length);
+  return `
+    <div class="extra-search"><input class="input" type="search" id="extra-search-input" placeholder="${esc(T('جستجو در تنظیمات...'))}" autocomplete="off"></div>
+    <div class="settings-accordion" id="extra-accordion">
+      ${groups.map((g, i) => `
+        <div class="settings-group extra-group ${i === 0 ? 'open' : ''}" data-extra-group="${esc(g.id)}" data-extra-title="${esc(String(g.title || '').toLowerCase())}">
+          <button type="button" class="settings-group-head">
+            <span>${esc(T(g.title))}</span>
+            <span class="settings-group-arrow">˅</span>
+          </button>
+          <div class="settings-group-body">
+            <div class="form-grid">${g.fields.map(f => extraFieldHtml(f, values)).join('')}</div>
+            <button type="button" class="btn btn-primary extra-save-btn" data-group="${esc(g.id)}" style="margin-top:12px">${esc(T('ذخیره'))}</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="card-sub extra-empty" style="display:none">${esc(T('موردی پیدا نشد.'))}</div>`;
+}
+
+function filterExtraSettings(box, q) {
+  q = (q || '').trim().toLowerCase();
+  let anyGroup = false;
+  $$('.extra-group', box).forEach(g => {
+    const titleHit = !!q && (g.dataset.extraTitle || '').includes(q);
+    let shown = 0;
+    $$('.extra-field', g).forEach(fl => {
+      const hit = !q || titleHit || (fl.dataset.extraSearch || '').includes(q);
+      fl.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    g.style.display = shown ? '' : 'none';
+    if (shown) anyGroup = true;
+    if (q && shown) g.classList.add('open');
+  });
+  const empty = $('.extra-empty', box);
+  if (empty) empty.style.display = anyGroup ? 'none' : '';
+}
+
+async function saveExtraGroup(groupEl, btn) {
+  const values = {};
+  $$('[data-xkey]:not(.switch)', groupEl).forEach(el => { values[el.dataset.xkey] = el.value; });
+  $$('.switch[data-xkey]', groupEl).forEach(sw => { values[sw.dataset.xkey] = sw.dataset.on === '1' ? '1' : '0'; });
+  btn.disabled = true;
+  try {
+    await apiPost('/settings/extra', { values });
+    // رمز تازه‌ذخیره‌شده دیگر در صفحه نمی‌ماند؛ به ماسک برمی‌گردد.
+    $$('input[type=password][data-xkey]', groupEl).forEach(inp => { if (inp.value.trim()) inp.value = EXTRA_SECRET_MASK; });
+    toast(settingsUiText('ذخیره شد.'));
+  } catch (e) {
+    handleErr(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function ensureExtraSettings(root) {
+  const box = $('#extra-settings-root', root);
+  if (!box || box.dataset.loaded === '1' || box.dataset.loading === '1') return;
+  box.dataset.loading = '1';
+  box.innerHTML = `<div class="card-sub">${esc(settingsUiText('در حال بارگذاری...'))}</div>`;
+  try {
+    const data = await apiGet('/settings/extra');
+    box.innerHTML = extraSettingsHtml(data);
+    box.dataset.loaded = '1';
+    $$('.settings-group-head', box).forEach(h => h.addEventListener('click', () => h.parentElement.classList.toggle('open')));
+    $$('.switch[data-xkey]', box).forEach(sw => sw.addEventListener('click', () => { sw.dataset.on = sw.dataset.on === '1' ? '0' : '1'; }));
+    $$('.extra-save-btn', box).forEach(b => b.addEventListener('click', () => saveExtraGroup(b.closest('.extra-group'), b)));
+    const si = $('#extra-search-input', box);
+    if (si) si.addEventListener('input', () => filterExtraSettings(box, si.value));
+    if (typeof window.ShopVPNApplyI18n === 'function') { try { window.ShopVPNApplyI18n(); } catch (_) {} }
+  } catch (e) {
+    box.innerHTML = '';
+    handleErr(e);
+  } finally {
+    box.dataset.loading = '0';
+  }
+}
+
+function syncExtraSettingsTab(root) {
+  const isExtra = settingsActiveTab === 'extra';
+  // این تب دکمه‌ی ذخیره‌ی مخصوص هر گروه دارد؛ نوار «ذخیره تغییرات» عمومی اینجا بی‌معناست.
+  $$('.settings-save-bar', root).forEach(el => { el.style.display = isExtra ? 'none' : ''; });
+  if (isExtra) ensureExtraSettings(root);
 }
 
 /* --------------------------------------------- تنظیمات: اپ موبایل مدیریت -- */
@@ -8525,6 +8659,8 @@ async function renderSettings() {
       ${mobileAppCardHtml(mobileTokens)}
     </div>
 
+    ${extraSettingsTabHtml()}
+
     ${renderSettingsGroups(settings)}
 
     <div class="settings-save-bar">
@@ -8533,6 +8669,7 @@ async function renderSettings() {
   `);
   $$('#settings-tabs-nav .tab-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
   $('#mm-display-save').addEventListener('click', saveMainMenuDisplay);
@@ -8570,6 +8707,7 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
     <div data-settings-tab="mobile_app" style="${settingsActiveTab === 'mobile_app' ? '' : 'display:none'}">
       ${mobileAppCardHtml(mobileTokens)}
     </div>
+    ${extraSettingsTabHtml()}
     ${renderSettingsGroups(settings)}
     <div class="settings-save-bar">
       <button class="bn-btn bn-btn-ok btn-block" id="settings-save" style="width:100%;padding:12px">${settingsUiText('ذخیره تغییرات')}</button>
@@ -8577,6 +8715,7 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
   `);
   $$('#settings-tabs-nav .bn-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
   $('#mm-display-save').addEventListener('click', saveMainMenuDisplay);
@@ -8627,6 +8766,7 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
         <div data-settings-tab="mobile_app" style="${settingsActiveTab === 'mobile_app' ? '' : 'display:none'}">
           ${mobileAppCardHtml(mobileTokens)}
         </div>
+        ${extraSettingsTabHtml()}
         ${renderSettingsGroups(settings)}
         <div class="settings-save-bar">
           <button class="bru-stamp bru-stamp-ok btn-block" id="settings-save" style="--r:-2deg;width:100%">ذخیره تغییرات</button>
@@ -8636,6 +8776,7 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
   `);
   $$('#settings-tabs-nav .bru-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
   $('#mm-display-save').addEventListener('click', saveMainMenuDisplay);

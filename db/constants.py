@@ -268,6 +268,7 @@ DEFAULT_SETTINGS = {
     "cohere_api_key": "",
     "cloudflare_api_token": "",
     "cloudflare_account_id": "",
+    "cloudflare_model": "",  # خالی = مدل پیش‌فرض (Llama 4 Scout)؛ مدل بینایی‌دار Workers AI برای تشخیص رسید
     "openai_api_key": "",
     "anthropic_api_key": "",
     "openai_model": "",

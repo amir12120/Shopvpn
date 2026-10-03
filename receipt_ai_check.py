@@ -198,17 +198,21 @@ except Exception:
 import aiohttp
 
 import ai_support
+import bank_inquiry
 import jalali
 
 _log = logging.getLogger("receipt_ai_check")
 
 # مدل بینایی‌دار ثابت برای هر پروایدر - مستقل از تنظیم مدل چتِ «دستیار
 # هوشمند» (که ممکن است اصلاً بینایی/تصویر پشتیبانی نکند).
-_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 _OPENROUTER_VISION_MODEL = "openrouter/free"
 _MISTRAL_VISION_MODEL = "mistral-small-latest"
 _COHERE_VISION_MODEL = "command-a-vision-07-2025"
-_CLOUDFLARE_VISION_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
+_CLOUDFLARE_VISION_MODEL = ai_support.CLOUDFLARE_DEFAULT_VISION_MODEL  # پیش‌فرض؛ مدل واقعی از تنظیم cloudflare_model می‌آید
+
+_DEFAULT_VISION_TIMEOUT_S = 45
+_PROVIDER_VISION_TIMEOUT_S = {"openrouter": 25}
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -242,6 +246,7 @@ _OCR_PROMPT = """تو یک موتور OCR دقیق برای رسیدهای با�
 - receipt_datetime: تاریخ و ساعت تراکنش که روی خودِ رسید چاپ شده، با قالب YYYY/MM/DD HH:MM (اگر ثانیه دارد HH:MM:SS). تاریخ را همان‌طور که چاپ شده بنویس (شمسی یا میلادی). اگر ساعت ندارد فقط YYYY/MM/DD.
 - status_bar_time: ساعت نوار وضعیت (status bar) بالای صفحه‌ی گوشی، با قالب ۲۴ ساعته HH:MM؛ فقط اگر رسید اسکرین‌شات موبایل است و ساعت خوانا است.
 - dest_holder_name: نام صاحب کارت/حساب مقصد که داخل رسید چاپ شده.
+- source_holder_name: نام فرستنده/پرداخت‌کننده (صاحب کارت مبدأ) اگر روی رسید چاپ شده؛ در غیر این صورت رشته‌ی خالی.
 - app_bank_name: نام بانکی که از روی لوگو، رنگ یا برند بالای رسید تشخیص می‌دهی؛ فقط اسم بانک به فارسی. اگر برندینگی نیست رشته‌ی خالی.
 
 فقط یک JSON خام، بدون توضیح و بدون Markdown، با دقیقاً همین کلیدها برگردان."""
@@ -281,7 +286,8 @@ _VERDICT_PROMPT = """تو کارشناس فورنزیک تصویر برای تش
 _OCR_SCHEMA_FIELDS = {
     "card_number_digits": "string", "source_card_digits": "string", "reference_number": "string",
     "amount_digits": "string", "amount_unit": "string", "amount_words": "string", "receipt_datetime": "string",
-    "status_bar_time": "string", "dest_holder_name": "string", "app_bank_name": "string",
+    "status_bar_time": "string", "dest_holder_name": "string", "source_holder_name": "string",
+    "app_bank_name": "string",
 }
 
 _VERDICT_SCHEMA_FIELDS = {
@@ -1159,6 +1165,7 @@ _CONSENSUS_NORMALIZERS = {
     "receipt_datetime": _n_datetime,
     "status_bar_time": _n_time,
     "dest_holder_name": _normalize_name,
+    "source_holder_name": _normalize_name,
     "app_bank_name": _normalize_bank_name,
 }
 
@@ -1665,7 +1672,8 @@ async def _run_openai_compatible_vision(provider: str, api_keys: list, model: st
         }],
         "temperature": 0.1,
     }
-    timeout = aiohttp.ClientTimeout(total=45, connect=10)
+    timeout = aiohttp.ClientTimeout(
+        total=_PROVIDER_VISION_TIMEOUT_S.get(provider, _DEFAULT_VISION_TIMEOUT_S), connect=10)
     json_mode = provider in _JSON_MODE_PROVIDERS
 
     last_exc = None
@@ -1692,16 +1700,17 @@ async def _run_openai_compatible_vision(provider: str, api_keys: list, model: st
             last_exc = exc
             if not ai_support._is_retryable(exc):
                 raise
-            _log.warning("receipt_ai_check: کلید %s شکست خورد، رفتن سراغ کلید بعدی: %s", provider, exc)
+            _log.warning("receipt_ai_check: کلید %s شکست خورد، رفتن سراغ کلید بعدی: %r", provider, exc)
     raise last_exc or RuntimeError(f"{provider} failed")
 
 
 
-async def _run_labeled(label: str, coro):
+async def _run_labeled(label, coro):
+    started = time.monotonic()
     try:
-        return label, await coro, None
+        return label, await coro, None, time.monotonic() - started
     except Exception as exc:
-        return label, None, exc
+        return label, None, exc, time.monotonic() - started
 
 async def _parse_stage(fetch, parser):
     parsed = parser(await fetch)
@@ -1733,7 +1742,7 @@ def _extra_vision_specs(db) -> list:
             add("Custom: " + row["name"], ai_support.CUSTOM_PREFIX + row["id"], row["keys"], row["model"], row["url"])
     account_id = ai_support.resolve_cloudflare_account_id(db)
     if account_id:
-        add("Cloudflare", "cloudflare", ai_support.resolve_cloudflare_keys(db), _CLOUDFLARE_VISION_MODEL,
+        add("Cloudflare", "cloudflare", ai_support.resolve_cloudflare_keys(db), ai_support.resolve_cloudflare_model(db),
             _CLOUDFLARE_URL.format(account_id=account_id))
     return specs
 
@@ -1751,23 +1760,25 @@ async def _run_vision_ensemble(db, image_bytes: bytes, mime_type: str) -> list:
     که حداقل یکی از دو مرحله‌شان موفق شد."""
     jobs = []
     for stage, prompt, fields, parser in _STAGES:
-        jobs.append(_run_labeled(("Gemini", stage), _parse_stage(
+        jobs.append(_run_labeled(("Gemini", stage, ai_support.resolve_gemini_model(db)), _parse_stage(
             _run_gemini_text(db, image_bytes, mime_type, prompt, fields), parser)))
     multi_model_enabled = (await asyncio.to_thread(db.get_setting, "receipt_ai_multi_model_enabled", "1")) != "0"
     # مدل‌های بینایی ایجنت‌های اضافی فعلاً فقط عکس را پشتیبانی می‌کنند، نه PDF.
     if multi_model_enabled and mime_type.startswith("image/"):
         for spec in _extra_vision_specs(db):
             for stage, prompt, _fields, parser in _STAGES:
-                jobs.append(_run_labeled((spec["label"], stage), _parse_stage(
+                jobs.append(_run_labeled((spec["label"], stage, spec["model"]), _parse_stage(
                     _run_openai_compatible_vision(spec["provider"], spec["keys"], spec["model"], prompt,
                                                   image_bytes, mime_type, spec["url"], spec["extra_headers"]),
                     parser)))
 
     models = {}
-    for (label, stage), parsed, exc in await asyncio.gather(*jobs):
+    for (label, stage, model), parsed, exc, elapsed in await asyncio.gather(*jobs):
         if exc is not None:
-            _log.warning("receipt_ai_check: مرحله‌ی %s با %s ناموفق بود: %s", stage, label, exc)
+            _log.warning("receipt_ai_check: مرحله‌ی %s با %s (%s) پس از %.1fs ناموفق بود: %r",
+                         stage, label, model, elapsed, exc)
             continue
+        _log.info("receipt_ai_check: مرحله‌ی %s با %s (%s) موفق بود، %.1fs", stage, label, model, elapsed)
         models.setdefault(label, {"label": label, "ocr": None, "verdict": None})[stage] = parsed
     return list(models.values())
 
@@ -1797,7 +1808,7 @@ def _reuse_finding(dup: dict, subject: str, verb: str, hard_suffix: str):
 
 
 async def check_receipt(bot, db, *, file_id: str, receipt_type: str, ref_kind: str, ref_id: int,
-                         amount_toman=None, card_number=None, card_holder=None, message=None) -> dict:
+                         amount_toman=None, card_number=None, card_holder=None, message=None, image_bytes: bytes = None) -> dict:
     """بررسی کامل یک رسید تازه‌ارسال‌شده.
 
     ref_kind/ref_id: نوع و شناسه‌ی رکوردی که این رسید برایش ارسال شده - مثلاً
@@ -1817,7 +1828,8 @@ async def check_receipt(bot, db, *, file_id: str, receipt_type: str, ref_kind: s
     available = True
 
     try:
-        image_bytes = await _download(bot, file_id)
+        if image_bytes is None:
+            image_bytes = await _download(bot, file_id)
     except Exception as exc:
         _log.warning("receipt_ai_check: دانلود فایل رسید ناموفق بود: %s", exc)
         return {"note": None, "available": False, "reject": False, "reject_reason": None}
@@ -1988,6 +2000,14 @@ async def check_receipt(bot, db, *, file_id: str, receipt_type: str, ref_kind: s
                 val["card_number_digits"], card_number, previous_cards) else (card_holder or "")
             datetime_note, datetime_impossible = _check_receipt_datetime(val["receipt_datetime"], message, order_created)
             words_note, words_mismatch = _check_amount_words(val["amount_words"], amount_digits)
+            try:
+                inquiry = await bank_inquiry.run_checks(
+                    db, dest_raw=val["card_number_digits"], expected_card=card_number,
+                    source_raw=val["source_card_digits"], source_holder_raw=val.get("source_holder_name") or "",
+                    bin_bank_of_card=_bank_from_card)
+            except Exception as exc:
+                _log.warning("receipt_ai_check: bank_inquiry خطا داد: %s", exc)
+                inquiry = {"notes": [], "hard_notes": [], "infos": [], "inquiry_ran": False, "inquiry_error": ""}
 
             soft_notes = [
                 _check_status_bar_time(_n_time(val["status_bar_time"]), message),
@@ -2061,6 +2081,18 @@ async def check_receipt(bot, db, *, file_id: str, receipt_type: str, ref_kind: s
             for note in [n for n, _ in hard_checks] + soft_notes:
                 if note and note not in reasons:
                     reasons.append(note)
+
+            # استعلام بانکی (bank_inquiry.py): هشدارها همیشه به ادمین می‌رسد؛ رد خودکار فقط
+            # برای مغایرت قطعیِ مقصد و فقط وقتی bank_inquiry_auto_reject روشن باشد.
+            for note in inquiry["hard_notes"] + inquiry["notes"] + inquiry["infos"]:
+                if note and note not in reasons:
+                    reasons.append(note)
+            if inquiry["inquiry_error"] and not inquiry["inquiry_ran"]:
+                reasons.append(f"ℹ️ استعلام بانکی انجام نشد ({inquiry['inquiry_error']}) - این رسید با استعلام تایید نشده است.")
+            if inquiry["hard_notes"] and auto_reject_enabled:
+                inquiry_reject = (await asyncio.to_thread(db.get_setting, "bank_inquiry_auto_reject", "0")) == "1"
+                if inquiry_reject:
+                    reject_reasons.extend(inquiry["hard_notes"])
 
             if reference_number:
                 try:

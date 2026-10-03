@@ -41,7 +41,7 @@ from config_delivery import deliver_config_to_user, send_individual_configs, bui
 from renewal_engine import execute_renewal, RenewalError
 import renewal_log
 from temp_messages import schedule_message_autodelete
-from force_join import is_channel_member, CHECK_CALLBACK, TERMS_ACCEPT_CALLBACK, terms_keyboard
+from force_join import is_channel_member, CHECK_CALLBACK, TERMS_ACCEPT_CALLBACK, terms_keyboard, _join_keyboard
 from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
 from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
@@ -219,7 +219,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
 
     @router.callback_query(F.data.startswith("language:"))
-    async def cb_language(call: CallbackQuery, state: FSMContext):
+    async def cb_language(call: CallbackQuery, state: FSMContext, bot: Bot):
         lang = normalize_language(call.data.split(":", 1)[1])
         if not await asyncio.to_thread(is_language_enabled, db, lang):
             await call.answer(tr("زبان در حال حاضر فعال نیست."), show_alert=True)
@@ -234,25 +234,32 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(language_label(lang))
             data = await state.get_data()
             if data.get("pending_welcome"):
-                # اولین انتخاب زبان بعد از /start: به‌جای پیام تغییر زبان، مستقیم
-                # پیام خوش‌آمد و منوی اصلی فرستاده می‌شود.
+                # اولین انتخاب زبان بعد از /start: به‌جای پیام تغییر زبان، مسیر عادی
+                # ورود ادامه پیدا می‌کند: عضویت اجباری -> قوانین -> پیام خوش‌آمد و
+                # منو (+ اکشن‌های دیپ‌لینک که قبل از انتخاب زبان در state ذخیره شده‌اند).
+                await state.update_data(pending_welcome=False)
+                fj = await asyncio.to_thread(db.get_force_join_settings)
+                if (
+                    fj["enabled"] and fj["channel"]
+                    and not db.is_admin(user_id)
+                    and not await asyncio.to_thread(db.is_force_join_exempt, user_id)
+                    and not await is_channel_member(bot, fj["channel"], user_id)
+                ):
+                    await call.message.answer(
+                        tr("برای استفاده از بات، ابتدا باید در کانال زیر عضو شوید؛ سپس دکمه‌ی «بررسی مجدد عضویت» را بزنید:"),
+                        reply_markup=_join_keyboard(fj["channel"]),
+                    )
+                    return
                 terms = await asyncio.to_thread(db.get_terms_settings)
                 if terms["enabled"] and not await asyncio.to_thread(db.is_terms_accepted, user_id):
-                    await state.update_data(pending_welcome=True, pending_terms=True, pending_post_start_actions=[])
+                    await state.update_data(pending_terms=True)
                     await call.message.answer(terms["text"], reply_markup=terms_keyboard())
                     return
-                await state.update_data(pending_welcome=False)
-                welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
-                reply_enabled = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
-                if reply_enabled:
-                    await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, user_id, is_main_bot))
-                    await _send_inline_main_menu(call.message, user_id)
-                else:
-                    inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, user_id, is_main_bot))
-                    await call.message.answer(
-                        welcome,
-                        reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, user_id, is_main_bot),
-                    )
+                try:
+                    target = call.message.model_copy(update={"from_user": call.from_user})
+                except Exception:
+                    target = call.message
+                await _send_welcome_after_terms(target, user_id, state, bot)
             else:
                 await call.message.answer(
                     db.get_text("handlers_user.language.changed", "زبان با موفقیت تغییر کرد.")
@@ -739,6 +746,26 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif token:
                 (await asyncio.to_thread(db.set_acquisition_source, message.from_user.id, token))
 
+        # کاربر تازه (یا کسی که هنوز زبان را انتخاب نکرده): قبل از هر چیز (قوانین،
+        # پیام خوش‌آمد، منو) زبان ربات پرسیده می‌شود. تشخیص «تازه بودن» باید بر اساس
+        # پرچم ذخیره‌شده‌ی language_selected باشد، نه وجود ردیف کاربر؛ چون
+        # BlockedUserMiddleware ردیف را قبل از رسیدن به این هندلر می‌سازد.
+        # دیپ‌لینک‌ها در state می‌مانند و بعد از انتخاب زبان (در cb_language) اجرا می‌شوند.
+        if not await asyncio.to_thread(db.is_user_language_selected, message.from_user.id):
+            if not existing_user:
+                await _notify_new_signup(message, bot)
+            await state.update_data(
+                pending_welcome=True, pending_terms=False, pending_post_start_actions=post_start_actions
+            )
+            await message.answer(
+                db.get_text(
+                    "handlers_user.language.choose_first",
+                    "🌐 لطفاً زبان خود را انتخاب کنید\nPlease choose your language:",
+                ),
+                reply_markup=kb.language_kb(db),
+            )
+            return
+
         # قوانین باید بعد از عضویت (یا معافیت عضویت) و قبل از استفاده از بات تأیید شوند.
         # دیپ‌لینک‌ها تا اینجا پردازش و برای ادامه در state نگه داشته می‌شوند.
         if (await asyncio.to_thread(db.get_setting, "terms_enabled", "0")) == "1" and not await asyncio.to_thread(db.is_terms_accepted, message.from_user.id):
@@ -754,16 +781,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
         reply_enabled = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
-        if not existing_user:
-            await _notify_new_signup(message, bot)
-            # کاربر تازه: به‌جای تنظیم خودکار زبان بر اساس لوکیل تلگرام، از او سوال می‌شود.
-            # پیام خوش‌آمد/منو بلافاصله بعد از انتخاب زبان (در cb_language) فرستاده می‌شود.
-            await state.update_data(pending_welcome=True)
-            await message.answer(
-                db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
-                reply_markup=kb.language_kb(db),
-            )
-        elif reply_enabled:
+        if reply_enabled:
             # منوی پایین فعال است: طبق روال قبلی، پیام خوش‌آمد با منوی پایین
             # ارسال می‌شود و منوی شیشه‌ای (در صورت فعال بودن) در پیام جدا می‌آید،
             # چون یک پیام نمی‌تواند هم‌زمان هر دو نوع کیبورد را داشته باشد.
@@ -1023,7 +1041,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             text += db.get_text(
                 "handlers_user.product.discount_total_after_line", "💵 مبلغ پس از تخفیف: {total} تومان\n"
             ).format(total=f"{total_price - discount_amount:,}")
-        if wallet_credit > 0:
+        _pm_allowed = db.get_product_payment_methods(product["id"])
+        if wallet_credit > 0 and _pm_allowed is not None and "wallet" not in _pm_allowed:
+            text += db.get_text(
+                "handlers_user.product.wallet_not_allowed_line",
+                "\n👛 موجودی کیف پول شما: {amount} تومان (⛔️ پرداخت با کیف پول برای این محصول غیرفعال است)\n",
+            ).format(amount=f"{wallet_credit:,}")
+        elif wallet_credit > 0:
             text += db.get_text(
                 "handlers_user.product.wallet_credit_line",
                 "\n👛 موجودی کیف پول شما: {amount} تومان (به‌صورت خودکار در پرداخت اعمال می‌شود)\n",
@@ -1281,7 +1305,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return ""
         card_holder = (await asyncio.to_thread(db.get_setting, "card_holder")) or ""
         holder_line = f"👤 به نام: {escape_html(card_holder)}\n" if card_holder else ""
-        return f"💳 شماره کارت واریزی: `{card_number}`\n{holder_line}"
+        return f"💳 شماره کارت واریزی: <code>{escape_html(card_number)}</code>\n{holder_line}"
 
     def _ai_note_line(ai_note: str = None, ai_available: bool = True) -> str:
         """قابلیت تشخیص رسید جعلی: خط هشدار AI (یا اعلام عدم انجام بررسی) که
@@ -2838,20 +2862,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             pass
 
     async def _send_test_config_link(message: Message, link: str, prefix: str) -> None:
-        """ارسال لینک اشتراک کانفیگ تست و کانفیگ‌های تکی داخلش، هرکدام طبق تنظیمات
-        deliver_sub_link_enabled / deliver_individual_configs_enabled فعال/غیرفعال می‌شود."""
-        sub_link_on = (await asyncio.to_thread(db.get_setting, "deliver_sub_link_enabled", "1")) != "0"
-        if sub_link_on:
-            await message.answer(f"{prefix}\n\n`{link}`", parse_mode="Markdown")
-
-        individual_on = (await asyncio.to_thread(db.get_setting, "deliver_individual_configs_enabled", "1")) != "0"
-        if individual_on and link.startswith(("http://", "https://")):
-            try:
-                individual_links = await fetch_individual_links(link)
-            except Exception:
-                individual_links = []
-            if individual_links:
-                await send_individual_configs(message.bot, message.from_user.id, individual_links)
+        """تحویل کانفیگ تست با همان قالب کانفیگ خریداری‌شده (QR + اطلاعات سرویس + لینک‌ها)."""
+        await deliver_config_to_user(
+            message.bot, message.from_user.id, "", link,
+            final_price=None, db=db,
+            header_text=prefix.strip().rstrip(":").strip(),
+            is_test=True,
+        )
 
     @router.message(F.text.func(lambda t: t in (db.get_setting("btn_test"), tr(db.get_setting("btn_test")))))
     async def get_test_config(message: Message):
@@ -4727,6 +4744,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             # ثابت است.
             products = [p for p in all_products if p["provision_server_id"] == current_panel_id]
             if not products:
+                products = all_products
+            if not products:
                 await call.answer(db.get_text('handlers_user.auto_4559ece1', 'در حال حاضر پلن تمدیدی روی همین پنل VPN تعریف نشده.'), show_alert=True)
                 return
             await call.answer()
@@ -6023,10 +6042,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         (await asyncio.to_thread(db.set_topup_receipt_ai_note, topup_id, ai_result["note"]))
 
         user_row = (await asyncio.to_thread(db.get_user, message.from_user.id))
+        topup_user_info = await _user_purchase_info_line(user_row)
         caption = (
             f"👛 درخواست شارژ کیف پول #{topup_id}\n"
-            f"👤 کاربر: {user_row['first_name'] or ''} (@{user_row['username'] or '---'})\n"
+            f"👤 کاربر: {escape_html(user_row['first_name'] or '')} (@{escape_html(user_row['username'] or '') or '---'})\n"
             f"🆔 آیدی عددی: {message.from_user.id}\n"
+            f"{topup_user_info}"
             f"💰 مبلغ: {amount:,} تومان"
         )
 
@@ -6801,8 +6822,17 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if order:
             try:
                 (await asyncio.to_thread(db.set_order_receipt, order["id"], file_id, receipt_type))
+                fb_ai = await _check_order_receipt_with_ai(bot, order["id"], order, file_id, receipt_type, message)
+                if fb_ai.get("reject") and (await _reject_order_by_ai(bot, order["id"], order, file_id, receipt_type, fb_ai)):
+                    await message.answer(
+                        db.get_text('handlers_user.auto_receipt_ai_rejected', '❌ متاسفانه رسید ارسالی شما رد شد. در صورت اشتباه لطفاً با پشتیبانی در ارتباط باشید.'),
+                        reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
+                    )
+                    await _send_inline_main_menu(message, message.from_user.id)
+                    return
                 await _notify_admins_of_order(
-                    bot, order["id"], receipt_file_id=file_id, receipt_type=receipt_type
+                    bot, order["id"], receipt_file_id=file_id, receipt_type=receipt_type,
+                    ai_note=fb_ai["note"], ai_available=fb_ai["available"],
                 )
             except Exception:
                 log.exception(
@@ -6836,14 +6866,30 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if topup:
             try:
                 (await asyncio.to_thread(db.set_topup_receipt, topup["id"], file_id, receipt_type))
+                try:
+                    fb_ai = await receipt_ai_check.check_receipt(
+                        bot, db,
+                        file_id=file_id, receipt_type=receipt_type,
+                        ref_kind="topup", ref_id=topup["id"],
+                        amount_toman=topup["amount"],
+                        card_number=(await asyncio.to_thread(db.get_setting, "card_number")),
+                        card_holder=(await asyncio.to_thread(db.get_setting, "card_holder")),
+                        message=message,
+                    )
+                except Exception as exc:
+                    log.warning("receipt_ai_check برای شارژ #%s (fallback) خطا داد: %s", topup["id"], exc)
+                    fb_ai = {"note": None, "available": False, "reject": False, "reject_reason": None}
+                (await asyncio.to_thread(db.set_topup_receipt_ai_note, topup["id"], fb_ai["note"]))
                 user_row = (await asyncio.to_thread(db.get_user, message.from_user.id))
                 caption = (
                     f"👛 درخواست شارژ کیف پول #{topup['id']}\n"
-                    f"👤 کاربر: {user_row['first_name'] or ''} (@{user_row['username'] or '---'})\n"
+                    f"👤 کاربر: {escape_html(user_row['first_name'] or '')} (@{escape_html(user_row['username'] or '') or '---'})\n"
                     f"🆔 آیدی عددی: {message.from_user.id}\n"
+                    f"{await _user_purchase_info_line(user_row)}"
                     f"💰 مبلغ: {topup['amount']:,} تومان"
                 )
                 caption += "\n\n" + (await _admin_card_hint_line())
+                caption += _ai_note_line(fb_ai["note"], fb_ai["available"])
                 if not await _report_topup_to_group(bot, topup["id"], file_id, receipt_type, caption, kb.topup_review_kb(topup["id"])):
                     for admin_id in (await asyncio.to_thread(db.list_admins)):
                         factory = lambda aid=admin_id: _send_receipt_to_admin(

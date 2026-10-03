@@ -222,6 +222,12 @@ MSG_EN[update_bot_header]="Updating Bot"
 MSG_FA[update_bot_header]="آپدیت بات"
 MSG_EN[update_done]="✅ Bot updated."
 MSG_FA[update_done]="✅ آپدیت بات انجام شد."
+MSG_EN[updating_translation]="🌍 Updating the local translation runtime and models"
+MSG_FA[updating_translation]="🌍 به‌روزرسانی موتور ترجمهٔ محلی و مدل‌های زبان"
+MSG_EN[cleaning_disk]="🧹 Reclaiming disk space (pip/apt caches, temp files)"
+MSG_FA[cleaning_disk]="🧹 آزادسازی فضای دیسک (کش پیپ و apt و فایل‌های موقت)"
+MSG_EN[service_not_ready]="⛔️ %s did not stay up. Last log lines:"
+MSG_FA[service_not_ready]="⛔️ سرویس %s بالا نماند. آخرین خطوط لاگ:"
 MSG_EN[miniapp_not_installed]="⛔️ Mini App not installed yet. Run option 10 (setup Mini App) first."
 MSG_FA[miniapp_not_installed]="⛔️ مینی‌اپ هنوز نصب نشده. اول گزینه ۱۰ (نصب/تنظیم مینی‌اپ) را بزن."
 MSG_EN[restarting_miniapp_service]="♻️ Restarting Mini App service"
@@ -882,14 +888,49 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
-    sudo systemctl restart "$SERVICE_NAME"
-    sleep 2
 
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
+    if restart_service_and_wait "$SERVICE_NAME"; then
         echo -e "${GREEN}${BOLD}$(t install_done)${RESET}"
     else
         echo -e "${RED}$(t install_failed "$SERVICE_NAME")${RESET}"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Restart + readiness check / ری‌استارت و اطمینان از بالا آمدن سرویس
+#
+# `systemctl is-active` right after a restart can already answer "active" for a
+# unit that dies a second later (every ShopVPN unit uses Restart=always), so the
+# old "restart && sleep 2" reported success for a bot that never came up. These
+# helpers only report success once the unit has stayed active across several
+# polls, and print the tail of the journal when it does not.
+# ---------------------------------------------------------------------------
+wait_for_service_ready() {
+    local unit="$1" max_wait="${2:-30}" poll=0 stable=0
+    while [ "$poll" -lt "$max_wait" ]; do
+        if systemctl is-active --quiet "$unit"; then
+            stable=$((stable + 1))
+            [ "$stable" -ge 3 ] && return 0
+        else
+            stable=0
+        fi
+        sleep 2
+        poll=$((poll + 2))
+    done
+    return 1
+}
+
+# restart_service_and_wait <unit>
+restart_service_and_wait() {
+    local unit="$1"
+    sudo systemctl restart "$unit" || return 1
+    if wait_for_service_ready "$unit" 30; then
+        return 0
+    fi
+    echo -e "  ${RED}$(t service_not_ready "$unit")${RESET}" >&2
+    sudo journalctl -u "$unit" -n 12 --no-pager 2>&1 \
+        | sed "s/^/        ${DIM}/; s/\$/${RESET}/" >&2 || true
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -910,7 +951,7 @@ update_bot() {
     systemctl list-units --full -all | grep -q "${PANEL_SERVICE}.service" && has_panel=1
     systemctl list-units --full -all | grep -q "${API_SERVICE}.service" && has_api=1
 
-    local total=4
+    local total=5
     [ "$has_miniapp" = "1" ] && total=$((total+1))
     [ "$has_panel" = "1" ] && total=$((total+1))
     [ "$has_api" = "1" ] && total=$((total+1))
@@ -925,24 +966,29 @@ update_bot() {
     run_step "$step" "$total" "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
 
     step=$((step+1))
-    run_step "$step" "$total" "🌍 Updating local translation runtime/models" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
+    run_step "$step" "$total" "$(t updating_translation)" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
+
+    # Reclaim disk before restarting: the new packages and models left their
+    # download caches behind, exactly the files that only eat the server's disk.
+    step=$((step+1))
+    run_step "$step" "$total" "$(t cleaning_disk)" bash -c "[ -f '$INSTALL_DIR/cleanup.sh' ] && bash '$INSTALL_DIR/cleanup.sh' '$INSTALL_DIR' || true" || failed=1
 
     step=$((step+1))
-    run_step "$step" "$total" "$(t restarting_bot_service)" bash -c "sudo systemctl restart '$SERVICE_NAME' && sleep 2" || failed=1
+    run_step "$step" "$total" "$(t restarting_bot_service)" restart_service_and_wait "$SERVICE_NAME" || failed=1
 
     if [ "$has_miniapp" = "1" ]; then
         step=$((step+1))
-        run_step "$step" "$total" "$(t restarting_miniapp_service)" bash -c "sudo systemctl restart '$MINIAPP_SERVICE' && sleep 2" || failed=1
+        run_step "$step" "$total" "$(t restarting_miniapp_service)" restart_service_and_wait "$MINIAPP_SERVICE" || failed=1
     fi
 
     if [ "$has_panel" = "1" ]; then
         step=$((step+1))
-        run_step "$step" "$total" "$(t restarting_panel_service)" bash -c "sudo systemctl restart '$PANEL_SERVICE' && sleep 2" || failed=1
+        run_step "$step" "$total" "$(t restarting_panel_service)" restart_service_and_wait "$PANEL_SERVICE" || failed=1
     fi
 
     if [ "$has_api" = "1" ]; then
         step=$((step+1))
-        run_step "$step" "$total" "$(t restarting_api_service)" bash -c "sudo systemctl restart '$API_SERVICE' && sleep 2" || failed=1
+        run_step "$step" "$total" "$(t restarting_api_service)" restart_service_and_wait "$API_SERVICE" || failed=1
     fi
 
     draw_rule
@@ -972,7 +1018,7 @@ update_miniapp() {
     section_header "$(t update_miniapp_header)"
     run_step 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
     run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
-    run_step 3 3 "$(t restarting_miniapp_service)" bash -c "sudo systemctl restart '$MINIAPP_SERVICE' && sleep 2" || failed=1
+    run_step 3 3 "$(t restarting_miniapp_service)" restart_service_and_wait "$MINIAPP_SERVICE" || failed=1
 
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$MINIAPP_SERVICE"; then
@@ -1112,9 +1158,11 @@ view_logs() {
 }
 
 restart_bot() {
-    sudo systemctl restart "$SERVICE_NAME"
-    sleep 1
-    echo -e "${GREEN}$(t bot_restarted)${RESET}"
+    if restart_service_and_wait "$SERVICE_NAME"; then
+        echo -e "${GREEN}$(t bot_restarted)${RESET}"
+    else
+        echo -e "${RED}$(t install_failed "$SERVICE_NAME")${RESET}"
+    fi
 }
 
 stop_bot() {
@@ -1639,7 +1687,7 @@ update_admin_panel() {
     section_header "$(t update_panel_header)"
     run_step 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
     run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
-    run_step 3 3 "$(t restarting_panel_service)" bash -c "sudo systemctl restart '$PANEL_SERVICE' && sleep 2" || failed=1
+    run_step 3 3 "$(t restarting_panel_service)" restart_service_and_wait "$PANEL_SERVICE" || failed=1
 
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$PANEL_SERVICE"; then
@@ -2259,7 +2307,7 @@ update_api() {
     section_header "$(t update_api_header)"
     run_step 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
     run_step 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
-    run_step 3 3 "$(t restarting_api_service)" bash -c "sudo systemctl restart '$API_SERVICE' && sleep 2" || failed=1
+    run_step 3 3 "$(t restarting_api_service)" restart_service_and_wait "$API_SERVICE" || failed=1
 
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$API_SERVICE"; then

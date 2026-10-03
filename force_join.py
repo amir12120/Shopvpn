@@ -75,6 +75,14 @@ class ForceJoinMiddleware(BaseMiddleware):
         if isinstance(event, CallbackQuery) and event.data in (CHECK_CALLBACK, TERMS_ACCEPT_CALLBACK):
             return await handler(event, data)
 
+        # کاربری که هنوز زبان را انتخاب نکرده، اول باید زبان را انتخاب کند (قبل از
+        # پیام عضویت/قوانین)؛ cmd_start و cb_language خودشان بعدش عضویت را چک می‌کنند.
+        if (
+            (isinstance(event, Message) and (event.text or "").startswith("/start"))
+            or (isinstance(event, CallbackQuery) and (event.data or "").startswith("language:"))
+        ) and not await asyncio.to_thread(self.db.is_user_language_selected, user.id):
+            return await handler(event, data)
+
         exempt = await asyncio.to_thread(self.db.is_force_join_exempt, user.id)
         member = True
         if settings["enabled"] and settings["channel"] and not exempt:

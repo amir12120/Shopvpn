@@ -144,11 +144,18 @@ The default install is lean (~1 to 1.5 GB) instead of several GB:
   prerequisites use `--no-install-recommends`.
 - ✅ The clone is **shallow** (`--depth 1`).
 
-At the end of every install/update, [`cleanup.sh`](cleanup.sh) runs
-automatically and removes only regenerable files (pip/apt caches,
-`__pycache__`, `*.pyc`, build artifacts, downloaded Argos archives). It never
-removes `venv/`, `translation-venv/`, `.env`, databases, `backups/`, logs or
-installed language models.
+At the end of every install **and every update** (the `shopvpn` update action
+runs the same cleanup step), [`cleanup.sh`](cleanup.sh) runs automatically and
+removes only regenerable files (pip/apt caches, `__pycache__`, `*.pyc`, build
+artifacts, downloaded Argos archives). It never removes `venv/`,
+`translation-venv/`, `.env`, databases, `backups/`, logs or installed language
+models.
+
+After the service is restarted, the installer (and every `shopvpn` update)
+waits until the unit has stayed active across several checks before reporting
+success. If it never comes up, the last 25 journal lines are printed instead of
+a misleading "done" — the same check is applied to the Mini App, panel and API
+units.
 
 Run it manually any time (e.g. when the disk is full):
 

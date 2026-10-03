@@ -248,11 +248,15 @@ def _delivery_flags(db) -> tuple:
     return sub_link_on, individual_on
 
 
-def get_post_delivery_text(db) -> str:
+def get_post_delivery_text(db, is_test: bool = False) -> str:
     """متن دلخواه ادمین که بعد از تحویل کامل کانفیگ (و خلاصه‌ی مبلغ) برای کاربر
     ارسال می‌شود؛ اگر db داده نشود یا چیزی تنظیم نشده باشد، رشته‌ی خالی برمی‌گردد."""
     if db is None:
         return ""
+    if is_test:
+        test_text = (db.get_setting("test_post_delivery_text", "") or "").strip()
+        if test_text:
+            return test_text
     return (db.get_setting("post_delivery_custom_text", "") or "").strip()
 
 
@@ -347,12 +351,12 @@ async def collect_service_info(link: str, product_name: str = "") -> dict:
 
 
 def build_delivery_message(svc: dict, idx: int, total: int, sub_link_on: bool,
-                           individual_on: bool, alternates=None, L=None):
+                           individual_on: bool, alternates=None, L=None, header_text=None):
     """خروجی: (caption_html, [extra_html_messages]). L تابع ترجمه‌ی برچسب‌های ثابت است."""
     L = L or (lambda t: t)
     alternates = alternates or []
 
-    header = f"{L('سفارش جدید شما')} 😍"
+    header = _h(header_text) if header_text else f"{L('سفارش جدید شما')} 😍"
     if total > 1:
         header += f" ({idx}/{total})"
 
@@ -403,7 +407,7 @@ def build_delivery_message(svc: dict, idx: int, total: int, sub_link_on: bool,
 
 
 async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
-                           db=None, user_tg_id: int = None):
+                           db=None, user_tg_id: int = None, header_text=None):
     """مرحله‌ی مشترک بین بات (aiogram) و پنل وب: جمع‌آوری مشخصات و ساخت کپشن/پیام‌های اضافه."""
     sub_link_on, individual_on = _delivery_flags(db)
     if db is not None and user_tg_id is not None:
@@ -417,7 +421,7 @@ async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
             alternates = await asyncio.to_thread(db.get_alternate_sub_urls, link)
         except Exception:
             alternates = []
-    return build_delivery_message(svc, idx, total, sub_link_on, individual_on, alternates, L)
+    return build_delivery_message(svc, idx, total, sub_link_on, individual_on, alternates, L, header_text)
 
 
 async def _send_html(bot: Bot, chat_id: int, text: str) -> None:
@@ -438,6 +442,8 @@ async def deliver_config_to_user(
     final_price: int = None,
     order_id: int = None,
     db=None,
+    header_text=None,
+    is_test: bool = False,
 ) -> None:
     """
     ارسال کانفیگ(های) خریداری‌شده به کاربر در قالب یک پیام: عکس QR + کپشن
@@ -456,7 +462,7 @@ async def deliver_config_to_user(
     total = len(links)
 
     for idx, link in enumerate(links, start=1):
-        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id)
+        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, header_text=header_text)
 
         try:
             qr_photo = _build_qr_photo(link, db=db)
@@ -471,7 +477,7 @@ async def deliver_config_to_user(
     if final_price is not None:
         await bot.send_message(user_tg_id, localized(build_summary_text(final_price, total), db, user_tg_id))
 
-    post_text = get_post_delivery_text(db)
+    post_text = get_post_delivery_text(db, is_test=is_test)
     if post_text:
         try:
             await bot.send_message(user_tg_id, post_text)

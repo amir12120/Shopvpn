@@ -112,3 +112,41 @@ def test_manage_keeps_fork_repo_and_optional_heavy_fallback():
     # The extra-language menu must survive merges of the upstream menu table.
     assert "install_translation_langs" in text
     assert "SHOPVPN_TRANSLATION_LANGS" in _read("setup_local_translation.sh")
+
+
+def _update_bot_body():
+    text = _read("manage.sh")
+    start = text.index("update_bot() {")
+    return text[start:text.index("\n}\n", start)]
+
+
+def test_update_runs_every_step_including_disk_cleanup():
+    """Apart from prerequisites, an update repeats everything an install does."""
+    body = _update_bot_body()
+    assert "fetch_project_code" in body                       # newest code
+    assert "PIP_REQS" in body                                # dependencies
+    assert "setup_local_translation.sh" in body               # translation runtime
+    assert "cleanup.sh" in body, "update must free disk like the install does"
+    assert 'restart_service_and_wait "$SERVICE_NAME"' in body
+
+
+def test_no_restart_is_trusted_after_a_fixed_sleep():
+    """`systemctl restart && sleep 2` is not a health check.
+
+    Every ShopVPN unit runs with Restart=always, so a service that dies on
+    import still answers "active" right after the restart. Restarts must go
+    through the readiness helper, which polls until the unit stays up.
+    """
+    text = _read("manage.sh")
+    assert "wait_for_service_ready()" in text
+    assert "restart_service_and_wait()" in text
+    assert not re.search(r"systemctl restart [^\n]*&&\s*sleep", text), (
+        "a restart step must wait for readiness instead of a fixed sleep"
+    )
+
+
+def test_install_waits_until_the_bot_really_came_up():
+    text = _read("install.sh")
+    assert "BOT_READY" in text
+    assert "cleanup.sh" in text
+    assert "journalctl" in text, "a failed start must show what went wrong"

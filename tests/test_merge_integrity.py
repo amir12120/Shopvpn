@@ -45,10 +45,21 @@ UPSTREAM_FEATURE_MODULES = (
     "ai_admin.py",
     "ai_media.py",
     "ai_text.py",
+    "bank_inquiry.py",
     "campaign_ai.py",
     "churn_prediction.py",
     "draft_stream.py",
+    "extra_settings_schema.py",
     "db/orders.py",
+)
+
+# Upstream keeps re-uploading these with a module-level `from i18n import tr`
+# on line 1, which pushes the `# -*- coding: utf-8 -*-` declaration out of the
+# legal position. The fork moved the import below the docstring instead.
+IMPORT_ORDER_FIXED_FILES = (
+    "config_delivery.py",
+    "force_join.py",
+    "handlers_admin.py",
 )
 
 
@@ -109,6 +120,32 @@ def test_upstream_feature_modules_still_shipped_and_wired():
     handlers_user = (ROOT / "handlers_user.py").read_text(encoding="utf-8")
     assert "import ai_media" in handlers_user
     assert "from draft_stream import DraftStreamer" in handlers_user
+
+    # Bank inquiry backs the fake-receipt checks, extra settings back both web panels.
+    assert "import bank_inquiry" in (ROOT / "receipt_ai_check.py").read_text(encoding="utf-8")
+    admin_panel = (ROOT / "admin_panel/server.py").read_text(encoding="utf-8")
+    assert "import extra_settings_schema" in admin_panel
+    assert "extra_settings_schema" in (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("relative", IMPORT_ORDER_FIXED_FILES)
+def test_coding_declaration_stays_on_the_first_line(relative):
+    """A PEP 263 coding line only counts on line 1 or 2 — keep it there."""
+    lines = (ROOT / relative).read_text(encoding="utf-8").splitlines()
+    assert lines and lines[0].startswith("# -*- coding: utf-8 -*-"), (
+        f"{relative}: the coding declaration is no longer the first line"
+    )
+    for index, line in enumerate(lines):
+        if line.startswith("from i18n import tr"):
+            assert index > 1, f"{relative}: `from i18n import tr` back on the coding lines"
+            break
+
+
+def test_language_selection_migration_survives_upstream_merges():
+    """New users are asked for fa/en once; existing users are never re-asked."""
+    assert "ALTER TABLE users ADD COLUMN language_selected" in (ROOT / "db/_base.py").read_text(encoding="utf-8")
+    assert "def is_user_language_selected" in (ROOT / "db/users.py").read_text(encoding="utf-8")
+    assert "is_user_language_selected" in (ROOT / "force_join.py").read_text(encoding="utf-8")
 
 
 def test_module_level_imports_are_declared():

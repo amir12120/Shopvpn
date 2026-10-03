@@ -262,15 +262,37 @@ else
     sudo systemctl restart "$SERVICE_NAME"
 fi
 
-sleep 2
+# Wait until the bot has really come up. `systemctl is-active` can already say
+# "active" for a unit that crashes a second later (the unit uses
+# Restart=always), so the service has to stay active across several polls
+# before the install is called successful.
+BOT_READY=0
+if [ "${SHOPVPN_SKIP_SERVICE_START:-0}" != "1" ]; then
+    _stable=0
+    for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+            _stable=$((_stable + 1))
+            if [ "$_stable" -ge 3 ]; then
+                BOT_READY=1
+                break
+            fi
+        else
+            _stable=0
+        fi
+        sleep 2
+    done
+fi
 
 echo ""
 echo "──────────────────────────────────────────"
-if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+if [ "$BOT_READY" = "1" ]; then
     echo "✅ The bot was installed/updated and is running."
+elif [ "${SHOPVPN_SKIP_SERVICE_START:-0}" = "1" ]; then
+    echo "ℹ️ Service created and enabled, but not started (SHOPVPN_SKIP_SERVICE_START=1)."
 else
-    echo "⚠️ The bot is not running. To inspect the error:"
-    echo "   sudo journalctl -u $SERVICE_NAME -n 50 --no-pager"
+    echo "⚠️ The bot did not come up. Last log lines:"
+    sudo journalctl -u "$SERVICE_NAME" -n 25 --no-pager 2>&1 | sed 's/^/   /' || true
+    echo "   Inspect more with: sudo journalctl -u $SERVICE_NAME -n 50 --no-pager"
 fi
 
 # ----------------------------------------------------------------------------

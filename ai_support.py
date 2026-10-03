@@ -70,6 +70,9 @@ PROVIDER_LABELS = {
     "openrouter": "🌐 فقط OpenRouter",
     "openai": "🟢 فقط OpenAI",
     "anthropic": "🟠 فقط Claude (Anthropic)",
+    "mistral": "🌬 فقط Mistral",
+    "cohere": "🔶 فقط Cohere",
+    "cloudflare": "☁️ فقط Cloudflare",
     "custom": "🔌 فقط ارائه‌دهنده‌های سفارشی",
 }
 
@@ -169,6 +172,14 @@ def resolve_anthropic_model(db) -> str:
     return _setting(db, "anthropic_model")
 
 
+def resolve_mistral_model(db) -> str:
+    return _setting(db, "mistral_model", "mistral-small-latest")
+
+
+def resolve_cohere_model(db) -> str:
+    return _setting(db, "cohere_model", "command-a-plus-05-2026")
+
+
 CUSTOM_PREFIX = "custom:"
 _CUSTOM_ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 _OPENAI_COMPAT_URLS = {
@@ -176,10 +187,14 @@ _OPENAI_COMPAT_URLS = {
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
     "openai": "https://api.openai.com/v1/chat/completions",
     "anthropic": "https://api.anthropic.com/v1/chat/completions",
+    "mistral": "https://api.mistral.ai/v1/chat/completions",
+    "cohere": "https://api.cohere.ai/compatibility/v1/chat/completions",
 }
+_CLOUDFLARE_CHAT_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions"
 _PROVIDER_NAMES = {
     "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
     "openai": "OpenAI", "anthropic": "Claude",
+    "mistral": "Mistral", "cohere": "Cohere", "cloudflare": "Cloudflare",
 }
 
 
@@ -230,6 +245,56 @@ def resolve_cloudflare_account_id(db) -> str:
     return _setting(db, "cloudflare_account_id") or getattr(config, "CLOUDFLARE_ACCOUNT_ID", "").strip()
 
 
+# مدل‌های بینایی‌دار Workers AI برای خواندن رسید (فقط مدل‌هایی که تصویر می‌پذیرند).
+# Cloudflare API فیلدی برای «رایگان/پولی» برنمی‌گرداند، ولی صفحه‌ی قیمت‌گذاری
+# فهرست مدل‌هایی را که پلن پولی/اعتبار AI Gateway می‌خواهند اعلام کرده؛ همان
+# فهرست را در CLOUDFLARE_PAID_ONLY_MODELS نگه می‌داریم (آخرین بررسی: اکتبر ۲۰۲۶).
+# هر مدل دیگر با سهمیه‌ی روزانه‌ی رایگان (۱۰٬۰۰۰ نورون) قابل استفاده است.
+CLOUDFLARE_DEFAULT_VISION_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
+CLOUDFLARE_VISION_MODELS = (
+    ("@cf/meta/llama-4-scout-17b-16e-instruct", "Llama 4 Scout 17B"),
+    ("@cf/google/gemma-4-26b-a4b-it", "Gemma 4 26B"),
+    ("@cf/meta/llama-3.2-11b-vision-instruct", "Llama 3.2 11B Vision"),
+    ("@cf/mistralai/mistral-small-3.1-24b-instruct", "Mistral Small 3.1 24B"),
+    ("@cf/moonshotai/kimi-k2.6", "Kimi K2.6"),
+)
+CLOUDFLARE_PAID_ONLY_MODELS = frozenset({
+    "@cf/moonshotai/kimi-k2.6",
+    "@cf/moonshotai/kimi-k2.7-code",
+    "@cf/zai-org/glm-5.2",
+    "@cf/zai-org/glm-5.3",
+    "@cf/zai-org/glm-5.3-flash",
+    "@cf/deepseek-ai/deepseek-v4-flash-0731",
+    "@cf/deepseek-ai/deepseek-v4-pro-0813",
+})
+
+
+def cloudflare_model_is_free(model_id: str) -> bool:
+    return model_id not in CLOUDFLARE_PAID_ONLY_MODELS
+
+
+def cloudflare_model_label(model_id: str, label: str = "") -> str:
+    """برچسب نمایشی: 🆓 = با سهمیه‌ی روزانه‌ی رایگان قابل استفاده، 💳 = نیازمند پلن پولی."""
+    return f"{'🆓' if cloudflare_model_is_free(model_id) else '💳'} {label or model_id}"
+
+
+def resolve_cloudflare_model(db) -> str:
+    model = (_setting(db, "cloudflare_model") or "").strip()
+    return model or CLOUDFLARE_DEFAULT_VISION_MODEL
+
+
+def cloudflare_model_options(db) -> list:
+    """[(id, label)] برای انتخاب مدل: رایگان‌ها اول؛ مدل فعلی (حتی دستی) همیشه در لیست است."""
+    rows = sorted(CLOUDFLARE_VISION_MODELS, key=lambda r: not cloudflare_model_is_free(r[0]))
+    out = [(m, cloudflare_model_label(m, l)) for m, l in rows]
+    current = resolve_cloudflare_model(db)
+    if current not in {m for m, _ in rows}:
+        # مدل دستی: رایگان/پولی بودنش را نمی‌دانیم، پس برچسب 🆓 نمی‌زنیم (مگر در فهرست پولی‌ها باشد).
+        label = cloudflare_model_label(current) if current in CLOUDFLARE_PAID_ONLY_MODELS else f"✏️ {current}"
+        out.insert(0, (current, label))
+    return out
+
+
 RECEIPT_AGENT_FIELDS = (
     ("mi", "Mistral", "mistral_api_key", "MISTRAL_API_KEY", "https://console.mistral.ai/api-keys", True),
     ("co", "Cohere", "cohere_api_key", "COHERE_API_KEY", "https://dashboard.cohere.com/api-keys", True),
@@ -265,13 +330,134 @@ def resolve_anthropic_keys(db) -> list:
     return keys or _split_keys(getattr(config, "ANTHROPIC_API_KEY", ""))
 
 
-def normalize_chat_url(base_url) -> str:
+def normalize_base_url(base_url) -> str:
+    """Normalize an OpenAI-compatible API base URL without forcing an endpoint."""
     url = str(base_url or "").strip().rstrip("/")
     if not url.lower().startswith(("http://", "https://")):
         return ""
-    if not url.endswith("/chat/completions"):
-        url += "/chat/completions"
+    for suffix in ("/chat/completions", "/models"):
+        if url.lower().endswith(suffix):
+            url = url[:-len(suffix)].rstrip("/")
+            break
     return url
+
+
+def normalize_chat_url(base_url) -> str:
+    base = normalize_base_url(base_url)
+    return f"{base}/chat/completions" if base else ""
+
+
+_MODEL_DISCOVERY_TTL = 300
+_model_discovery_cache = {}
+
+
+def _model_rows_from_payload(data: dict) -> list:
+    rows = []
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        items = data.get("models") if isinstance(data, dict) else None
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or item.get("name") or "").strip()
+        if mid.startswith("models/"):
+            mid = mid[7:]
+        if not mid:
+            continue
+        low = mid.lower()
+        if any(x in low for x in ("embedding", "moderation", "tts", "whisper", "image-generation", "image_embedding")):
+            continue
+        label = str(item.get("display_name") or item.get("displayName") or mid).strip()
+        rows.append((mid, label[:100]))
+    seen = set()
+    return [(m, l) for m, l in rows if not (m in seen or seen.add(m))]
+
+
+async def discover_openai_compatible_models(base_url: str, api_key: str, force: bool = False) -> list:
+    """Discover models from an OpenAI-compatible GET /models endpoint."""
+    base = normalize_base_url(base_url)
+    key = (base, api_key)
+    import time
+    cached = _model_discovery_cache.get(key)
+    if not force and cached and time.time() - cached[0] < _MODEL_DISCOVERY_TTL:
+        return cached[1]
+    if not base or not api_key:
+        return []
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    url = f"{base}/models"
+    timeout = aiohttp.ClientTimeout(total=12)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status >= 400:
+                    return []
+                data = await resp.json(content_type=None)
+        rows = _model_rows_from_payload(data)
+    except Exception as exc:
+        _log.warning("model discovery failed for %s: %s", base, exc)
+        return cached[1] if cached else []
+    _model_discovery_cache[key] = (time.time(), rows)
+    return rows
+
+
+async def discover_provider_models(db, provider: str, base_url: str = "", api_key: str = "", force: bool = False) -> list:
+    """Return [(model_id, label)] for built-in or custom Agent providers."""
+    if provider == "gemini":
+        return await asyncio.to_thread(live_gemini_models, db, force)
+    if provider.startswith(CUSTOM_PREFIX):
+        entry = _custom_entry(db, provider)
+        base_url = base_url or (entry.get("base_url") if entry else "")
+        api_key = api_key or (entry.get("keys", [""])[0] if entry and entry.get("keys") else "")
+    elif not base_url:
+        base_url = resolve_provider_url(db, provider)
+        keys = resolve_provider_keys(db, provider)
+        api_key = api_key or (keys[0] if keys else "")
+    if provider == "anthropic":
+        base = normalize_base_url(base_url)
+        if base.endswith("/chat/completions"):
+            base = base[:-len("/chat/completions")].rstrip("/")
+        if not base or not api_key:
+            return []
+        import time
+        cache_key = ("anthropic", base, api_key)
+        cached = _model_discovery_cache.get(cache_key)
+        if not force and cached and time.time() - cached[0] < _MODEL_DISCOVERY_TTL:
+            return cached[1]
+        try:
+            headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Accept": "application/json"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as session:
+                async with session.get(f"{base}/models", headers=headers) as resp:
+                    if resp.status >= 400:
+                        return []
+                    data = await resp.json(content_type=None)
+            rows = _model_rows_from_payload(data)
+            _model_discovery_cache[cache_key] = (time.time(), rows)
+            return rows
+        except Exception as exc:
+            _log.warning("Anthropic model discovery failed: %s", exc)
+            return cached[1] if cached else []
+    if provider == "cohere":
+        if not api_key:
+            return []
+        import time
+        cache_key = ("cohere", api_key)
+        cached = _model_discovery_cache.get(cache_key)
+        if not force and cached and time.time() - cached[0] < _MODEL_DISCOVERY_TTL:
+            return cached[1]
+        try:
+            headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as session:
+                async with session.get("https://api.cohere.com/v1/models", params={"endpoint": "chat", "page_size": 100}, headers=headers) as resp:
+                    if resp.status >= 400:
+                        return []
+                    data = await resp.json(content_type=None)
+            rows = _model_rows_from_payload(data)
+            _model_discovery_cache[cache_key] = (time.time(), rows)
+            return rows
+        except Exception as exc:
+            _log.warning("Cohere model discovery failed: %s", exc)
+            return cached[1] if cached else []
+    return await discover_openai_compatible_models(base_url, api_key, force)
 
 
 def custom_providers(db) -> list:
@@ -319,6 +505,9 @@ def resolve_provider_keys(db, provider: str) -> list:
         "openrouter": resolve_openrouter_keys,
         "openai": resolve_openai_keys,
         "anthropic": resolve_anthropic_keys,
+        "mistral": resolve_mistral_keys,
+        "cohere": resolve_cohere_keys,
+        "cloudflare": resolve_cloudflare_keys,
     }.get(provider, lambda _db: [])(db)
 
 
@@ -326,6 +515,9 @@ def resolve_provider_url(db, provider: str) -> str:
     if provider.startswith(CUSTOM_PREFIX):
         entry = _custom_entry(db, provider)
         return entry["url"] if entry else ""
+    if provider == "cloudflare":
+        account_id = resolve_cloudflare_account_id(db)
+        return _CLOUDFLARE_CHAT_URL.format(account_id=account_id) if account_id else ""
     return _OPENAI_COMPAT_URLS.get(provider, "")
 
 
@@ -339,6 +531,9 @@ def resolve_provider_model(db, provider: str) -> str:
         "openrouter": resolve_openrouter_model,
         "openai": resolve_openai_model,
         "anthropic": resolve_anthropic_model,
+        "mistral": resolve_mistral_model,
+        "cohere": resolve_cohere_model,
+        "cloudflare": resolve_cloudflare_model,
     }.get(provider, lambda _db: "")(db)
 
 
@@ -352,6 +547,9 @@ def provider_display_name(db, provider: str) -> str:
 def configured_providers(db) -> list:
     pool = [p for p in ("gemini", "groq", "openrouter") if resolve_provider_keys(db, p)]
     pool += [p for p in ("openai", "anthropic") if resolve_provider_keys(db, p) and resolve_provider_model(db, p)]
+    pool += [p for p in ("mistral", "cohere") if resolve_provider_keys(db, p)]
+    if resolve_provider_keys(db, "cloudflare") and resolve_cloudflare_account_id(db):
+        pool.append("cloudflare")
     pool += [CUSTOM_PREFIX + r["id"] for r in custom_providers(db) if r["keys"] and r["model"]]
     return pool
 
@@ -1610,6 +1808,8 @@ async def _openai_chat(provider: str, api_key: str, model: str, messages: list, 
     }
     if not payload["tools"]:
         del payload["tools"], payload["tool_choice"]
+    if provider == "cohere":
+        payload.pop("tool_choice", None)
     # قبلاً ۷۵ ثانیه بود؛ یعنی اگر یک کلید/پروایدر کند یا گیر کرده بود، کاربر
     # تا ۷۵ ثانیه معطل یک تلاش می‌ماند قبل از رفتن سراغ کلید/پروایدر بعدی.
     # ۳۰ ثانیه برای این مدل‌های سریع (Groq/OpenRouter) به‌اندازه‌ی کافی زیاد
@@ -1671,6 +1871,8 @@ async def _openai_chat_stream(provider: str, api_key: str, model: str, messages:
         "temperature": 0.2,
         "stream": True,
     }
+    if provider == "cohere":
+        payload.pop("tool_choice", None)
     content = ""
     calls: dict = {}
     timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)

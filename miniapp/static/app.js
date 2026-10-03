@@ -1785,13 +1785,14 @@ async function loadSubInfo(orderId, link) {
 // کش ساده برای لیست درگاه‌های سفارشی فعال، به‌ازای هر ترکیب amount/product_id
 // (چون این‌ها لیست را فیلتر می‌کنند، نباید بین سفارش‌های مختلف به اشتراک بگذارد)
 const _customGatewaysCache = {};
-async function fetchCustomGateways(amount, productId, customConfig = false) {
-  const cacheKey = `${amount ?? ""}:${productId ?? ""}:${customConfig ? "cc" : ""}`;
+async function fetchCustomGateways(amount, productId, customConfig = false, walletTopup = false) {
+  const cacheKey = `${amount ?? ""}:${productId ?? ""}:${customConfig ? "cc" : ""}:${walletTopup ? "wt" : ""}`;
   if (_customGatewaysCache[cacheKey]) return _customGatewaysCache[cacheKey];
   const params = new URLSearchParams();
   if (amount != null) params.set("amount", amount);
   if (productId != null) params.set("product_id", productId);
   if (customConfig) params.set("custom_config", "true");
+  if (walletTopup) params.set("wallet_topup", "true");
   const qs = params.toString() ? `?${params.toString()}` : "";
   try {
     _customGatewaysCache[cacheKey] = await api(`/api/gateways${qs}`);
@@ -2806,7 +2807,7 @@ async function renderWallet() {
 
 async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled, cardToCardEnabled, cardAutoEnabled, noapayEnabled, abangatewayEnabled, blupalEnabled, extraGateways) {
   const box = document.getElementById("topup-card");
-  const customGateways = await fetchCustomGateways(amount, null);
+  const customGateways = await fetchCustomGateways(amount, null, false, true);
   renderReceiptCard(box, {
     amount, cardNumber, cardHolder, cardToCardEnabled,
     successText: "رسید ارسال شد. پس از تایید ادمین، کیف پول شما شارژ می‌شود.",
@@ -2891,6 +2892,7 @@ const ADMIN_TABS = [
   { key: "resellers", label: "🏪 نمایندگی‌ها", fullOnly: true, seniorOnly: true, mainBotOnly: true },
   { key: "livechat", label: "💬 پشتیبانی زنده", fullOnly: false },
   { key: "tickets", label: "🎫 تیکت‌ها", fullOnly: false },
+  { key: "settings", label: "⚙️ تنظیمات", fullOnly: true, seniorOnly: true, mainBotOnly: true },
   { key: "menu", label: "🧩 چیدمان منو", fullOnly: true, seniorOnly: true },
   { key: "branding", label: "🎨 برندینگ", fullOnly: true, seniorOnly: true },
   { key: "banners", label: "🖼 بنرها", fullOnly: true, seniorOnly: true },
@@ -2908,6 +2910,7 @@ const ADMIN_TAB_GROUPS = [
   { key: "people", label: "👥 کاربران و نمایندگی", tabs: ["users", "resellers"] },
   { key: "support", label: "💬 پشتیبانی", tabs: ["livechat", "tickets"] },
   { key: "appearance", label: "🎨 منو و برندینگ", tabs: ["menu", "branding", "banners"] },
+  { key: "settings_group", label: "⚙️ تنظیمات", tabs: ["settings"] },
   { key: "system", label: "🗂 سیستم", tabs: ["adminlog", "backup"] },
 ];
 
@@ -3018,6 +3021,139 @@ async function renderAdmin() {
   else if (adminSection === "adminlog") await renderAdminLogSection();
   else if (adminSection === "resellers" && isMainBot && isSenior) await renderAdminResellersSection();
   else if (adminSection === "backup") await renderAdminBackupSection();
+  else if (adminSection === "settings" && isMainBot && isSenior) await renderAdminExtraSettingsSection();
+}
+
+// ---------------------------------------------------------------------------
+// تب مدیریت > تنظیمات (تنظیمات تکمیلی؛ اسکیما از extra_settings_schema.py)
+// ---------------------------------------------------------------------------
+
+let adminExtraOpenGroup = null;
+let adminExtraQuery = "";
+
+async function renderAdminExtraSettingsSection() {
+  const body = document.getElementById("admin-section-body");
+  body.innerHTML = skeleton(4);
+  let data;
+  try {
+    data = await api("/api/admin/settings/extra");
+  } catch (e) {
+    body.innerHTML = `<div class="card"><p class="field-error">${escHtml(e.message)}</p></div>`;
+    return;
+  }
+  const groups = data.groups || [];
+  const values = data.values || {};
+  if (adminExtraOpenGroup === null && groups.length) adminExtraOpenGroup = groups[0].id;
+
+  const fieldHtml = (f) => {
+    const v = values[f.key] ?? "";
+    const k = escHtml(f.key);
+    const hint = f.hint ? `<p class="hint-text" style="margin:4px 0 10px">${escHtml(f.hint)}</p>` : "";
+    if (f.type === "bool") {
+      return `<div class="admin-list-row xs-field" data-label="${escHtml(f.label)}">
+        <div class="field-switch-row" style="width:100%;margin-bottom:0;border-bottom:none;gap:10px">
+          <span>${escHtml(f.label)}</span>
+          <label class="switch"><input type="checkbox" data-xs-key="${k}" ${v === "1" ? "checked" : ""} /><span class="switch-slider"></span></label>
+        </div>${hint}</div>`;
+    }
+    let ctl;
+    if (f.type === "number") {
+      const dec = String(f.default).includes(".") || (f.min !== undefined && f.min % 1 !== 0) || (f.max !== undefined && f.max % 1 !== 0);
+      ctl = `<input class="input" data-xs-key="${k}" type="text" inputmode="${dec ? "decimal" : "numeric"}" ${f.min !== undefined ? `data-min="${f.min}"` : ""} ${f.max !== undefined ? `data-max="${f.max}"` : ""} value="${escHtml(v)}" style="direction:ltr;text-align:left" />`;
+    } else if (f.type === "textarea") {
+      ctl = `<textarea class="input" data-xs-key="${k}" rows="5" ${f.maxlen ? `maxlength="${Number(f.maxlen)}"` : ""} style="min-height:90px">${escHtml(v)}</textarea>`;
+    } else if (f.type === "password") {
+      ctl = `<input class="input" data-xs-key="${k}" type="password" autocomplete="new-password" placeholder="${v ? "•••••••• (تنظیم شده) — خالی = بدون تغییر" : "خالی = بدون تغییر"}" style="direction:ltr;text-align:left" />`;
+    } else if (f.type === "select") {
+      ctl = `<select class="input" data-xs-key="${k}">${(f.options || []).map((o) => `<option value="${escHtml(o[0])}" ${String(o[0]) === String(v) ? "selected" : ""}>${escHtml(o[1])}</option>`).join("")}</select>`;
+    } else {
+      ctl = `<input class="input" data-xs-key="${k}" type="text" value="${escHtml(v)}" style="direction:ltr;text-align:left" />`;
+    }
+    return `<div class="xs-field" data-label="${escHtml(f.label)}" style="padding:8px 0;border-bottom:1px solid var(--glass-brd)">
+      <label class="field-label" style="line-height:1.6">${escHtml(f.label)}</label>${ctl}${hint}</div>`;
+  };
+
+  body.innerHTML = `
+    <div class="card" style="padding:10px">
+      <input class="input" id="xs-search" type="search" placeholder="🔍 جستجو در تنظیمات..." value="${escHtml(adminExtraQuery)}" />
+    </div>
+    <div id="xs-groups">
+    ${groups.map((g) => `
+      <div class="card xs-group" data-gid="${escHtml(g.id)}">
+        <div class="xs-head" data-gid="${escHtml(g.id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer">
+          <div class="eyebrow" style="margin:0">${escHtml(g.title)}</div>
+          <span class="xs-arrow">${adminExtraOpenGroup === g.id ? "▾" : "◂"}</span>
+        </div>
+        <div class="xs-body" style="${adminExtraOpenGroup === g.id ? "" : "display:none"};margin-top:8px">
+          ${g.fields.map(fieldHtml).join("")}
+          <div class="field-error xs-error"></div>
+          <button class="btn xs-save" data-gid="${escHtml(g.id)}" style="margin-top:8px">💾 ذخیره</button>
+        </div>
+      </div>`).join("")}
+    </div>
+    <div class="card" id="xs-empty" style="display:none"><p class="hint-text" style="margin:0">موردی پیدا نشد.</p></div>
+  `;
+
+  const applyFilter = () => {
+    const q = adminExtraQuery.trim().toLowerCase();
+    let any = false;
+    body.querySelectorAll(".xs-group").forEach((card) => {
+      const fields = card.querySelectorAll(".xs-field");
+      let matches = 0;
+      fields.forEach((el) => {
+        const hit = !q || (el.dataset.label || "").toLowerCase().includes(q);
+        el.style.display = hit ? "" : "none";
+        if (hit) matches++;
+      });
+      const titleHit = q && card.querySelector(".eyebrow").textContent.toLowerCase().includes(q);
+      if (titleHit) fields.forEach((el) => { el.style.display = ""; });
+      const show = !q || matches > 0 || titleHit;
+      card.style.display = show ? "" : "none";
+      if (show) any = true;
+      if (q && show) card.querySelector(".xs-body").style.display = "";
+      else card.querySelector(".xs-body").style.display = adminExtraOpenGroup === card.dataset.gid ? "" : "none";
+    });
+    document.getElementById("xs-empty").style.display = any ? "none" : "";
+  };
+  document.getElementById("xs-search").oninput = (e) => { adminExtraQuery = e.target.value; applyFilter(); };
+  applyFilter();
+
+  body.querySelectorAll(".xs-head").forEach((h) => {
+    h.onclick = () => {
+      adminExtraOpenGroup = adminExtraOpenGroup === h.dataset.gid ? null : h.dataset.gid;
+      body.querySelectorAll(".xs-group").forEach((card) => {
+        const open = adminExtraOpenGroup === card.dataset.gid;
+        card.querySelector(".xs-body").style.display = open ? "" : "none";
+        card.querySelector(".xs-arrow").textContent = open ? "▾" : "◂";
+      });
+    };
+  });
+
+  body.querySelectorAll(".xs-save").forEach((btn) => {
+    btn.onclick = async () => {
+      const card = btn.closest(".xs-group");
+      const errBox = card.querySelector(".xs-error");
+      errBox.textContent = "";
+      const payload = {};
+      card.querySelectorAll("[data-xs-key]").forEach((el) => {
+        const key = el.dataset.xsKey;
+        if (el.type === "checkbox") payload[key] = el.checked ? "1" : "0";
+        else payload[key] = el.value;
+      });
+      btn.disabled = true;
+      try {
+        const res = await api("/api/admin/settings/extra", { method: "POST", body: JSON.stringify({ values: payload }) });
+        tg.HapticFeedback.notificationOccurred("success");
+        card.querySelectorAll('input[type="password"]').forEach((el) => { el.value = ""; });
+        notify(res.changed && res.changed.length ? "تنظیمات ذخیره شد." : "تغییری برای ذخیره وجود نداشت.");
+      } catch (e) {
+        errBox.textContent = e.message;
+        try { tg.HapticFeedback.notificationOccurred("error"); } catch (_) {}
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

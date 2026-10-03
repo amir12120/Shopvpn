@@ -2342,3 +2342,11 @@ html.tier-vip .sidebar-brand .brand-mark { background: linear-gradient(135deg,#5
 .reseller-feature-list > div::first-letter { font-size:18px; }
 .reseller-feature-list span { color:var(--text-muted); font-size:11px; margin-top:3px; }
 @media (max-width:760px){ .reseller-tier-hero{padding:18px;align-items:flex-start}.reseller-tier-chip{display:none}.reseller-action-grid{grid-template-columns:1fr 1fr}.reseller-kpi-grid{grid-template-columns:1fr 1fr}.reseller-tier-copy h2{font-size:18px} }
+
+/* تب تنظیمات تکمیلی */
+.extra-search{ margin-bottom:12px; }
+.extra-search .input{ width:100%; }
+.extra-field{ min-width:0; }
+.extra-hint{ margin-top:4px; font-size:12px; line-height:1.6; }
+.extra-save-btn{ min-width:96px; }
+@media (max-width:640px){ .extra-save-btn{ width:100%; } }

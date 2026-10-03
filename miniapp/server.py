@@ -54,6 +54,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import logging
+from types import SimpleNamespace
 import sqlite3
 
 logging.basicConfig(level=logging.INFO)
@@ -74,6 +75,7 @@ import extra_gateway_payment
 import extra_gateway_registry
 import payment_engine
 import ai_support
+import receipt_ai_check
 import report_router
 import card_to_card_payment
 from asset_versioning import static_version, ApiNoStoreMiddleware
@@ -1060,6 +1062,7 @@ async def api_custom_config_renew_full(custom_config_id: int, body: RenewFullBod
                 db.reject_order(order_id)
                 raise HTTPException(status_code=409, detail=str(e))
             db.approve_renewal_order(order_id)
+            await report_order_completed(tenant, db, order_id, "wallet")
             return {"status": "approved", "order_id": order_id, "message": result_text}
 
         return {
@@ -1269,6 +1272,7 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
                 db.reject_order(order_id)
                 raise HTTPException(status_code=502, detail=tr(f"خطا در ساخت کانفیگ روی پنل: {e}"))
             db.approve_custom_config_order(order_id)
+            await report_order_completed(tenant, db, order_id, "wallet")
             db.add_custom_config(
                 tg_id, server["id"], result.username, body.volume_gb, settings["duration_days"],
                 result.subscription_url, order_id=order_id, source="custom_config",
@@ -1925,6 +1929,105 @@ async def send_photo_to_admins(db: Database, bot_token: str, caption: str, reply
     return sent_file_id, delivered, results
 
 
+class _UploadedReceiptMessage:
+    """شبه‌پیام تلگرام برای رسید آپلودشده از مینی‌اپ، تا چک‌های نام فایل/زمان همان منطق ربات را داشته باشند."""
+
+    def __init__(self, filename: str, content_type: str):
+        self.date = datetime.now(timezone.utc)
+        self.document = SimpleNamespace(file_name=filename, mime_type=content_type)
+
+
+async def _check_miniapp_receipt(db: Database, photo_bytes: bytes, filename: str, content_type: str,
+                                 ref_kind: str, ref_id: int, amount_toman: int) -> dict:
+    """همان بررسی ضدجعل رسید ربات (receipt_ai_check) را روی رسید آپلودشده در مینی‌اپ اجرا می‌کند."""
+    try:
+        return await receipt_ai_check.check_receipt(
+            None, db,
+            file_id="", receipt_type="document", ref_kind=ref_kind, ref_id=ref_id,
+            amount_toman=amount_toman,
+            card_number=db.get_setting("card_number"), card_holder=db.get_setting("card_holder"),
+            message=_UploadedReceiptMessage(filename, content_type), image_bytes=photo_bytes,
+        )
+    except Exception:
+        logging.getLogger("miniapp").exception("receipt_ai_check برای %s #%s خطا داد.", ref_kind, ref_id)
+        return {"note": None, "available": False, "reject": False, "reject_reason": None}
+
+
+def _receipt_ai_caption_suffix(ai_result: dict) -> str:
+    if ai_result.get("note"):
+        return "\n\n" + ai_result["note"][:600]
+    if not ai_result.get("available"):
+        return "\n\n⚠️ بررسی خودکار هوش مصنوعی روی این رسید انجام نشد (سرویس در دسترس نبود)."
+    return ""
+
+
+_RECEIPT_AI_REJECTED_MSG = "❌ متاسفانه رسید ارسالی شما رد شد. در صورت اشتباه لطفاً با پشتیبانی در ارتباط باشید."
+
+
+_PAID_VIA_LABELS = {
+    "wallet": "کیف پول", "plisio": "کریپتو (Plisio)", "abangateway": "آبان گیت وی", "blupal": "بلوپال",
+    "noapay": "نوآپی", "custom": "درگاه سفارشی", "card_auto": "کارت به کارت خودکار",
+}
+
+
+def _user_label_html(db: Database, user_id: int) -> str:
+    row = db.get_user(user_id)
+    name = html_lib.escape((row["first_name"] if row else "") or "")
+    uname = html_lib.escape((row["username"] if row else "") or "---")
+    return f"{name} (@{uname})\n🆔 آیدی عددی: {user_id}"
+
+
+async def report_order_completed(tenant, db: Database, order_id: int, via: str = "wallet") -> None:
+    """گزارش خرید/تمدید تکمیل‌شده در مینی‌اپ به تاپیک گروه گزارش (یا پیام خصوصی مدیران)."""
+    try:
+        order = db.get_order(order_id)
+        if not order:
+            return
+        if order["is_renewal"]:
+            topic, title, product_line = "renewal", "🔄 تمدید سرویس (مینی‌اپ)", ""
+        elif order["is_custom_config"]:
+            topic, title = "purchase", "🛒 خرید کانفیگ شخصی (مینی‌اپ)"
+            product_line = f"🛠 {html_lib.escape(str(order['custom_username'] or ''))} ({order['custom_volume_gb']} گیگ)\n"
+        else:
+            topic, title = "purchase", "🛒 خرید (مینی‌اپ)"
+            product = db.get_product(order["product_id"])
+            qty = order["quantity"] or 1
+            product_line = f"📦 محصول: {html_lib.escape(product['name'] if product else '---')}" + (f" × {qty}" if qty > 1 else "") + "\n"
+        text = (
+            f"{title} - سفارش #{order_id}\n"
+            f"👤 کاربر: {_user_label_html(db, order['user_id'])}\n"
+            f"{product_line}"
+            f"💳 روش پرداخت: {_PAID_VIA_LABELS.get(via, via)}\n"
+        )
+        if order["discount_amount"]:
+            text += f"🎟 تخفیف کد: {order['discount_amount']:,} تومان\n"
+        if order["wallet_used"]:
+            text += f"👛 از کیف پول: {order['wallet_used']:,} تومان\n"
+        text += f"💵 مبلغ نهایی: {order['final_price']:,} تومان"
+        await report_router.report_raw(tenant.bot_token, db, topic, text, senior_only=False, parse_mode="HTML")
+    except Exception:
+        logging.getLogger("miniapp").exception("گزارش سفارش #%s به گروه ناموفق بود.", order_id)
+
+
+async def report_topup_completed(tenant, db: Database, topup_id: int, via: str) -> None:
+    """گزارش شارژ موفق کیف پول در مینی‌اپ به تاپیک «مالی»."""
+    try:
+        topup = db.get_topup(topup_id)
+        if not topup:
+            return
+        text = (
+            f"👛 شارژ کیف پول (مینی‌اپ) - #{topup_id}\n"
+            f"👤 کاربر: {_user_label_html(db, topup['user_id'])}\n"
+            f"💳 روش پرداخت: {_PAID_VIA_LABELS.get(via, via)}\n"
+            f"💰 مبلغ: {topup['amount']:,} تومان\n"
+            f"✅ موجودی فعلی: {int(db.get_wallet_credit(topup['user_id']) or 0):,} تومان"
+        )
+        await report_router.report_raw(tenant.bot_token, db, "finance", text, senior_only=False, parse_mode="HTML")
+    except Exception:
+        logging.getLogger("miniapp").exception("گزارش شارژ #%s به گروه ناموفق بود.", topup_id)
+
+
+
 # ---------------------------------------------------------------------------
 # اِعمال محدودیت‌های روش پرداخت (حداقل مبلغ هر روش + محدودیت مجاز هر محصول)
 # ---------------------------------------------------------------------------
@@ -1942,13 +2045,16 @@ def _quick_action_buttons(user_id: int) -> list:
 
 
 def _payment_method_error(db: Database, amount: int, method_key: str, product_id: int = None,
-                          order=None, custom_config: bool = False) -> Optional[str]:
+                          order=None, custom_config: bool = False, wallet_topup: bool = False) -> Optional[str]:
     """اگر روش پرداخت method_key برای این مبلغ/محصول مجاز نباشد، پیام خطا را
     برمی‌گرداند؛ در غیر این صورت None (یعنی مجاز است). معادل _order_payment_method_error
     در handlers_user.py ربات - به‌عنوان یک لایه‌ی دفاعی سمت سرور (علاوه بر فیلترشدن
     گزینه‌ها در پاسخ API)."""
     is_custom_config = custom_config or (order is not None and bool(order["is_custom_config"]))
-    if is_custom_config:
+    if wallet_topup:
+        if not db.wallet_topup_allows_payment_method(method_key):
+            return "این روش پرداخت برای شارژ کیف پول در حال حاضر مجاز نیست."
+    elif is_custom_config:
         custom_product_id = order["custom_product_id"] if order is not None else None
         if not db.custom_config_allows_payment_method(custom_product_id, method_key):
             return "این روش پرداخت برای ساخت کانفیگ شخصی مجاز نیست."
@@ -1961,8 +2067,8 @@ def _payment_method_error(db: Database, amount: int, method_key: str, product_id
 
 
 def _require_payment_method_allowed(db: Database, amount: int, method_key: str, product_id: int = None,
-                                    order=None) -> None:
-    err = _payment_method_error(db, amount, method_key, product_id, order=order)
+                                    order=None, wallet_topup: bool = False) -> None:
+    err = _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup)
     if err:
         raise HTTPException(status_code=400, detail=err)
 
@@ -1984,12 +2090,13 @@ def _extra_gateway_options(db: Database, tenant, ok) -> list:
     return options
 
 
-def _payment_flags(db: Database, amount: int, product_id: int = None, order=None, tenant=None) -> dict:
+def _payment_flags(db: Database, amount: int, product_id: int = None, order=None, tenant=None,
+                   wallet_topup: bool = False) -> dict:
     """فلگ‌های فعال/مجازبودن روش‌های پرداخت داخلی برای مبلغ/محصولِ سفارش جاری؛
     هم تنظیم فعال/غیرفعال کلی و هم محدودیت محصول/حداقل‌مبلغ را لحاظ می‌کند تا
     فرانت‌اند مینی‌اپ فقط دکمه‌های واقعاً قابل‌استفاده را نشان دهد."""
     def _ok(method_key: str) -> bool:
-        return _payment_method_error(db, amount, method_key, product_id, order=order) is None
+        return _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup) is None
     return {
         "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and _ok("card"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
@@ -2059,7 +2166,9 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
         discount_code_id = code_row["id"]
 
     price_after_code = max(total_price - discount_amount, 0)
-    plan = db.plan_wallet_spend(tg_id, price_after_code)
+    allowed_methods = db.get_product_payment_methods(body.product_id)
+    wallet_allowed = allowed_methods is None or "wallet" in allowed_methods
+    plan = db.plan_wallet_spend(tg_id, price_after_code, wallet_allowed)
     if plan["blocked"]:
         raise HTTPException(status_code=400, detail=plan["message"])
     wallet_used = plan["wallet_used"]
@@ -2088,6 +2197,7 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
                     db.reject_order(order_id)
                     raise HTTPException(status_code=409, detail=str(e))
                 db.approve_order_auto(order_id)
+                await report_order_completed(tenant, db, order_id, "wallet")
                 db.reward_referrer_if_first_purchase(tg_id, order["final_price"] or total_price)
                 links = [r["subscription_url"] for r in prov_results]
                 return {
@@ -2101,6 +2211,7 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
                 db.reject_order(order_id)
                 raise HTTPException(status_code=409, detail=tr("موجودی هم‌زمان تمام شد؛ مبلغ بازگردانده شد."))
             db.approve_order(order_id, [r["id"] for r in results])
+            await report_order_completed(tenant, db, order_id, "wallet")
 
             async def _send_admin_msg(admin_id, text):
                 async with aiohttp.ClientSession() as session:
@@ -2211,7 +2322,7 @@ async def api_wallet_crypto_invoice(body: CryptoWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "crypto")
+    _require_payment_method_allowed(db, topup["amount"], "crypto", wallet_topup=True)
     result = await _create_crypto_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2273,7 +2384,7 @@ async def api_wallet_abangateway_invoice(body: AbanGatewayWalletInvoiceRequest, 
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "abangateway")
+    _require_payment_method_allowed(db, topup["amount"], "abangateway", wallet_topup=True)
     result = await _create_abangateway_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2333,6 +2444,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
 
     if invoice["kind"] == "wallet_topup":
         db.approve_topup(invoice["ref_id"])
+        await report_topup_completed(tenant, db, invoice["ref_id"], "abangateway")
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
@@ -2383,6 +2495,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
                     pass
             return {"status": "ok"}
         db.approve_renewal_order(order_id)
+        await report_order_completed(tenant, db, order_id, "abangateway")
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
@@ -2441,6 +2554,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
             return {"status": "ok"}
 
         db.approve_order_auto(order_id)
+        await report_order_completed(tenant, db, order_id, "abangateway")
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
         try:
             async with aiohttp.ClientSession() as session:
@@ -2465,6 +2579,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
     results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
     if results:
         db.approve_order(order_id, [r["id"] for r in results])
+        await report_order_completed(tenant, db, order_id, "abangateway")
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
         try:
             async with aiohttp.ClientSession() as session:
@@ -2552,7 +2667,7 @@ async def api_wallet_blupal_invoice(body: BluPalWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "blupal")
+    _require_payment_method_allowed(db, topup["amount"], "blupal", wallet_topup=True)
     result = await _create_blupal_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2607,6 +2722,7 @@ async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tena
 
     if invoice["kind"] == "wallet_topup":
         db.approve_topup(invoice["ref_id"])
+        await report_topup_completed(tenant, db, invoice["ref_id"], "blupal")
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
@@ -2657,6 +2773,7 @@ async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tena
                     pass
             return {"status": "ok"}
         db.approve_renewal_order(order_id)
+        await report_order_completed(tenant, db, order_id, "blupal")
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
@@ -2715,6 +2832,7 @@ async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tena
             return {"status": "ok"}
 
         db.approve_order_auto(order_id)
+        await report_order_completed(tenant, db, order_id, "blupal")
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
         try:
             async with aiohttp.ClientSession() as session:
@@ -2739,6 +2857,7 @@ async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tena
     results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
     if results:
         db.approve_order(order_id, [r["id"] for r in results])
+        await report_order_completed(tenant, db, order_id, "blupal")
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
         try:
             async with aiohttp.ClientSession() as session:
@@ -2822,7 +2941,7 @@ async def api_wallet_noapay_invoice(body: NoapayWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "noapay")
+    _require_payment_method_allowed(db, topup["amount"], "noapay", wallet_topup=True)
     result = await _create_noapay_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2923,7 +3042,7 @@ async def api_wallet_extra_gateway_invoice(gateway: str, body: NoapayWalletInvoi
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], gateway)
+    _require_payment_method_allowed(db, topup["amount"], gateway, wallet_topup=True)
     return await _create_extra_gateway_invoice(
         db, tenant, tg_id, gateway, "wallet_topup", body.topup_id, topup["amount"], f"شارژ کیف پول #{body.topup_id}",
     )
@@ -3296,7 +3415,7 @@ def api_admin_list_c2c_invoices(status: Optional[str] = None, auth=Depends(requi
 
 @app.get("/api/gateways")
 def api_list_public_gateways(auth=Depends(require_joined), amount: int = None, product_id: int = None,
-                             custom_config: bool = False):
+                             custom_config: bool = False, wallet_topup: bool = False):
     """لیست درگاه‌های فعال، برای نمایش به‌عنوان یک روش پرداخت در مینی‌اپ.
     اگر amount/product_id داده شود، همان محدودیت «حداقل مبلغ درگاه» و
     «روش‌های مجاز این محصول» که در چک‌اوت اعمال می‌شود، این‌جا هم برای فیلترکردن
@@ -3306,9 +3425,9 @@ def api_list_public_gateways(auth=Depends(require_joined), amount: int = None, p
     out = []
     for r in rows:
         key = f"custom:{r['gateway_key']}"
-        if amount is not None or product_id is not None or custom_config:
+        if amount is not None or product_id is not None or custom_config or wallet_topup:
             if _payment_method_error(db, amount if amount is not None else 0, key, product_id,
-                                     custom_config=custom_config) is not None:
+                                     custom_config=custom_config, wallet_topup=wallet_topup) is not None:
                 continue
         out.append({"key": r["gateway_key"], "name": r["name"]})
     return out
@@ -3378,6 +3497,7 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
 
     if invoice["kind"] == "wallet_topup":
         db.approve_topup(invoice["ref_id"])
+        await report_topup_completed(tenant, db, invoice["ref_id"], "custom")
         await _notify(
             invoice["user_id"],
             f"✅ پرداخت تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
@@ -3412,6 +3532,7 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
                 )
             return
         db.approve_renewal_order(order_id)
+        await report_order_completed(tenant, db, order_id, "custom")
         await _notify(order["user_id"], result_text)
         return
 
@@ -3443,6 +3564,7 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
                 )
             return
         db.approve_order_auto(order_id)
+        await report_order_completed(tenant, db, order_id, "custom")
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
         await _notify(order["user_id"], f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}")
         asyncio.create_task(deliver_config_to_user_web(
@@ -3456,6 +3578,7 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
     results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
     if results:
         db.approve_order(order_id, [r["id"] for r in results])
+        await report_order_completed(tenant, db, order_id, "custom")
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
         await _notify(order["user_id"], f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}")
         asyncio.create_task(deliver_config_to_user_web(
@@ -3550,7 +3673,7 @@ async def api_wallet_custom_gateway_invoice(gateway_key: str, body: CustomGatewa
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], f"custom:{gateway_key}")
+    _require_payment_method_allowed(db, topup["amount"], f"custom:{gateway_key}", wallet_topup=True)
     result = await _create_custom_gateway_invoice_for(
         db, tenant, tg_id, gateway_key, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -3669,7 +3792,7 @@ async def api_wallet_card_auto_invoice(body: CardAutoWalletInvoiceRequest, auth=
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "card_auto")
+    _require_payment_method_allowed(db, topup["amount"], "card_auto", wallet_topup=True)
     result = _create_card_to_card_invoice_for(db, "wallet_topup", body.topup_id, tg_id, topup["amount"])
     result["topup_id"] = body.topup_id
     return result
@@ -3855,6 +3978,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
 
     if invoice["kind"] == "wallet_topup":
         db.approve_topup(invoice["ref_id"])
+        await report_topup_completed(tenant, db, invoice["ref_id"], "plisio")
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
@@ -3904,6 +4028,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                                 pass
                     return {"status": "ok"}
                 db.approve_renewal_order(order_id)
+                await report_order_completed(tenant, db, order_id, "plisio")
                 try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(
@@ -3943,6 +4068,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                     return {"status": "ok"}
 
                 db.approve_order_auto(order_id)
+                await report_order_completed(tenant, db, order_id, "plisio")
                 db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -3967,6 +4093,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
             results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
             if results:
                 db.approve_order(order_id, [r["id"] for r in results])
+                await report_order_completed(tenant, db, order_id, "plisio")
                 db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -4095,7 +4222,7 @@ def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
         "card_number": db.get_setting("card_number"),
         "card_holder": db.get_setting("card_holder"),
         "note": tr("مبلغ را واریز کرده و عکس رسید را همینجا ارسال کنید."),
-        **_payment_flags(db, body.amount, None, tenant=tenant),
+        **_payment_flags(db, body.amount, None, tenant=tenant, wallet_topup=True),
     }
 
 
@@ -4112,7 +4239,7 @@ async def api_topup_receipt(
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "card")
+    _require_payment_method_allowed(db, topup["amount"], "card", wallet_topup=True)
     if not photo.content_type or not photo.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail=tr("فقط عکس رسید پذیرفته می‌شود."))
 
@@ -4137,6 +4264,25 @@ async def api_topup_receipt(
     admin_ids = db.list_admins()
     if not admin_ids:
         raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
+
+    ai_result = await _check_miniapp_receipt(
+        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "topup", topup_id, topup["amount"]
+    )
+    db.set_topup_receipt_ai_note(topup_id, ai_result["note"])
+    if ai_result.get("reject") and db.reject_topup(topup_id, "ai_auto"):
+        db.log_admin_action(
+            0, "topup_ai_auto_reject",
+            f"شارژ #{topup_id} | کاربر {tg_id} | مبلغ: {topup['amount']:,} | دلیل: {ai_result.get('reject_reason') or ''}",
+        )
+        await send_photo_to_admins(
+            db, tenant.bot_token,
+            caption + "\n\n🚫 این رسید توسط بررسی هوشمند بسیار مشکوک تشخیص داده شد و به‌صورت خودکار رد شد.\n"
+            + (ai_result.get("reject_reason") or "")[:500],
+            json.dumps({"inline_keyboard": [_quick_action_buttons(tg_id)]}),
+            photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "finance",
+        )
+        raise HTTPException(status_code=400, detail=tr(_RECEIPT_AI_REJECTED_MSG))
+    caption += _receipt_ai_caption_suffix(ai_result)
 
     sent_file_id, delivered, results = await send_photo_to_admins(
         db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "finance"
@@ -4211,6 +4357,25 @@ async def api_order_receipt(
     admin_ids = db.list_admins()
     if not admin_ids:
         raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
+
+    ai_result = await _check_miniapp_receipt(
+        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "order", order_id, order["final_price"]
+    )
+    db.set_order_receipt_ai_note(order_id, ai_result["note"])
+    if ai_result.get("reject") and db.reject_order(order_id, "ai_auto"):
+        db.log_admin_action(
+            0, "order_ai_auto_reject",
+            f"سفارش #{order_id} | کاربر {tg_id} | دلیل: {ai_result.get('reject_reason') or ''}",
+        )
+        await send_photo_to_admins(
+            db, tenant.bot_token,
+            caption + "\n\n🚫 این رسید توسط بررسی هوشمند بسیار مشکوک تشخیص داده شد و به‌صورت خودکار رد شد.\n"
+            + (ai_result.get("reject_reason") or "")[:500],
+            json.dumps({"inline_keyboard": [_quick_action_buttons(tg_id)]}),
+            photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "purchase",
+        )
+        raise HTTPException(status_code=400, detail=tr(_RECEIPT_AI_REJECTED_MSG))
+    caption += _receipt_ai_caption_suffix(ai_result)
 
     sent_file_id, delivered, results = await send_photo_to_admins(
         db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "purchase"
@@ -5588,6 +5753,30 @@ class CryptoSettingsUpdate(BaseModel):
 class CardSettingsUpdate(BaseModel):
     card_number: str
     card_holder: str
+
+
+class ExtraSettingsUpdate(BaseModel):
+    values: Dict[str, Any] = {}
+
+
+@app.get("/api/admin/settings/extra")
+def api_admin_get_extra_settings(auth=Depends(require_main_admin)):
+    from extra_settings_schema import groups_for, load_values
+    _, db, _ = auth
+    return {"groups": groups_for("mini"), "values": load_values(db, "mini")}
+
+
+@app.post("/api/admin/settings/extra")
+def api_admin_set_extra_settings(body: ExtraSettingsUpdate, auth=Depends(require_main_admin)):
+    from extra_settings_schema import save_values, SettingsValidationError
+    _, db, _ = auth
+    try:
+        changed = save_values(db, "mini", body.values or {})
+    except SettingsValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if changed:
+        db.log_admin_action(auth[0], "setting_change", "extra settings updated (میناپ): " + ", ".join(changed), "setting", "extra")
+    return {"ok": True, "changed": changed}
 
 
 @app.get("/api/admin/settings/referral")

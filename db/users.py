@@ -20,10 +20,16 @@ class UsersMixin:
         lang = normalize_language(language_code)
         with self._get_conn() as conn:
             cur = conn.execute(
-                "UPDATE users SET language_code=? WHERE telegram_id=?",
+                "UPDATE users SET language_code=?, language_selected=1 WHERE telegram_id=?",
                 (lang, tg_id),
             )
         return cur.rowcount > 0
+
+    def is_user_language_selected(self, tg_id: int) -> bool:
+        """True اگر کاربر قبلاً زبان ربات را انتخاب کرده (یا از قبل از این قابلیت کاربر بوده)."""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT language_selected FROM users WHERE telegram_id=?", (tg_id,)).fetchone()
+        return bool(row and row["language_selected"])
 
     def set_all_users_language(self, language_code: str) -> int:
         """زبان همه‌ی کاربران ربات را یک‌جا تغییر می‌دهد (نه فقط ادمین درخواست‌دهنده).
@@ -36,6 +42,7 @@ class UsersMixin:
                 "UPDATE users SET language_code=? WHERE language_code IS NULL OR language_code<>?",
                 (lang, lang),
             )
+            conn.execute("UPDATE users SET language_selected=1")
         return cur.rowcount or 0
 
     def set_user_phone(self, tg_id: int, phone: str) -> bool:

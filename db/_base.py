@@ -1385,6 +1385,16 @@ class DatabaseBase:
                 raise
         conn.execute("UPDATE users SET language_code='fa' WHERE language_code IS NULL OR language_code=''")
 
+        # آیا کاربر خودش زبان را انتخاب کرده؟ برای کاربران قبل از این مهاجرت
+        # (که قبلاً وارد بات شده‌اند) روی ۱ گذاشته می‌شود تا دوباره سوال نشوند؛
+        # فقط کاربران تازه (پیش‌فرض ۰) در /start اول زبان را می‌پرسند.
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN language_selected INTEGER DEFAULT 0")
+            conn.execute("UPDATE users SET language_selected=1")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
 # قابلیت ۵۰: هر بار این نمونه از بات بالا می‌آید، کد را برای فراخوانی‌های
         # get_text(...) اسکن می‌کند تا متن‌های جدید خودکار در پنل وب ظاهر شوند
         # (نگاه کن: text_scanner.py، _sync_text_registry).

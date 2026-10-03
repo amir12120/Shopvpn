@@ -532,6 +532,8 @@ Depending on the project version, it can handle:
 - 🔗 Integration API setup
 - 🌐 Persian/English management menu
 - 🌐 Local translation runtime install/repair and unused-language cleanup
+- 🧹 Disk cleanup after every update (pip/apt caches, temp files)
+- ✅ Restart with a real readiness check (only reports success once the service stays up)
 - 🏭 Full cleanup / factory reset
 
 After install, just type `shopvpn`:
@@ -683,6 +685,34 @@ Beyond answering questions, the assistant can prepare account actions that the b
 
 - 🟢 **OpenAI** and 🟠 **Anthropic (Claude)** join Gemini, Groq, OpenRouter, Mistral, Cohere and Cloudflare, each with its own model picker
 - ➕ Custom OpenAI-compatible providers can be added with your own base URL and key
+
+### 🏦 Bank Inquiry for Fake-Receipt Detection
+
+- 🔎 Local, API-free check: the bank code inside the SHEBA/IBAN is compared against the card's bank (from the BIN), so a receipt that shows a SHEBA but is actually card-to-card no longer slips through
+- 🌐 Optional HTTP inquiry, off by default: you enter the URL, key, method and response field paths yourself (`bank_inquiry_*`)
+- 🚫 Automatic rejection only with `bank_inquiry_auto_reject` on, and only for a definitive mismatch — otherwise the admin just gets a warning
+- 🔒 Full card numbers are never logged, the cache is keyed by hash, and masked cards (6037****1234) are skipped without a false alarm
+
+### 🤖 AI Model Discovery
+
+- 🔍 Models of OpenAI-compatible providers are discovered automatically (cached), with a manual model entry as fallback when discovery fails
+- ☁️ Cloudflare Workers AI free models are listed separately and a vision-capable model is suggested for receipt OCR (`cloudflare_model`)
+
+### 🧾 Test-mode Delivery Text & Discount-Code Sources
+
+- 🧪 The "after delivery" message can differ for test orders (`test_post_delivery_text`) so tests never mix with real customers
+- 🗂️ Discount codes now record their source, and you can delete only the codes of one source or category without touching the rest
+
+### 🗣️ Ask for the Language Only Once
+
+- 🆕 New users pick Persian or English on their first `/start` and are never asked again
+- 🔁 Existing users are migrated automatically (`language_selected`) and skip the question
+
+### 🧹 Install and Update Now Do the Same Job
+
+- 🧹 An update frees disk space too (pip/apt caches, temp files, `__pycache__`), not just the initial install
+- ✅ After an install or an update a service is only reported as successful once it has actually stayed up across several polls; otherwise the last 25 log lines are printed
+- 🔁 The same readiness check covers the Mini App, panel and API units
 
 ### 🧰 More `manage.sh` Options
 
