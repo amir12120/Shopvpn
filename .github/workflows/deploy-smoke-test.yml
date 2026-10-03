@@ -116,7 +116,8 @@ jobs:
           modules = [
               "bot_manager", "handlers_admin", "handlers_user", "admin_tools",
               "admin_campaign", "admin_help", "ai_admin", "ai_media", "ai_text",
-              "ai_support", "campaign_ai", "churn_prediction", "draft_stream",
+              "ai_support", "bank_inquiry", "campaign_ai", "churn_prediction",
+              "draft_stream", "extra_settings_schema", "receipt_ai_check",
               "db", "translation_engine", "renewal_reminders",
           ]
           for name in modules:
