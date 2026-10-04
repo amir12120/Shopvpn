@@ -177,6 +177,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         این درگاه) روش پرداخت انتخاب‌شده مجاز نباشد، متن خطا را برمی‌گرداند؛
         در غیر این صورت None (یعنی مجاز است). این یک لایه‌ی دفاعی اضافه روی
         فیلترشدن دکمه‌ها در payment_choice_kb است."""
+        if await asyncio.to_thread(db.card_method_blocked_for_user, order["user_id"], method_key):
+            return "⛔️ این روش پرداخت هنوز برای حساب شما فعال نشده است. از روش‌های دیگر استفاده کنید."
         product_id = order["product_id"] if "product_id" in order.keys() else None
         if "is_custom_config" in order.keys() and order["is_custom_config"]:
             if not (await asyncio.to_thread(db.custom_config_allows_payment_method, order["custom_product_id"], method_key)):
@@ -188,10 +190,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return f"⛔️ حداقل مبلغ قابل پرداخت با این روش {min_amt:,} تومان است."
         return None
 
-    async def _wallet_topup_method_error(amount: int, method_key: str) -> str:
+    async def _wallet_topup_method_error(amount: int, method_key: str, user_id: int = None) -> str:
         """معادل _order_payment_method_error برای شارژ کیف پول: اگر این روش
         برای شارژ کیف پول محدود شده باشد یا مبلغ کمتر از حداقل مبلغ این روش
         باشد، متن خطا را برمی‌گرداند؛ در غیر این صورت None."""
+        if user_id is not None and await asyncio.to_thread(db.card_method_blocked_for_user, user_id, method_key):
+            return "⛔️ این روش پرداخت هنوز برای حساب شما فعال نشده است. از روش‌های دیگر استفاده کنید."
         if not (await asyncio.to_thread(db.wallet_topup_allows_payment_method, method_key)):
             return "⛔️ این روش پرداخت برای شارژ کیف پول در حال حاضر مجاز نیست."
         min_amt = await asyncio.to_thread(db.get_payment_method_min_amount, method_key)
@@ -1884,6 +1888,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     noapay_enabled=noapay_payment.noapay_payment_available(db),
                     blupal_enabled=blupal_payment.blupal_payment_available(db),
                     extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
+                    user_id=order["user_id"],
                 ),
             )
             await call.answer()
@@ -2570,6 +2575,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     noapay_enabled=noapay_payment.noapay_payment_available(db),
                     blupal_enabled=blupal_payment.blupal_payment_available(db),
                     extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
+                    user_id=order["user_id"],
                 ),
             )
         except Exception:
@@ -4703,6 +4709,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     noapay_enabled=noapay_payment.noapay_payment_available(db),
                     blupal_enabled=blupal_payment.blupal_payment_available(db),
                     extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
+                    user_id=order["user_id"],
                 ),
             )
         except Exception:
@@ -5096,6 +5103,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not order or order["status"] != "pending":
             await call.answer(db.get_text("handlers_user.order.not_found", "سفارش معتبر یافت نشد."), show_alert=True)
             return
+        err = await _order_payment_method_error(order, "card")
+        if err:
+            await call.answer(err, show_alert=True)
+            return
         await call.answer()
         intro_lines = [f"🔄 {_RENEW_MODE_LABEL[order['renewal_mode']]}"]
         if order["wallet_used"]:
@@ -5112,6 +5123,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
         if not order or order["status"] != "pending":
             await call.answer(db.get_text("handlers_user.order.not_found", "سفارش معتبر یافت نشد."), show_alert=True)
+            return
+        err = await _order_payment_method_error(order, "card_auto")
+        if err:
+            await call.answer(err, show_alert=True)
             return
         await call.answer()
         intro_lines = [f"🔄 {_RENEW_MODE_LABEL[order['renewal_mode']]}"]
@@ -5787,6 +5802,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 noapay_enabled=noapay_payment.noapay_payment_available(db),
                 blupal_enabled=blupal_payment.blupal_payment_available(db),
                 extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
+                user_id=message.from_user.id,
             ),
         )
 
@@ -5800,7 +5816,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not amount:
             await call.answer(db.get_text('handlers_user.auto_7b34cb6f', 'درخواست شارژ معتبر یافت نشد.'), show_alert=True)
             return
-        err = await _wallet_topup_method_error(amount, "card")
+        err = await _wallet_topup_method_error(amount, "card", call.from_user.id)
         if err:
             await call.answer(err, show_alert=True)
             return
@@ -5817,7 +5833,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not amount:
             await call.answer(db.get_text('handlers_user.auto_7b34cb6f', 'درخواست شارژ معتبر یافت نشد.'), show_alert=True)
             return
-        err = await _wallet_topup_method_error(amount, "card_auto")
+        err = await _wallet_topup_method_error(amount, "card_auto", call.from_user.id)
         if err:
             await call.answer(err, show_alert=True)
             return
@@ -6261,7 +6277,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         catalog = [x for x in (await asyncio.to_thread(db.get_payment_methods_catalog, True)) if x["key"] != "wallet"]
         enabled = {x["key"]: x for x in catalog}
         methods = [m for m in (allowed or [x["key"] for x in catalog]) if m in enabled]
-        return [m for m in methods if not enabled[m].get("min_amount") or enabled[m]["min_amount"] <= 10**18]
+        methods = [m for m in methods if not enabled[m].get("min_amount") or enabled[m]["min_amount"] <= 10**18]
+        blocked = [m for m in methods if await asyncio.to_thread(db.card_method_blocked_for_user, req["user_id"], m)]
+        return [m for m in methods if m not in blocked]
+
 
     async def _send_reseller_payment_menu(target, req):
         methods = await _reseller_payment_methods(req)
@@ -6669,7 +6688,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if allowed is not None and method not in allowed:
             await call.answer(db.get_text('handlers_user.auto_cbc0fded', 'این روش برای این سطح مجاز نیست.'), show_alert=True); return
         item = enabled.get(method)
-        if not item:
+        if not item or await asyncio.to_thread(db.card_method_blocked_for_user, call.from_user.id, method):
             await call.answer(db.get_text('handlers_user.auto_e29914cb', 'این درگاه در دسترس نیست.'), show_alert=True); return
         if item.get("min_amount") and int(req["price_toman"] or 0) < int(item["min_amount"]):
             await call.answer(db.get_text('handlers_user.auto_8e61f65e', 'مبلغ این درخواست از حداقل مبلغ درگاه کمتر است.'), show_alert=True); return

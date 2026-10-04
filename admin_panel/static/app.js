@@ -302,7 +302,10 @@ async function apiMultipart(path, formData) {
   const isAuthEndpoint = path === '/login' || path === '/setup';
   if (res.status === 401 && !isAuthEndpoint) { showLogin(); throw new Error('unauthorized'); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const err = new Error(formatApiError(data.detail)); err.status = res.status; throw err; }
+  if (!res.ok) {
+    const detail = data.detail || (res.status === 413 ? 'حجم فایل از سقف مجاز وب‌سرور (nginx client_max_body_size) بیشتر است.' : `خطای سرور (${res.status})`);
+    const err = new Error(formatApiError(detail)); err.status = res.status; throw err;
+  }
   return data;
 }
 
@@ -9493,7 +9496,7 @@ async function renderSystem() {
         formData.append('confirm_phrase', phrase);
         const res = await fetch('/api/system/backup/restore', { method: 'POST', credentials: 'include', body: formData });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(window.ShopVPNTranslate ? window.ShopVPNTranslate(data.detail || 'Unknown error') : (data.detail || 'Unknown error'));
+        if (!res.ok) { const d = data.detail || (res.status === 413 ? 'حجم فایل از سقف مجاز وب‌سرور (nginx client_max_body_size) بیشتر است.' : `خطای سرور (${res.status})`); throw new Error(window.ShopVPNTranslate ? window.ShopVPNTranslate(d) : d); }
         statusEl.innerHTML = `<span class="card-sub">✅ دیتابیس بازیابی شد. نسخه‌ی قبلی به‌عنوان «${esc(data.pre_restore_backup)}» ذخیره شد. صفحه را رفرش کن.</span>`;
         restorePendingFile = null;
         $('#restore-file').value = '';

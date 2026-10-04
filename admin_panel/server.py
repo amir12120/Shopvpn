@@ -4082,6 +4082,8 @@ async def api_broadcast(
             raise HTTPException(400, tr("فایل انتخاب‌شده خالی است."))
         if media_type not in ("photo", "voice"):
             raise HTTPException(400, tr("نوع فایل پیام همگانی نامعتبر است."))
+        if len(text) > 1024:
+            raise HTTPException(400, tr("متن همراه عکس/ویس در تلگرام حداکثر ۱۰۲۴ کاراکتر می‌تواند باشد."))
         max_size = 10 * 1024 * 1024 if media_type == "photo" else 50 * 1024 * 1024
         if len(media_bytes) > max_size:
             raise HTTPException(400, tr("حجم فایل بیش از حد مجاز است."))

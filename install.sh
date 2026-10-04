@@ -174,6 +174,9 @@ EOF
 server {
     listen 80;
     server_name $WEBHOOK_DOMAIN;
+    client_max_body_size 100m;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
 
     location / {
         proxy_pass http://127.0.0.1:$WEBHOOK_PORT;

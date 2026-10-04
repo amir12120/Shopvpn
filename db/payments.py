@@ -930,6 +930,46 @@ class PaymentsMixin:
         self.set_setting("wallet_topup_payment_methods", value)
 
 
+    CARD_GATE_METHODS = ("card", "card_auto")
+
+    def get_card_gate_settings(self) -> tuple:
+        """(حداقل خرید موفق, حداقل روز از استارت)؛ 0 یعنی آن شرط خاموش است."""
+        def _int(key):
+            try:
+                return max(0, int(self.get_setting(key, "0") or 0))
+            except (TypeError, ValueError):
+                return 0
+        return _int("card_gate_min_purchases"), _int("card_gate_min_days")
+
+    def card_gate_passed(self, user_id: int) -> bool:
+        """آیا شماره کارت برای این کاربر نمایش داده شود؟ اگر هر دو شرط خاموش باشند، یا
+        کاربر ادمین باشد، یا یکی از دو شرط (خرید موفق / روز از استارت) برقرار باشد: بله."""
+        min_purchases, min_days = self.get_card_gate_settings()
+        if min_purchases <= 0 and min_days <= 0:
+            return True
+        if user_id is None:
+            return False
+        if self.is_admin(user_id):
+            return True
+        with self._get_conn() as conn:
+            if min_purchases > 0:
+                row = conn.execute(
+                    "SELECT COUNT(*) c FROM orders WHERE user_id=? AND status='approved'", (user_id,)
+                ).fetchone()
+                if int(row["c"] or 0) >= min_purchases:
+                    return True
+            if min_days > 0:
+                row = conn.execute(
+                    "SELECT CAST(julianday('now') - julianday(joined_at) AS INTEGER) d FROM users WHERE telegram_id=?",
+                    (user_id,),
+                ).fetchone()
+                if row and row["d"] is not None and int(row["d"]) >= min_days:
+                    return True
+        return False
+
+    def card_method_blocked_for_user(self, user_id: int, method_key: str) -> bool:
+        return method_key in self.CARD_GATE_METHODS and not self.card_gate_passed(user_id)
+
     def wallet_topup_allows_payment_method(self, method_key: str) -> bool:
         allowed = self.get_wallet_topup_payment_methods()
         if allowed is None:

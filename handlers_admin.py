@@ -149,6 +149,7 @@ from states import (
     AdminEarlyRenewalDiscount,
     AdminStockAlertSettings,
     AdminMinAmountSettings,
+    AdminCardGate,
     AdminCustomGatewayMinAmount,
     AdminRestoreBackup,
     AdminRestoreFullBackup,
@@ -713,6 +714,58 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(
             tr(f"✅ مقدار روی {int(text):,} تومان تنظیم شد."), reply_markup=kb.min_amount_settings_kb(db)
         )
+
+    # -------------------------------------------------------------------
+    @router.callback_query(F.data == "adm_cardgate")
+    async def cb_admin_card_gate(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await replace_admin_view(call,
+            tr("🔒 شرط نمایش شماره کارت:\n\n"
+            "تا وقتی کاربر یکی از دو شرط زیر را نداشته باشد، روش‌های «کارت‌به‌کارت» (دستی و خودکار) برایش "
+            "در خرید، تمدید و شارژ کیف پول (ربات و مینی‌اپ) نمایش داده نمی‌شود و شماره کارت را نمی‌بیند. "
+            "بقیه‌ی درگاه‌ها عادی کار می‌کنند.\n"
+            "• حداقل خرید موفق: تعداد سفارش تاییدشده‌ی کاربر\n"
+            "• حداقل روز از استارت بات: فاصله‌ی زمانی از اولین استارت\n"
+            "رسیدن به هرکدام از دو شرط کافی است. 0 یعنی آن شرط خاموش؛ اگر هر دو 0 باشند محدودیتی نیست. "
+            "ادمین‌ها همیشه شماره کارت را می‌بینند."),
+            reply_markup=kb.card_gate_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_cardgate_edit:"))
+    async def cb_admin_card_gate_edit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        key = call.data.split(":", 1)[1]
+        if key not in ("card_gate_min_purchases", "card_gate_min_days"):
+            return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
+        await state.update_data(card_gate_key=key)
+        await state.set_state(AdminCardGate.waiting_value)
+        current = int(db.get_setting(key, "0") or 0)
+        unit = "خرید" if key == "card_gate_min_purchases" else "روز"
+        await safe_edit(call,
+            tr(f"مقدار فعلی: {current} {unit}\nعدد جدید را ارسال کن (0 یعنی خاموش):"),
+            reply_markup=kb.admin_back_kb("adm_cardgate"),
+        )
+        await call.answer()
+
+    @router.message(AdminCardGate.waiting_value)
+    async def process_card_gate_value(message: Message, state: FSMContext):
+        text = (message.text or "").strip().replace(",", "")
+        if not text.isdigit():
+            await message.answer(db.get_text('handlers_admin.auto_27a6c10b', 'لطفاً فقط عدد ارسال کنید.'))
+            return
+        data = await state.get_data()
+        key = data.get("card_gate_key")
+        if key not in ("card_gate_min_purchases", "card_gate_min_days"):
+            await state.clear()
+            await message.answer(db.get_text('handlers_admin.auto_0e29be08', '⚠️ خطایی رخ داد، دوباره تلاش کنید.'))
+            return
+        await asyncio.to_thread(db.set_setting, key, str(int(text)))
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "card_gate_setting", f"{key} = {int(text)}")
+        await state.clear()
+        await message.answer(tr("✅ ذخیره شد."), reply_markup=kb.card_gate_kb(db))
 
     # -------------------------------------------------------------------
     # F12 — ویرایش گروهی قیمت محصولات

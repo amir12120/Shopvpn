@@ -2175,3 +2175,23 @@ EXTRA_DYNAMIC_PHRASES.extend([
     ('📜 وضعیت: {x}', '📜 Status: {x}'),
     ('📝 متن فعلی: {x}', '📝 Current text: {x}'),
 ])
+
+
+# Card-number display condition (upstream 91961c5 + 5a14239 + 63e9939).
+EXTRA_PHRASES.update({
+    # caption-limit
+    'متن همراه عکس/ویس در تلگرام حداکثر ۱۰۲۴ کاراکتر می\u200cتواند باشد.': 'The caption with a photo/voice message on Telegram can be at most 1024 characters.',
+    # button
+    '🔒 شرط نمایش شماره کارت': '🔒 Card number display condition',
+    # long
+    '🔒 شرط نمایش شماره کارت:\n\nتا وقتی کاربر یکی از دو شرط زیر را نداشته باشد، روش\u200cهای «کارت\u200cبه\u200cکارت» (دستی و خودکار) برایش در خرید، تمدید و شارژ کیف پول (ربات و مینی\u200cاپ) نمایش داده نمی\u200cشود و شماره کارت را نمی\u200cبیند. بقیه\u200cی درگاه\u200cها عادی کار می\u200cکنند.\n• حداقل خرید موفق: تعداد سفارش تاییدشده\u200cی کاربر\n• حداقل روز از استارت بات: فاصله\u200cی زمانی از اولین استارت\nرسیدن به هرکدام از دو شرط کافی است. 0 یعنی آن شرط خاموش؛ اگر هر دو 0 باشند محدودیتی نیست. ادمین\u200cها همیشه شماره کارت را می\u200cبینند.': '🔒 Card number display condition:\n\nUntil a user meets one of the two conditions below, the card-to-card methods (manual and automatic) are not shown to them for purchase, renewal or wallet top-up (bot and mini app), and they cannot see the card number. The other gateways work normally.\n• Minimum successful purchases: the user\'s approved order count\n• Minimum days since the bot started: time elapsed since the first start\nMeeting either condition is enough. 0 means that condition is off; if both are 0 there is no restriction. Admins always see the card number.',
+})
+
+EXTRA_DYNAMIC_PHRASES += [
+    # current
+    ('مقدار فعلی: {x} {x}\nعدد جدید را ارسال کن (0 یعنی خاموش):', 'Current value: {x} {x}\nSend the new number (0 means off):'),
+    # days
+    ('📅 حداقل روز از استارت بات: {x}', '📅 Minimum days since the bot started: {x}'),
+    # purchases
+    ('🛒 حداقل خرید موفق: {x}', '🛒 Minimum successful purchases: {x}'),
+]

@@ -827,7 +827,8 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
                        custom_gateways: list = None, card_to_card_enabled: bool = True,
                        amount: int = None, db=None, allowed_methods=None,
                        card_auto_enabled: bool = False, noapay_enabled: bool = False,
-                       blupal_enabled: bool = False, extra_gateways: list = None) -> InlineKeyboardMarkup:
+                       blupal_enabled: bool = False, extra_gateways: list = None,
+                       user_id: int = None) -> InlineKeyboardMarkup:
     """کیبورد مرحله‌ی انتخاب روش پرداخت: کاربر ابتدا این لیست را می‌بیند و روش پرداخت را
     انتخاب می‌کند (به‌جای اینکه مستقیم شماره کارت نمایش داده شود). اگر درگاه کریپتو/آبان
     گیت وی/درگاه‌های سفارشی/کارت‌به‌کارت خودکار فعال باشند، دکمه‌ی مربوطه هم نمایش داده
@@ -843,6 +844,8 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
 
     def _ok(method_key: str) -> bool:
         if allowed_methods is not None and method_key not in allowed_methods:
+            return False
+        if db is not None and user_id is not None and db.card_method_blocked_for_user(user_id, method_key):
             return False
         if db is not None and amount is not None:
             min_amt = db.get_payment_method_min_amount(method_key)
@@ -933,6 +936,7 @@ def card_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr(f"👤 به نام: {card_holder}"), callback_data="noop")],
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_card_toggle")],
         [InlineKeyboardButton(text=tr("✏️ تغییر شماره کارت / صاحب حساب"), callback_data="adm_set_card_edit")],
+        [InlineKeyboardButton(text=tr("🔒 شرط نمایش شماره کارت"), callback_data="adm_cardgate")],
         [InlineKeyboardButton(text=tr(f"🤖 بررسی هوشمند رسید (AI): {'🟢 روشن' if ai_check_enabled else '🔴 خاموش'}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(ai_toggle_text), callback_data="adm_receipt_ai_toggle")],
     ]
@@ -3861,6 +3865,24 @@ def min_amount_settings_kb(db) -> InlineKeyboardMarkup:
             callback_data=f"adm_minamt_edit:{key}",
         )])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:finance")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+def card_gate_kb(db) -> InlineKeyboardMarkup:
+    """صفحه‌ی تنظیم شرط نمایش شماره کارت (کارت‌به‌کارت دستی و خودکار)."""
+    min_purchases, min_days = db.get_card_gate_settings()
+    rows = [
+        [InlineKeyboardButton(
+            text=tr(f"🛒 حداقل خرید موفق: {min_purchases if min_purchases else 'خاموش'}"),
+            callback_data="adm_cardgate_edit:card_gate_min_purchases",
+        )],
+        [InlineKeyboardButton(
+            text=tr(f"📅 حداقل روز از استارت بات: {min_days if min_days else 'خاموش'}"),
+            callback_data="adm_cardgate_edit:card_gate_min_days",
+        )],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_set_card")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -1067,8 +1067,8 @@ async def api_custom_config_renew_full(custom_config_id: int, body: RenewFullBod
 
         return {
             "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
-            "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
-            **_payment_flags(db, order["final_price"], None, tenant=tenant),
+            **_card_info(db, tg_id),
+            **_payment_flags(db, order["final_price"], None, tenant=tenant, user_id=tg_id),
         }
     except HTTPException:
         raise
@@ -1119,8 +1119,8 @@ def api_custom_config_info(auth=Depends(get_verified_user)):
         and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
         "blupal_enabled": blupal_payment.blupal_payment_available(db),
         "noapay_enabled": noapay_payment.noapay_payment_available(db),
-        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
-        "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
+        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and db.card_gate_passed(tg_id),
+        **_card_info(db, tg_id),
     }
 
 
@@ -1291,8 +1291,8 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
             )
         return {
             "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
-            "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
-            **_payment_flags(db, order["final_price"], None, order=order, tenant=tenant),
+            **_card_info(db, tg_id),
+            **_payment_flags(db, order["final_price"], None, order=order, tenant=tenant, user_id=tg_id),
         }
     except HTTPException:
         raise
@@ -2044,12 +2044,23 @@ def _quick_action_buttons(user_id: int) -> list:
     ]
 
 
+def _card_info(db: Database, user_id: int) -> dict:
+    """شماره کارت/نام صاحب کارت برای پاسخ‌های API؛ تا وقتی شرط نمایش شماره کارت برای کاربر برقرار
+    نشده، مقدار خالی برمی‌گرداند تا فرانت‌اند چیزی نشان ندهد."""
+    if not db.card_gate_passed(user_id):
+        return {"card_number": None, "card_holder": None}
+    return {"card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder")}
+
+
 def _payment_method_error(db: Database, amount: int, method_key: str, product_id: int = None,
-                          order=None, custom_config: bool = False, wallet_topup: bool = False) -> Optional[str]:
+                          order=None, custom_config: bool = False, wallet_topup: bool = False,
+                          user_id: int = None) -> Optional[str]:
     """اگر روش پرداخت method_key برای این مبلغ/محصول مجاز نباشد، پیام خطا را
     برمی‌گرداند؛ در غیر این صورت None (یعنی مجاز است). معادل _order_payment_method_error
     در handlers_user.py ربات - به‌عنوان یک لایه‌ی دفاعی سمت سرور (علاوه بر فیلترشدن
     گزینه‌ها در پاسخ API)."""
+    if user_id is not None and db.card_method_blocked_for_user(user_id, method_key):
+        return "این روش پرداخت هنوز برای حساب شما فعال نشده است."
     is_custom_config = custom_config or (order is not None and bool(order["is_custom_config"]))
     if wallet_topup:
         if not db.wallet_topup_allows_payment_method(method_key):
@@ -2067,8 +2078,9 @@ def _payment_method_error(db: Database, amount: int, method_key: str, product_id
 
 
 def _require_payment_method_allowed(db: Database, amount: int, method_key: str, product_id: int = None,
-                                    order=None, wallet_topup: bool = False) -> None:
-    err = _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup)
+                                    order=None, wallet_topup: bool = False, user_id: int = None) -> None:
+    err = _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup,
+                                user_id=user_id)
     if err:
         raise HTTPException(status_code=400, detail=err)
 
@@ -2091,12 +2103,13 @@ def _extra_gateway_options(db: Database, tenant, ok) -> list:
 
 
 def _payment_flags(db: Database, amount: int, product_id: int = None, order=None, tenant=None,
-                   wallet_topup: bool = False) -> dict:
+                   wallet_topup: bool = False, user_id: int = None) -> dict:
     """فلگ‌های فعال/مجازبودن روش‌های پرداخت داخلی برای مبلغ/محصولِ سفارش جاری؛
     هم تنظیم فعال/غیرفعال کلی و هم محدودیت محصول/حداقل‌مبلغ را لحاظ می‌کند تا
     فرانت‌اند مینی‌اپ فقط دکمه‌های واقعاً قابل‌استفاده را نشان دهد."""
     def _ok(method_key: str) -> bool:
-        return _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup) is None
+        return _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup,
+                                     user_id=user_id) is None
     return {
         "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and _ok("card"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
@@ -2233,11 +2246,11 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
             }
 
         # مبلغی باقی مانده - کاربر باید مثل قبل از طریق بات رسید کارت‌به‌کارت بفرستد
-        flags = _payment_flags(db, order["final_price"], body.product_id, tenant=tenant)
+        flags = _payment_flags(db, order["final_price"], body.product_id, tenant=tenant, user_id=tg_id)
         return {
             "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
             "quantity": quantity,
-            "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
+            **_card_info(db, tg_id),
             **flags,
         }
     except HTTPException:
@@ -3776,7 +3789,7 @@ async def api_order_card_auto_invoice(order_id: int, auth=Depends(require_joined
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "card_auto", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], "card_auto", order["product_id"], order=order, user_id=tg_id)
     return _create_card_to_card_invoice_for(db, "order", order_id, tg_id, order["final_price"])
 
 
@@ -3792,7 +3805,7 @@ async def api_wallet_card_auto_invoice(body: CardAutoWalletInvoiceRequest, auth=
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "card_auto", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], "card_auto", wallet_topup=True, user_id=tg_id)
     result = _create_card_to_card_invoice_for(db, "wallet_topup", body.topup_id, tg_id, topup["amount"])
     result["topup_id"] = body.topup_id
     return result
@@ -4219,10 +4232,9 @@ def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
     topup_id = db.create_topup(tg_id, body.amount)
     return {
         "topup_id": topup_id,
-        "card_number": db.get_setting("card_number"),
-        "card_holder": db.get_setting("card_holder"),
+        **_card_info(db, tg_id),
         "note": tr("مبلغ را واریز کرده و عکس رسید را همینجا ارسال کنید."),
-        **_payment_flags(db, body.amount, None, tenant=tenant, wallet_topup=True),
+        **_payment_flags(db, body.amount, None, tenant=tenant, wallet_topup=True, user_id=tg_id),
     }
 
 
@@ -4239,7 +4251,7 @@ async def api_topup_receipt(
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "card", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], "card", wallet_topup=True, user_id=tg_id)
     if not photo.content_type or not photo.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail=tr("فقط عکس رسید پذیرفته می‌شود."))
 
@@ -4311,7 +4323,7 @@ async def api_order_receipt(
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "card", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], "card", order["product_id"], order=order, user_id=tg_id)
     if not photo.content_type or not photo.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail=tr("فقط عکس رسید پذیرفته می‌شود."))
 
