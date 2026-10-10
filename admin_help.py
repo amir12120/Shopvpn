@@ -1,5 +1,6 @@
 """Per-section help guides for the in-bot admin panel."""
 
+import re
 import time
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -859,6 +860,74 @@ def assistant_context(section: dict, db, is_main_bot: bool) -> str:
             body = item_body(ik)
             parts.append(f"• {label}\n{_first_paragraph(body) if body else ''}".rstrip())
     return "\n\n".join(p for p in parts if p)
+
+
+_GUIDE_CHARS = 1800
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+_STOP_WORDS = frozenset({
+    "چطور", "چگونه", "کجا", "میشه", "می", "شه", "را", "رو", "از", "به", "در", "که", "این", "آن", "چی", "چه",
+    "کنم", "کردن", "برای", "با", "و", "یا", "هست", "است", "بکنم", "بدم", "باید", "ها", "های", "میخوام", "خوام",
+})
+
+
+def _norm_text(text) -> str:
+    return (
+        str(text or "").translate(_DIGITS).replace("ي", "ی").replace("ك", "ک")
+        .replace("\u200c", " ").lower().strip()
+    )
+
+
+def _query_words(query: str) -> list:
+    words = []
+    for raw in re.split(r"[\s،,.؟?!:؛()\-_/«»\"']+", _norm_text(query)):
+        for suffix in ("های", "ها"):
+            if raw.endswith(suffix) and len(raw) - len(suffix) >= 2:
+                raw = raw[: -len(suffix)]
+                break
+        if len(raw) >= 2 and raw not in _STOP_WORDS:
+            words.append(raw)
+    return words
+
+
+def panel_map(db, is_main_bot: bool) -> str:
+    """One line per panel category listing the visible button labels."""
+    lines = []
+    for cat_key, _label, item_keys in kb.ADMIN_PANEL_CATEGORIES:
+        labels = [
+            kb._admin_item_label_and_cb(ik)[0]
+            for ik in item_keys
+            if kb._is_item_visible(db, ik, is_main_bot)
+        ]
+        if labels:
+            lines.append(f"{kb.admin_category_label(cat_key)}: " + " | ".join(labels))
+    return "\n".join(lines)
+
+
+def search_guides(query: str, db, is_main_bot: bool, limit: int = 3) -> dict:
+    """Best-matching panel guides (path + guide text) for a free-text topic."""
+    words = _query_words(query)
+    scored = []
+    for cat_key, _label, item_keys in kb.ADMIN_PANEL_CATEGORIES:
+        for item_key in item_keys:
+            if not kb._is_item_visible(db, item_key, is_main_bot):
+                continue
+            label, _cb = kb._admin_item_label_and_cb(item_key)
+            body = item_body(item_key) or ""
+            label_n, body_n = _norm_text(label), _norm_text(body)
+            score = sum((3 if w in label_n else 0) + min(body_n.count(w), 3) for w in words)
+            if score:
+                scored.append((score, cat_key, label, body))
+    scored.sort(key=lambda row: -row[0])
+    matches = [
+        {
+            "path": f"/admin ← {kb.admin_category_label(cat)} ← {label}",
+            "guide": body[:_GUIDE_CHARS] or CATEGORY_HELP.get(cat, ""),
+        }
+        for _score, cat, label, body in scored[:limit]
+    ]
+    if not matches:
+        return {"matches": [], "note": "راهنمای مرتبطی پیدا نشد؛ از نقشه‌ی پنل نزدیک‌ترین دکمه را معرفی کن و بگو در راهنما نیست."}
+    return {"matches": matches}
 
 
 def guide_kb(section: dict, can_ask: bool) -> InlineKeyboardMarkup:

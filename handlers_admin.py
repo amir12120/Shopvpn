@@ -63,7 +63,7 @@ from panel_providers import (
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
     SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
 )
-from reseller_auto_provision import provision_auto_config, ProvisionError
+from reseller_auto_provision import provision_auto_config, get_credit_bot_local_panel_id, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from renewal_engine import execute_renewal, RenewalError
 from states import (
@@ -150,6 +150,7 @@ from states import (
     AdminStockAlertSettings,
     AdminMinAmountSettings,
     AdminCardGate,
+    AdminPmGate,
     AdminCustomGatewayMinAmount,
     AdminRestoreBackup,
     AdminRestoreFullBackup,
@@ -716,6 +717,83 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
 
     # -------------------------------------------------------------------
+    # شرط فعال‌سازی هر درگاه برای هر کاربر (مثل شرط نمایش شماره کارت)
+    # -------------------------------------------------------------------
+    @router.callback_query(F.data == "adm_pmgate")
+    async def cb_admin_pm_gate(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        await replace_admin_view(call,
+            tr("🔒 شرط فعال‌سازی درگاه‌ها:\n\n"
+            "برای هر درگاه می‌توانی تعیین کنی بعد از چند خرید موفق، یا چند روز از اولین استارت بات، "
+            "برای هر کاربر فعال شود. تا آن موقع درگاه در خرید، تمدید و شارژ کیف پول (ربات و مینی‌اپ) "
+            "به او نشان داده نمی‌شود. رسیدن به هرکدام از دو شرط کافی است؛ 0 یعنی آن شرط خاموش و اگر هر دو "
+            "0 باشند محدودیتی نیست. ادمین‌ها محدود نمی‌شوند.\n"
+            "کارت‌به‌کارت دستی و خودکار یک شرط مشترک دارند."),
+            reply_markup=kb.pm_gate_list_kb(db),
+        )
+        await call.answer()
+
+    def _pm_gate_method(idx_text: str):
+        methods = kb.pm_gate_methods(db)
+        try:
+            idx = int(idx_text)
+            return idx, methods[idx]
+        except (ValueError, IndexError):
+            return None, None
+
+    @router.callback_query(F.data.startswith("adm_pmgate_m:"))
+    async def cb_admin_pm_gate_method(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        idx, method = _pm_gate_method(call.data.split(":", 1)[1])
+        if method is None:
+            return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
+        await safe_edit(call,
+            tr(f"🔒 شرط فعال‌سازی: {method['label']}\n\nرسیدن به هرکدام از دو شرط کافی است (0 یعنی خاموش)."),
+            reply_markup=kb.pm_gate_method_kb(db, idx, method["key"]),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_pmgate_e:"))
+    async def cb_admin_pm_gate_edit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, idx_text, which = call.data.split(":", 2)
+        idx, method = _pm_gate_method(idx_text)
+        if method is None or which not in ("p", "d"):
+            return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
+        purchases_key, days_key = db.payment_gate_setting_keys(method["key"])
+        key = purchases_key if which == "p" else days_key
+        await state.update_data(pm_gate_key=key, pm_gate_idx=idx, pm_gate_method=method["key"])
+        await state.set_state(AdminPmGate.waiting_value)
+        current = int(db.get_setting(key, "0") or 0)
+        unit = "خرید" if which == "p" else "روز"
+        await safe_edit(call,
+            tr(f"{method['label']}\nمقدار فعلی: {current} {unit}\nعدد جدید را ارسال کن (0 یعنی خاموش):"),
+            reply_markup=kb.admin_back_kb(f"adm_pmgate_m:{idx}"),
+        )
+        await call.answer()
+
+    @router.message(AdminPmGate.waiting_value)
+    async def process_pm_gate_value(message: Message, state: FSMContext):
+        text = (message.text or "").strip().replace(",", "")
+        if not text.isdigit():
+            await message.answer(db.get_text('handlers_admin.auto_27a6c10b', 'لطفاً فقط عدد ارسال کنید.'))
+            return
+        data = await state.get_data()
+        key, idx, method_key = data.get("pm_gate_key"), data.get("pm_gate_idx"), data.get("pm_gate_method")
+        if not key or idx is None or not method_key:
+            await state.clear()
+            await message.answer(db.get_text('handlers_admin.auto_0e29be08', '⚠️ خطایی رخ داد، دوباره تلاش کنید.'))
+            return
+        await asyncio.to_thread(db.set_setting, key, str(int(text)))
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "payment_gate_setting", f"{key} = {int(text)}")
+        await state.clear()
+        await message.answer(tr("✅ ذخیره شد."), reply_markup=kb.pm_gate_method_kb(db, idx, method_key))
+
     @router.callback_query(F.data == "adm_cardgate")
     async def cb_admin_card_gate(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
@@ -1125,11 +1203,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if product_id is None:
             await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
             return
-        (await asyncio.to_thread(db.toggle_product, product_id))
+        new_state = (await asyncio.to_thread(db.toggle_product, product_id))
         product = (await asyncio.to_thread(db.get_product, product_id))
         if product is None:
             await call.answer(db.get_text('handlers_admin.auto_fa9715cb', '⚠️ این محصول دیگر وجود ندارد.'), show_alert=True)
             return
+        if new_state:
+            import product_waitlist
+            asyncio.create_task(product_waitlist.notify_waitlist(db, product_id, product_waitlist.bot_sender(call.bot)))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_toggle", f"محصول «{product['name']}»"))
         products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
         await safe_edit(call, db.get_text('handlers_admin.auto_c8caee2c', 'لیست محصولات این دسته\u200cبندی:'), reply_markup=kb.admin_products_list_kb(db, products))
@@ -2079,7 +2160,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not plan:
             return
         text = f"🧪 پلن کانفیگ تست: {plan['name']}" + (f"\n\n{extra_note}" if extra_note else "")
-        markup = kb.test_plan_view_kb(db, plan)
+        markup = kb.test_plan_view_kb(db, plan, credit_bot=bool(await asyncio.to_thread(_volume_credit_info)))
         if isinstance(target, CallbackQuery):
             await replace_admin_view(target, text, reply_markup=markup)
         else:
@@ -2090,7 +2171,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.clear()
-        await replace_admin_view(call, tr("🧪 مدیریت کانفیگ تست:"), reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
+        info = await asyncio.to_thread(_volume_credit_info)
+        text = "🧪 مدیریت کانفیگ تست:"
+        if info is not None:
+            text += f"\n\n📦 حجم باقی‌مانده: {info['credit_gb']:,} گیگابایت\nهر کانفیگ تست از همین حجم کم می‌شود."
+        await replace_admin_view(call, tr(text), reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
         await call.answer()
 
     @router.callback_query(F.data == "adm_service_alert_channel")
@@ -2323,7 +2408,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_tp_add(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        if not (await asyncio.to_thread(db.get_panel_servers, True)):
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            if not (await asyncio.to_thread(get_credit_bot_local_panel_id, db)):
+                await call.answer(tr("هنوز پنلی برای نمایندگی شما تنظیم نشده؛ با ادمین تماس بگیرید."), show_alert=True)
+                return
+        elif not (await asyncio.to_thread(db.get_panel_servers, True)):
             await call.answer(db.get_text('handlers_admin.auto_b0d25597', '⛔️ اول باید حداقل یک سرور پنل فعال ثبت کنی.'), show_alert=True)
             return
         await state.clear()
@@ -2348,6 +2437,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await message.answer(db.get_text('handlers_admin.auto_e47a254d', 'پیشوند باید فقط شامل حروف/عدد انگلیسی باشد. دوباره ارسال کن:'))
             return
         await state.update_data(name_prefix=prefix)
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            local_panel_id = await asyncio.to_thread(get_credit_bot_local_panel_id, db)
+            if not local_panel_id:
+                await state.clear()
+                await message.answer(tr("هنوز پنلی برای نمایندگی شما تنظیم نشده؛ با ادمین تماس بگیرید."))
+                return
+            await state.update_data(panel_server_id=local_panel_id)
+            await state.set_state(AdminAddTestPlan.waiting_volume_mb)
+            await message.answer(db.get_text('handlers_admin.auto_b6abf359', 'حجم این پلن چند مگابایت باشد؟ فقط عدد صحیح (مثال: 100 برای ۱۰۰ مگ، یا 1024 برای ۱ گیگ):'))
+            return
         servers = (await asyncio.to_thread(db.get_panel_servers, True))
         rows = [
             [InlineKeyboardButton(
@@ -2452,6 +2551,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         plan_id = callback_id(call.data, "adm_tp_edit_panel")
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            return await call.answer(tr("پنل نمایندگی VIP توسط ادمین تعیین می‌شود."), show_alert=True)
         await safe_edit(call, db.get_text('handlers_admin.auto_2f4fa6cc', 'پنل جدید این پلن را انتخاب کن:'),
                          reply_markup=kb.test_plan_panel_select_kb(db, plan_id))
         await call.answer()
@@ -4930,12 +5031,23 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call, tr("🤝 تنظیمات زیرمجموعه‌گیری:"), reply_markup=kb.referral_settings_kb(db))
         await call.answer()
 
+    @router.callback_query(F.data == "adm_referral_master_toggle")
+    async def cb_admin_referral_master_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "referral_button_enabled", "1"))
+        (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "0" if current == "1" else "1"))
+        await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
+        await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
+
     @router.callback_query(F.data == "adm_referral_toggle")
     async def cb_admin_referral_toggle(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         current = (await asyncio.to_thread(db.get_setting, "referral_enabled", "1"))
         (await asyncio.to_thread(db.set_setting, "referral_enabled", "0" if current == "1" else "1"))
+        if current != "1":
+            (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "1"))
         await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
@@ -5096,6 +5208,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_72fcacb3', 'ابتدا از «انتخاب محصول جایزه» یک محصول انتخاب کنید.'), show_alert=True)
             return
         (await asyncio.to_thread(db.set_setting, "referral_free_config_enabled", new_value))
+        if new_value == "1":
+            (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "1"))
         await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
@@ -5158,6 +5272,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_932ef487', 'ابتدا مبلغ شارژ را از «تغییر مبلغ شارژ» تنظیم کنید.'), show_alert=True)
             return
         (await asyncio.to_thread(db.set_setting, "referral_invite_bonus_enabled", new_value))
+        if new_value == "1":
+            (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "1"))
         await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
@@ -14400,11 +14516,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     _AI_ADMIN_INTRO = (
         "🧠 دستیار هوشمند مدیر آماده است. متن یا ویس بفرست؛ مثلاً:\n"
-        "• فروش این هفته نسبت به هفته قبل؟\n"
+        "• فروش این هفته نسبت به هفته قبل؟ چرا افت کرده؟\n"
         "• اطلاعات کاربر @username\n"
-        "• چند سفارش و تیکت منتظر بررسی است؟\n"
-        "• کدام محصولات کم‌موجودی‌اند؟\n\n"
-        "فقط می‌خواند و هیچ تغییری نمی‌دهد."
+        "• چند سفارش و تیکت منتظر بررسی است؟ جزئیات سفارش ۱۲۳\n"
+        "• کدام سرویس‌ها تا ۳ روز دیگر منقضی می‌شوند؟\n"
+        "• وضعیت پنل‌ها و درگاه‌ها چطور است؟\n"
+        "• چطور کد تخفیف بسازم؟ کدام دکمه؟\n\n"
+        "فقط می‌خواند و هیچ تغییری نمی‌دهد؛ برای کارها مسیر دقیق دکمه‌ها را می‌گوید."
     )
     _AI_ADMIN_NOT_CONFIGURED = "دستیار هوشمند تنظیم نشده؛ ابتدا کلید API را از بخش دستیار هوشمند وارد کن."
 
@@ -14489,7 +14607,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         thinking = await message.answer("در حال بررسی... ⏳")
         try:
             text = await ai_media.message_to_text(bot, db, message)
-            reply = await ai_admin.get_reply(db, user_id, text)
+            reply = await ai_admin.get_reply(db, user_id, text, is_main_bot)
         except Exception as exc:
             if not isinstance(exc, ai_media.MediaError):
                 logging.getLogger("handlers_admin").exception("خطای دستیار هوشمند مدیر")

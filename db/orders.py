@@ -505,11 +505,11 @@ class OrdersMixin:
         if query:
             q = str(query).strip()
             if q.isdigit():
-                where.append("(o.id=? OR o.user_id=? OR u.username LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ?)")
-                params.extend([int(q), int(q), f"%{q}%", f"%{q}%", f"%{q}%"])
+                where.append("(o.id=? OR o.user_id=? OR u.username LIKE ? OR u.first_name LIKE ?)")
+                params.extend([int(q), int(q), f"%{q}%", f"%{q}%"])
             else:
-                where.append("(u.username LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ? OR CAST(o.user_id AS TEXT) LIKE ?)")
-                params.extend([f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"])
+                where.append("(u.username LIKE ? OR u.first_name LIKE ? OR CAST(o.user_id AS TEXT) LIKE ?)")
+                params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
         if product_id is not None:
             where.append("o.product_id=?")
             params.append(product_id)
@@ -519,7 +519,7 @@ class OrdersMixin:
         if date_to:
             where.append("o.created_at<=?")
             params.append(date_to.strip() + " 23:59:59")
-        sql = ("SELECT o.* FROM orders o LEFT JOIN users u ON u.tg_id=o.user_id "
+        sql = ("SELECT o.* FROM orders o LEFT JOIN users u ON u.telegram_id=o.user_id "
                "WHERE " + " AND ".join(where) + " ORDER BY o.id DESC LIMIT ?")
         params.append(max(1, min(int(limit), 1000)))
         with self._get_conn() as conn:

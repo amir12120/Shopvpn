@@ -53,9 +53,19 @@ async def execute_renewal(db, order) -> str:
         try:
             provider = get_provider(server)
             before = await renewal_log.service_snapshot(db, cc, provider)
+            # تمدید کامل: مصرف ریست نمی‌شود؛ حجم بسته‌ی جدید مستقیماً روی سقف قبلی جمع می‌شود
+            # (در نتیجه حجم باقیمانده + بسته‌ی جدید)، دقیقاً مثل زمان که روی زمان باقیمانده جمع می‌شود.
+            # فرمول قبلی (سقف = باقیمانده + بسته، سپس ریست مصرف) به موفق‌شدن مرحله‌ی ریست وابسته بود؛
+            # اگر ریست اعمال نمی‌شد، باقیمانده‌ی نهایی می‌شد «دو برابرِ باقیمانده‌ی قبلی» و بسته‌ی جدید گم می‌شد.
+            # فقط وقتی سقف فعلی مشخص و محدود نباشد (سرویس نامحدود/وضعیت نامعلوم)، رفتار قبلی حفظ می‌شود.
+            reset_usage = (mode == "full")
+            preserve_remaining = (mode == "full")
+            if mode == "full" and add_volume and before.get("total_bytes"):
+                reset_usage = False
+                preserve_remaining = False
             await provider.update_user(
-                cc["username"], add_volume_gb=add_volume, add_days=add_days, reset_usage=(mode == "full"),
-                preserve_remaining=(mode == "full"), **provider_kwargs(provider, renewal_users),
+                cc["username"], add_volume_gb=add_volume, add_days=add_days, reset_usage=reset_usage,
+                preserve_remaining=preserve_remaining, **provider_kwargs(provider, renewal_users),
             )
             if mode == "full" and add_volume:
                 # سقف واقعیِ بعد از preserve_remaining را از خود پنل می‌خوانیم تا رکورد

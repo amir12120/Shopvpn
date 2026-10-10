@@ -5173,6 +5173,7 @@ async function renderAdminUsersList(body) {
     { k: "active", label: "فعال" },
     { k: "expired", label: "منقضی‌شده" },
     { k: "blocked", label: "بلاک‌شده" },
+    { k: "none", label: "بدون سرویس" },
   ];
 
   body.innerHTML = `

@@ -437,6 +437,11 @@ class AdminMinAmountSettings(StatesGroup):
     waiting_value = State()
 
 
+class AdminPmGate(StatesGroup):
+    """مقدار شرط فعال‌سازی یک درگاه؛ کلید تنظیم در حال ویرایش در state می‌ماند."""
+    waiting_value = State()
+
+
 class AdminCardGate(StatesGroup):
     """مقدار شرط نمایش شماره کارت؛ کلید تنظیم در حال ویرایش در state می‌ماند."""
     waiting_value = State()

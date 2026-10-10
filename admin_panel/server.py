@@ -3841,9 +3841,14 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
 
 
 @app.post("/api/products/{product_id}/toggle")
-def api_toggle_product(product_id: int, admin=Depends(require_permission("catalog"))):
-    db.toggle_product(product_id)
-    db.log_admin_action(admin["id"], "product_toggle", str(product_id), "product", product_id)
+async def api_toggle_product(product_id: int, admin=Depends(require_permission("catalog"))):
+    new_state = await asyncio.to_thread(db.toggle_product, product_id)
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "product_toggle", str(product_id), "product", product_id)
+    if new_state:
+        import product_waitlist
+        asyncio.create_task(product_waitlist.notify_waitlist(
+            db, product_id, product_waitlist.token_sender(tg_send, _bot_token())
+        ))
     return {"ok": True}
 
 
@@ -6349,6 +6354,8 @@ def api_set_referral_settings(body: ReferralSettingsBody, admin=Depends(require_
     db.set_setting("referral_invite_bonus_enabled", "1" if body.invite_bonus_enabled else "0")
     db.set_setting("referral_invite_bonus_amount", str(body.invite_bonus_amount))
     db.set_setting("referral_invite_bonus_max_count", str(body.invite_bonus_max_count))
+    if body.enabled or body.free_config_enabled or body.invite_bonus_enabled:
+        db.set_setting("referral_button_enabled", "1")
     db.log_admin_action(admin["id"], "setting_change", f"referral settings (پنل وب - {admin['username']})", "setting", "referral")
     return {"ok": True}
 

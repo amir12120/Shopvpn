@@ -325,6 +325,30 @@ class CatalogMixin:
             if row:
                 new_val = 0 if row["is_active"] else 1
                 conn.execute("UPDATE products SET is_active=? WHERE id=?", (new_val, product_id))
+                return new_val
+            return None
+
+    def add_product_waitlist(self, product_id: int, user_id: int) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO product_waitlist (product_id, user_id) VALUES (?, ?)",
+                (product_id, user_id),
+            )
+            return cur.rowcount > 0
+
+    def get_product_waitlist(self, product_id: int) -> list:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM product_waitlist WHERE product_id=? ORDER BY created_at, rowid",
+                (product_id,),
+            ).fetchall()
+            return [r["user_id"] for r in rows]
+
+    def remove_product_waitlist(self, product_id: int, user_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM product_waitlist WHERE product_id=? AND user_id=?", (product_id, user_id)
+            )
 
 
     def edit_product(self, product_id: int, name: str = None, price: int = None,
@@ -390,6 +414,7 @@ class CatalogMixin:
     def delete_product(self, product_id: int):
         with self._get_conn() as conn:
             conn.execute("DELETE FROM products WHERE id=?", (product_id,))
+            conn.execute("DELETE FROM product_waitlist WHERE product_id=?", (product_id,))
 
     # -----------------------------------------------------------------------
     # مخزن کانفیگ (بانک لینک)
@@ -1128,6 +1153,45 @@ class CatalogMixin:
                 "AND (connect_alert_sent=0 OR no_connect_alert_sent=0) "
                 "AND subscription_url IS NOT NULL AND TRIM(subscription_url) != ''"
             ).fetchall()
+
+
+    def get_expiring_services_overview(self, days: int = 3, limit: int = 15) -> dict:
+        """سرویس‌های فعالی که تا N روز آینده منقضی می‌شوند (فقط‌خواندنی، نزدیک‌ترین انقضا اول)."""
+        days = max(1, min(int(days), 60))
+        limit = max(1, min(int(limit), 50))
+        now = datetime.utcnow()
+        now_iso, end_iso = now.isoformat(), (now + timedelta(days=days)).isoformat()
+        custom_where = "cc.status='active' AND cc.expires_at IS NOT NULL AND cc.expires_at>? AND cc.expires_at<=?"
+        bank_where = "c.is_used=1 AND c.is_disabled=0 AND c.expires_at IS NOT NULL AND c.expires_at>? AND c.expires_at<=?"
+        with self._get_conn() as conn:
+            custom = conn.execute(
+                "SELECT 'custom' AS kind, cc.id AS id, cc.user_id AS user_id, u.username AS username, "
+                "cc.expires_at AS expires_at, cc.panel_server_id AS panel_server_id "
+                "FROM custom_configs cc LEFT JOIN users u ON u.telegram_id=cc.user_id "
+                f"WHERE {custom_where} ORDER BY cc.expires_at LIMIT ?",
+                (now_iso, end_iso, limit),
+            ).fetchall()
+            bank = conn.execute(
+                "SELECT 'bank' AS kind, c.id AS id, c.assigned_user_id AS user_id, u.username AS username, "
+                "c.expires_at AS expires_at, NULL AS panel_server_id "
+                "FROM configs c LEFT JOIN users u ON u.telegram_id=c.assigned_user_id "
+                f"WHERE {bank_where} ORDER BY c.expires_at LIMIT ?",
+                (now_iso, end_iso, limit),
+            ).fetchall()
+            custom_total = conn.execute(
+                f"SELECT COUNT(*) c FROM custom_configs cc WHERE {custom_where}", (now_iso, end_iso)
+            ).fetchone()["c"]
+            bank_total = conn.execute(
+                f"SELECT COUNT(*) c FROM configs c WHERE {bank_where}", (now_iso, end_iso)
+            ).fetchone()["c"]
+        rows = sorted((dict(r) for r in list(custom) + list(bank)), key=lambda r: r["expires_at"])[:limit]
+        return {
+            "days": days,
+            "total_expiring": custom_total + bank_total,
+            "direct_panel_services": custom_total,
+            "bank_configs": bank_total,
+            "services": rows,
+        }
 
 
     def get_expiring_configs_for_user(self, user_tg_id: int, days_before: int = None):

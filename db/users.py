@@ -85,9 +85,20 @@ class UsersMixin:
             conn.execute("UPDATE users SET is_blocked=? WHERE telegram_id=?", (1 if blocked else 0, tg_id))
 
 
+    _USER_HAS_ACTIVE_SQL = (
+        "(EXISTS (SELECT 1 FROM configs c WHERE c.assigned_user_id=u.telegram_id AND c.is_used=1 "
+        "AND (c.expires_at IS NULL OR c.expires_at > ?)) OR "
+        "EXISTS (SELECT 1 FROM custom_configs cc WHERE cc.user_id=u.telegram_id AND cc.status='active' "
+        "AND cc.source != 'test' AND (cc.expires_at IS NULL OR cc.expires_at > ?)))"
+    )
+    _USER_HAS_ANY_SQL = (
+        "(EXISTS (SELECT 1 FROM configs c WHERE c.assigned_user_id=u.telegram_id AND c.is_used=1) OR "
+        "EXISTS (SELECT 1 FROM custom_configs cc WHERE cc.user_id=u.telegram_id AND cc.source != 'test'))"
+    )
+
     def search_users(self, query: str = "", status_filter: str = "all", limit: int = 30, offset: int = 0, sort: str = "newest"):
         """جستجو/فیلتر کاربران برای پنل مدیریت.
-        status_filter: 'all' | 'active' | 'expired' | 'blocked'
+        status_filter: 'all' | 'active' | 'expired' | 'blocked' | 'none'
         sort: 'newest' | 'balance' (بیشترین موجودی کیف پول) | 'purchase' (بیشترین میزان خرید تاییدشده)
               | 'active_services' (بیشترین تعداد سرویس فعال) | 'topup' (بیشترین میزان شارژ حساب تاییدشده)
         خروجی: (rows, total_count) — هر ردیف ستون‌های total_purchase، active_services و total_topup هم دارد.
@@ -104,18 +115,13 @@ class UsersMixin:
         if status_filter == "blocked":
             conditions.append("u.is_blocked=1")
         elif status_filter == "active":
-            conditions.append(
-                "EXISTS (SELECT 1 FROM configs c WHERE c.assigned_user_id=u.telegram_id AND c.is_used=1 "
-                "AND (c.expires_at IS NULL OR c.expires_at > ?))"
-            )
-            params.append(now)
+            conditions.append(self._USER_HAS_ACTIVE_SQL)
+            params += [now, now]
         elif status_filter == "expired":
-            conditions.append(
-                "EXISTS (SELECT 1 FROM configs c WHERE c.assigned_user_id=u.telegram_id AND c.is_used=1) "
-                "AND NOT EXISTS (SELECT 1 FROM configs c2 WHERE c2.assigned_user_id=u.telegram_id AND c2.is_used=1 "
-                "AND (c2.expires_at IS NULL OR c2.expires_at > ?))"
-            )
-            params.append(now)
+            conditions.append(f"{self._USER_HAS_ANY_SQL} AND NOT {self._USER_HAS_ACTIVE_SQL}")
+            params += [now, now]
+        elif status_filter == "none":
+            conditions.append(f"NOT {self._USER_HAS_ANY_SQL}")
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         if sort == "balance":
@@ -155,14 +161,13 @@ class UsersMixin:
             if u and u["is_blocked"]:
                 return "blocked"
             has_active = conn.execute(
-                "SELECT 1 FROM configs WHERE assigned_user_id=? AND is_used=1 "
-                "AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
-                (tg_id, now),
+                "SELECT 1 FROM users u WHERE u.telegram_id=? AND " + self._USER_HAS_ACTIVE_SQL,
+                (tg_id, now, now),
             ).fetchone()
             if has_active:
                 return "active"
             has_any = conn.execute(
-                "SELECT 1 FROM configs WHERE assigned_user_id=? AND is_used=1 LIMIT 1", (tg_id,)
+                "SELECT 1 FROM users u WHERE u.telegram_id=? AND " + self._USER_HAS_ANY_SQL, (tg_id,)
             ).fetchone()
             return "expired" if has_any else "none"
 

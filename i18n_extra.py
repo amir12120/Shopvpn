@@ -2194,4 +2194,24 @@ EXTRA_DYNAMIC_PHRASES += [
     ('📅 حداقل روز از استارت بات: {x}', '📅 Minimum days since the bot started: {x}'),
     # purchases
     ('🛒 حداقل خرید موفق: {x}', '🛒 Minimum successful purchases: {x}'),
+    ('🔒 شرط فعال\u200cسازی: {x}\n\nرسیدن به هرکدام از دو شرط کافی است (0 یعنی خاموش).',
+     '🔒 Activation condition: {x}\n\nMeeting either condition is enough (0 means off).'),
+    ('{x}\nمقدار فعلی: {x} {x}\nعدد جدید را ارسال کن (0 یعنی خاموش):',
+     '{x}\nCurrent value: {x} {x}\nSend the new number (0 means off):'),
 ]
+
+
+# Product waitlist + per-gateway payment activation (upstream product_waitlist / pm_gate).
+EXTRA_PHRASES.update({
+    '🔒 شرط فعال\u200cسازی درگاه\u200cها:\n\nبرای هر درگاه می\u200cتوانی تعیین کنی بعد از چند خرید موفق، یا چند روز از اولین استارت بات، برای هر کاربر فعال شود. تا آن موقع درگاه در خرید، تمدید و شارژ کیف پول (ربات و مینی\u200cاپ) به او نشان داده نمی\u200cشود. رسیدن به هرکدام از دو شرط کافی است؛ 0 یعنی آن شرط خاموش و اگر هر دو 0 باشند محدودیتی نیست. ادمین\u200cها محدود نمی\u200cشوند.\nکارت\u200cبه\u200cکارت دستی و خودکار یک شرط مشترک دارند.':
+        '🔒 Gateway activation conditions:\n\nFor each gateway you can require a number of successful purchases, or a number of days since the user first started the bot, before it is enabled for that user. Until then the gateway is hidden for purchase, renewal and wallet top-up (bot and mini app). Meeting either condition is enough; 0 turns that condition off, and if both are 0 there is no restriction. Admins are not restricted.\nManual and automatic card-to-card share one condition.',
+    'پنل نمایندگی VIP توسط ادمین تعیین می\u200cشود.': 'The VIP reseller panel is set by the admin.',
+    '⛔️ این محصول در حال حاضر غیرفعال است.\n🔔 به محض فعال شدن، همراه با دکمه\u200cی خرید سریع برایت پیام می\u200cفرستیم.':
+        '⛔️ This product is currently inactive.\n🔔 As soon as it is enabled, we will message you with a quick-buy button.',
+    '⛔️ این روش پرداخت هنوز برای حساب شما فعال نشده است.': '⛔️ This payment method is not enabled for your account yet.',
+    ' (غیرفعال)': ' (inactive)',
+    '🛒 خرید سریع': '🛒 Buy now',
+    '🔔 محصول «{name}» اکنون در دسترس است و می\u200cتوانید خرید کنید.':
+        '🔔 Product «{name}» is now available and you can buy it.',
+})
+

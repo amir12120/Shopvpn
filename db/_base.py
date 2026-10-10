@@ -1067,6 +1067,13 @@ class DatabaseBase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reseller_credit_log_user ON reseller_credit_log(user_id);
 
+                CREATE TABLE IF NOT EXISTS product_waitlist (
+                    product_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (product_id, user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS order_surveys (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id INTEGER NOT NULL UNIQUE,

@@ -227,6 +227,28 @@ async def provision_auto_config(
     return built
 
 
+def is_volume_credit_bot(local_db: Database, is_main_bot: bool) -> bool:
+    """بات اختصاصی نمایندگی VIP (اعتبار حجمی) است؟"""
+    if is_main_bot:
+        return False
+    owner_id = local_db.get_owner_telegram_id()
+    if not owner_id:
+        return False
+    main_db = Database(MAIN_DB_PATH)
+    return bool(main_db.is_reseller(owner_id)) and main_db.get_reseller_supply(owner_id)["model"] != "fixed_product"
+
+
+def get_credit_bot_local_panel_id(local_db: Database):
+    """شناسه‌ی آینه‌ی محلی پنل اختصاص‌یافته به نماینده VIP؛ بدون پنل فعال None."""
+    owner_id = local_db.get_owner_telegram_id()
+    if not owner_id:
+        return None
+    server = Database(MAIN_DB_PATH).get_reseller_panel(owner_id)
+    if not server or not server["is_active"]:
+        return None
+    return local_db.get_or_create_mirror_panel_server(server)
+
+
 async def provision_test_config(local_db: Database, plan, user_id: int = None) -> dict:
     """کانفیگ تست برای نماینده: حجم/مدت/پیشوند نام از پلن انتخاب‌شده
     (test_config_plans محلی همان بات نمایندگی) خوانده می‌شود؛ پنل همیشه همان
