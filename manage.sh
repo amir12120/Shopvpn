@@ -878,7 +878,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
+ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -1471,7 +1471,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn miniapp.server:app --host 127.0.0.1 --port 8001
+ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/uvicorn miniapp.server:app --host 127.0.0.1 --port 8001
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -1625,7 +1625,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
+ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -2257,7 +2257,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8003 --workers 1
+ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8003 --workers 1
 Restart=always
 RestartSec=5
 User=$(whoami)

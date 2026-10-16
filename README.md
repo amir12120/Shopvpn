@@ -30,6 +30,7 @@
 - [🚀 One-Line Automatic Installation](#auto-install)
 - [🛠️ Manual Installation](#manual-install)
 - [⚙️ Environment Variables](#env-vars)
+- [🔐 Secrets with Infisical](#infisical)
 - [🧰 manage.sh](#manage-sh)
 - [🗂️ Project Structure](#project-structure)
 - [🧪 Technology Stack](#tech-stack)
@@ -476,10 +477,39 @@ OWNER_ID=your_numeric_telegram_id
 ### 4. Start
 
 ```bash
-python main.py
+infisical run --env=dev -- python main.py
 ```
 
 For production, use the automatic installer/systemd approach or another process manager.
+
+</details>
+
+---
+
+<a id="infisical"></a>
+
+## 🔐 Secrets with Infisical
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+The app reads every setting from the process environment (`os.getenv`), so the code never changes. Instead of keeping secrets in a local `.env`, store them in [Infisical](https://infisical.com) and let the CLI inject them at start-up:
+
+```bash
+# 1. install the CLI and sign in (on a headless server use: infisical login -i)
+# 2. link this checkout to the project (writes .infisical.json — no secrets, safe to commit)
+infisical init
+# 3. run the bot with the secrets injected from the Development environment
+infisical run --env=dev -- python main.py
+```
+
+`install.sh` and `manage.sh` already wrap the generated systemd units (bot, Mini App, web admin panel, Integration API) with `infisical run --env=dev`, so a server install pulls its secrets from Infisical as well — nothing is read from a `.env` file on disk.
+
+- Import an existing `.env` once: drag and drop it on the project’s **Secrets Overview** page (pick the target environment), then rename the local file to `.env.backup`.
+- Non-local (CI/CD, servers, Kubernetes): do **not** use interactive login — create a machine identity and authenticate with Universal Auth, keeping its client ID/secret in the platform’s own secret store (e.g. a systemd `EnvironmentFile`) scoped to just this project and environment.
+- Already leaked a secret? Rotate it (git history keeps it) and scan the repo with `infisical scan`.
+
+Docs: [quickstart](https://infisical.com/docs/documentation/platform/secrets-mgmt/quick-starts/deliver-first-secret) · [machine identities](https://infisical.com/docs/documentation/platform/identities/machine-identities) · [Universal Auth](https://infisical.com/docs/documentation/platform/identities/universal-auth) · [secret scanning](https://infisical.com/docs/cli/scanning-overview)
 
 </details>
 

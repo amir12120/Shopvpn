@@ -31,6 +31,7 @@
 - [🚀 نصب خودکار (یک‌خطی، پیشنهادی)](#auto-install)
 - [🛠 نصب دستی](#manual-install)
 - [⚙️ متغیرهای محیطی (.env)](#env-vars)
+- [🔐 مدیریت اسرار با Infisical](#infisical)
 - [🧰 مدیریت بات (`manage.sh`)](#manage-sh)
 - [🗂 ساختار پروژه](#project-structure)
 - [🧪 تکنولوژی‌های استفاده‌شده](#tech-stack)
@@ -458,7 +459,7 @@ OWNER_ID=آیدی_عددی_تو
 
 **۴. اجرا**
 ```bash
-python main.py
+infisical run --env=dev -- python main.py
 ```
 
 اگر همه‌چیز درست باشد، بات بلافاصله روشن می‌شود و آماده‌ی دریافت پیام است. دیتابیس به‌صورت خودکار در همان پوشه ساخته می‌شود (`bot_database.db`)؛ نیازی به نصب هیچ دیتابیس جداگانه‌ای نیست.
@@ -467,11 +468,11 @@ python main.py
 ```bash
 # روش ساده با screen
 screen -S v2raybot
-python main.py
+infisical run --env=dev -- python main.py
 # سپس Ctrl+A و D برای خروج بدون بستن بات
 
 # یا با nohup
-nohup python main.py > bot.log 2>&1 &
+nohup infisical run --env=dev -- python main.py > bot.log 2>&1 &
 ```
 
 بهترین روش برای پروداکشن، ساخت یک سرویس `systemd` است (که [نصب خودکار](#auto-install) این کار را خودش انجام می‌دهد).
@@ -479,6 +480,35 @@ nohup python main.py > bot.log 2>&1 &
 > 💡 بعد از نصب دستی هم می‌توانی مدیریت روزمره‌ی بات را با [پنل مدیریت متنی (`manage.sh`)](#manage-sh) انجام دهی.
 
 </details>
+
+<a id="infisical"></a>
+
+## 🔐 مدیریت اسرار با Infisical
+
+<details>
+<summary><strong>کلیک کن برای باز شدن</strong></summary>
+
+بات همه‌ی تنظیمات را از محیط پروسه (`os.getenv`) می‌خواند؛ پس کد هیچ‌وقت عوض نمی‌شود. به‌جای نگه‌داشتن اسرار داخل فایل `.env`، آن‌ها را در [Infisical](https://infisical.com) ذخیره کن تا CLI هنگام اجرا تزریقشان کند:
+
+```bash
+# ۱. نصب CLI و ورود (روی سرور بی‌مرورگر: infisical login -i)
+# ۲. اتصال این پوشه به پروژه (فایل .infisical.json ساخته می‌شود — بدون سکرت، امن برای کامیت)
+infisical init
+# ۳. اجرای بات با اسرار تزریق‌شده از محیط Development
+infisical run --env=dev -- python main.py
+```
+
+`install.sh` و `manage.sh` هم یونیت‌های systemd ساخته‌شده (بات، مینی‌اپ، پنل وب و API) را با `infisical run --env=dev` می‌پیچند؛ یعنی نصب سروری هم اسرارش را از Infisical می‌گیرد و چیزی از فایل `.env` روی دیسک خوانده نمی‌شود.
+
+- برای انتقال `.env` فعلی، یک‌بار فایل را روی صفحهٔ **Secrets Overview** پروژه بکش و رها کن (محیط مقصد را انتخاب کن) و بعد فایل محلی را به `.env.backup` تغییر نام بده.
+- برای محیط‌های غیرلوکال (CI/CD، سرور، Kubernetes) از ورود تعاملی استفاده نکن — یک machine identity بساز و با Universal Auth احراز هویت کن، client ID/secret آن را در مخزن سکرت خودِ پلتفرم (مثلاً یک `EnvironmentFile` در systemd) نگه دار و فقط به همین پروژه و محیط محدودش کن.
+- اگر سکرتی لو رفته، آن را عوض کن (تاریخچهٔ گیت نگهش می‌دارد) و مخزن را با `infisical scan` اسکن کن.
+
+مستندات: [شروع سریع](https://infisical.com/docs/documentation/platform/secrets-mgmt/quick-starts/deliver-first-secret) · [machine identities](https://infisical.com/docs/documentation/platform/identities/machine-identities) · [Universal Auth](https://infisical.com/docs/documentation/platform/identities/universal-auth) · [اسکن سکرت](https://infisical.com/docs/cli/scanning-overview)
+
+</details>
+
+---
 
 <a id="env-vars"></a>
 

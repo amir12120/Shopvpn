@@ -466,7 +466,7 @@ OWNER_ID=your_numeric_telegram_id
 ### 4. 启动
 
 ```bash
-python main.py
+infisical run --env=dev -- python main.py
 ```
 
 生产环境请使用自动安装脚本/systemd，或其他进程管理工具。
