@@ -153,6 +153,20 @@ def test_upstream_feature_modules_still_shipped_and_wired():
     assert "import extra_settings_schema" in admin_panel
     assert "extra_settings_schema" in (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
 
+    # Product waitlist (upstream 90fb055 batch, via origin/main).
+    waitlist = (ROOT / "product_waitlist.py").read_text(encoding="utf-8")
+    assert "async def notify_waitlist(" in waitlist
+    assert "def bot_sender(" in waitlist
+    catalog = (ROOT / "db/catalog.py").read_text(encoding="utf-8")
+    for needle in ("def add_product_waitlist(", "def get_product_waitlist(", "def remove_product_waitlist("):
+        assert needle in catalog, f"db/catalog.py lost {needle}"
+    assert "CREATE TABLE IF NOT EXISTS product_waitlist" in (ROOT / "db/_base.py").read_text(encoding="utf-8")
+    assert "db.add_product_waitlist" in handlers_user
+    assert "product_waitlist.notify_waitlist" in handlers_admin
+    assert "product_waitlist.notify_waitlist" in admin_panel
+    assert "product_waitlist.notify_waitlist" in (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
+
+
 
 def test_card_number_gate_is_wired_end_to_end():
     """The card-number display condition (upstream 91961c5/5a14239/63e9939) must
@@ -364,3 +378,32 @@ def test_new_upstream_features_stay_wired():
     db_system = (ROOT / "db/system.py").read_text(encoding="utf-8")
     assert "def create_channel_post(" in db_system
     assert "def claim_channel_post(" in db_system
+
+
+def test_payment_method_gate_is_wired_end_to_end():
+    """Per-gateway activation conditions (pm_gate) must stay reachable.
+
+    The admin sets "after N purchases / N days" per gateway; until then the
+    gateway is hidden in the bot and the mini app, so every edge of that chain
+    has to keep existing or the setting silently does nothing.
+    """
+    db_payments = (ROOT / "db/payments.py").read_text(encoding="utf-8")
+    for needle in (
+        "def payment_gate_setting_keys(",
+        "def get_payment_gate_settings(",
+        "def payment_gate_passed(",
+    ):
+        assert needle in db_payments, f"db/payments.py lost {needle!r}"
+
+    keyboards = (ROOT / "keyboards.py").read_text(encoding="utf-8")
+    assert "def pm_gate_list_kb(" in keyboards
+    assert "def pm_gate_method_kb(" in keyboards
+    assert 'callback_data="adm_pmgate"' in keyboards or '"adm_pmgate"' in keyboards
+
+    handlers_admin = (ROOT / "handlers_admin.py").read_text(encoding="utf-8")
+    assert 'F.data == "adm_pmgate"' in handlers_admin
+    assert "AdminPmGate.waiting_value" in handlers_admin
+    assert "class AdminPmGate(StatesGroup):" in (ROOT / "states.py").read_text(encoding="utf-8")
+
+    miniapp = (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
+    assert miniapp.count("db.payment_gate_passed(") >= 4
