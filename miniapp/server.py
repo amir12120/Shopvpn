@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import aiohttp
 from i18n import tr, api_message, set_language, reset_language, normalize_language, is_language_enabled
 from db_text_policy import render_stored_setting
+from price_display import compare_price_for
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form, Depends, Query, Request
 from fastapi.staticfiles import StaticFiles
 
@@ -90,12 +91,13 @@ from aiogram.enums import ParseMode
 from backup import create_backup, restore_backup, is_valid_sqlite_db
 from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
+import leak_index
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PROVIDERS,
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
     SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES,
 )
-from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
+from reseller_auto_provision import provision_auto_config, provision_test_config, is_volume_credit_bot, ProvisionError
 from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from renewal_engine import execute_renewal, RenewalError
@@ -287,6 +289,14 @@ def require_full_access_admin(auth=Depends(get_verified_user)):
         raise HTTPException(status_code=403, detail=tr("این بخش فقط برای مالک و مدیر کامل در دسترس است."))
     if not db.is_full_access_bot(not bool(tenant.tenant_id)):
         raise HTTPException(status_code=403, detail=tr("⛔️ اتصال پنل VPN و ساخت کانفیگ دستی فقط برای بات اصلی یا نمایندگی کامل در دسترس است."))
+    return auth
+
+
+def require_bank_admin(auth=Depends(require_full_access_admin)):
+    """بانک کانفیگ برای نمایندگی VIP (اعتبار حجمی) وجود ندارد."""
+    _, db, tenant = auth
+    if is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
     return auth
 
 
@@ -768,7 +778,7 @@ async def api_delete_custom_config(custom_config_id: int, auth=Depends(get_verif
     """حذف کامل و برگشت‌ناپذیر یک کانفیگ شخصی متعلق به خود کاربر؛ قبل از حذف از
     دیتابیس، تلاش می‌شود کاربر از روی پنل VPN هم حذف شود (best-effort - در
     صورت خطا در ارتباط با پنل، رکورد همچنان از لیست کاربر حذف می‌شود)."""
-    tg_id, db, _ = auth
+    tg_id, db, tenant = auth
     rows = db.get_custom_configs_for_user(tg_id)
     cc_row = next((c for c in rows if c["id"] == custom_config_id), None)
     if not cc_row:
@@ -792,6 +802,9 @@ async def api_delete_custom_config(custom_config_id: int, auth=Depends(get_verif
         refunded = wallet_refund_amount(quote, panel_deleted) or await grant_service_refund_credit(
             main_db, tg_id, quote, panel_deleted, cc_row["username"],
         )
+    if refunded > 0:
+        await report_router.notify_raw(tenant.bot_token, db, "refund", report_router.build_refund_event(
+            tg_id, cc_row["username"], quote, refunded, "مینی‌اپ"))
     return {"status": "ok", "refund_text": refund_result_text(quote, refunded)}
 
 
@@ -962,6 +975,7 @@ async def api_custom_config_cut_access(custom_config_id: int, auth=Depends(get_v
         raise HTTPException(status_code=502, detail=tr(f"قطع دسترسی ناموفق بود: {e}"))
     if result.subscription_url:
         db.update_custom_config_subscription_url(cc["id"], result.subscription_url)
+    leak_index.schedule_refresh(db, cc["id"])
     db.add_custom_config_history(cc["id"], "cut_access", "دسترسی قطع و لینک جدید صادر شد")
     return {"status": "ok", "subscription_url": result.subscription_url}
 
@@ -1114,11 +1128,11 @@ def api_custom_config_info(auth=Depends(get_verified_user)):
         "reseller_credit_gb": reseller_credit,
         "reseller_available": is_reseller and reseller_credit > 0 and bool(reseller_server),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
-        and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
+        and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL) and db.payment_gate_passed(tg_id, "crypto"),
         "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
-        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
-        "blupal_enabled": blupal_payment.blupal_payment_available(db),
-        "noapay_enabled": noapay_payment.noapay_payment_available(db),
+        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL) and db.payment_gate_passed(tg_id, "abangateway"),
+        "blupal_enabled": blupal_payment.blupal_payment_available(db) and db.payment_gate_passed(tg_id, "blupal"),
+        "noapay_enabled": noapay_payment.noapay_payment_available(db) and db.payment_gate_passed(tg_id, "noapay"),
         "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and db.card_gate_passed(tg_id),
         **_card_info(db, tg_id),
     }
@@ -1324,6 +1338,7 @@ def api_catalog(auth=Depends(get_verified_user)):
                     "id": p["id"],
                     "name": p["name"],
                     "price": p["price"],
+                    "original_price": compare_price_for(p) or None,
                     "description": p["description"],
                     "stock": db.count_available_configs(p["id"]),
                     "is_auto_provision": bool(p["is_auto_provision"]),
@@ -1434,7 +1449,8 @@ async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_j
         if not db.try_reserve_test_slot(tg_id, MAX_TEST_PER_USER):
             raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
 
-        if is_full_access:
+        use_credit = (not is_full_access) or (await asyncio.to_thread(is_volume_credit_bot, db, not bool(tenant.tenant_id)))
+        if not use_credit:
             try:
                 result = await provision_test_plan(db, plan, user_id=tg_id)
             except TestPlanProvisionError as e:
@@ -2310,7 +2326,7 @@ async def api_order_crypto_invoice(order_id: int, auth=Depends(require_joined)):
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "crypto", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], "crypto", order["product_id"], order=order, user_id=order["user_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -2335,7 +2351,7 @@ async def api_wallet_crypto_invoice(body: CryptoWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "crypto", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], "crypto", wallet_topup=True, user_id=topup["user_id"])
     result = await _create_crypto_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2372,7 +2388,7 @@ async def api_order_abangateway_invoice(order_id: int, auth=Depends(require_join
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "abangateway", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], "abangateway", order["product_id"], order=order, user_id=order["user_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -2397,7 +2413,7 @@ async def api_wallet_abangateway_invoice(body: AbanGatewayWalletInvoiceRequest, 
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "abangateway", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], "abangateway", wallet_topup=True, user_id=topup["user_id"])
     result = await _create_abangateway_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2655,7 +2671,7 @@ async def api_order_blupal_invoice(order_id: int, auth=Depends(require_joined)):
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "blupal", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], "blupal", order["product_id"], order=order, user_id=order["user_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -2680,7 +2696,7 @@ async def api_wallet_blupal_invoice(body: BluPalWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "blupal", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], "blupal", wallet_topup=True, user_id=topup["user_id"])
     result = await _create_blupal_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2929,7 +2945,7 @@ async def api_order_noapay_invoice(order_id: int, auth=Depends(require_joined)):
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "noapay", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], "noapay", order["product_id"], order=order, user_id=order["user_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -2954,7 +2970,7 @@ async def api_wallet_noapay_invoice(body: NoapayWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "noapay", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], "noapay", wallet_topup=True, user_id=topup["user_id"])
     result = await _create_noapay_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -3040,7 +3056,7 @@ async def api_order_extra_gateway_invoice(order_id: int, gateway: str, auth=Depe
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], gateway, order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], gateway, order["product_id"], order=order, user_id=order["user_id"])
     return await _create_extra_gateway_invoice(
         db, tenant, tg_id, gateway, "order", order_id, order["final_price"], _extra_order_label(db, order),
     )
@@ -3055,7 +3071,7 @@ async def api_wallet_extra_gateway_invoice(gateway: str, body: NoapayWalletInvoi
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], gateway, wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], gateway, wallet_topup=True, user_id=topup["user_id"])
     return await _create_extra_gateway_invoice(
         db, tenant, tg_id, gateway, "wallet_topup", body.topup_id, topup["amount"], f"شارژ کیف پول #{body.topup_id}",
     )
@@ -3433,14 +3449,17 @@ def api_list_public_gateways(auth=Depends(require_joined), amount: int = None, p
     اگر amount/product_id داده شود، همان محدودیت «حداقل مبلغ درگاه» و
     «روش‌های مجاز این محصول» که در چک‌اوت اعمال می‌شود، این‌جا هم برای فیلترکردن
     لیست (پیش از نمایش به کاربر) اعمال می‌شود - دقیقاً مثل payment_choice_kb ربات."""
-    _, db, _ = auth
+    tg_id, db, _ = auth
     rows = db.list_custom_gateways(only_enabled=True)
     out = []
     for r in rows:
         key = f"custom:{r['gateway_key']}"
+        if db.card_method_blocked_for_user(tg_id, key):
+            continue
         if amount is not None or product_id is not None or custom_config or wallet_topup:
             if _payment_method_error(db, amount if amount is not None else 0, key, product_id,
-                                     custom_config=custom_config, wallet_topup=wallet_topup) is not None:
+                                     custom_config=custom_config, wallet_topup=wallet_topup,
+                                     user_id=tg_id) is not None:
                 continue
         out.append({"key": r["gateway_key"], "name": r["name"]})
     return out
@@ -3662,7 +3681,7 @@ async def api_order_custom_gateway_invoice(order_id: int, gateway_key: str, auth
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], f"custom:{gateway_key}", order["product_id"], order=order)
+    _require_payment_method_allowed(db, order["final_price"], f"custom:{gateway_key}", order["product_id"], order=order, user_id=order["user_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -3686,7 +3705,7 @@ async def api_wallet_custom_gateway_invoice(gateway_key: str, body: CustomGatewa
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], f"custom:{gateway_key}", wallet_topup=True)
+    _require_payment_method_allowed(db, topup["amount"], f"custom:{gateway_key}", wallet_topup=True, user_id=topup["user_id"])
     result = await _create_custom_gateway_invoice_for(
         db, tenant, tg_id, gateway_key, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -4286,6 +4305,8 @@ async def api_topup_receipt(
             0, "topup_ai_auto_reject",
             f"شارژ #{topup_id} | کاربر {tg_id} | مبلغ: {topup['amount']:,} | دلیل: {ai_result.get('reject_reason') or ''}",
         )
+        await report_router.notify_raw(tenant.bot_token, db, "fraud", report_router.build_fraud_event(
+            "topup_ai", topup_id, tg_id, ai_result.get("reject_reason") or "", topup["amount"], "مینی‌اپ"))
         await send_photo_to_admins(
             db, tenant.bot_token,
             caption + "\n\n🚫 این رسید توسط بررسی هوشمند بسیار مشکوک تشخیص داده شد و به‌صورت خودکار رد شد.\n"
@@ -4379,6 +4400,8 @@ async def api_order_receipt(
             0, "order_ai_auto_reject",
             f"سفارش #{order_id} | کاربر {tg_id} | دلیل: {ai_result.get('reject_reason') or ''}",
         )
+        await report_router.notify_raw(tenant.bot_token, db, "fraud", report_router.build_fraud_event(
+            "order_ai", order_id, tg_id, ai_result.get("reject_reason") or "", order["final_price"], "مینی‌اپ"))
         await send_photo_to_admins(
             db, tenant.bot_token,
             caption + "\n\n🚫 این رسید توسط بررسی هوشمند بسیار مشکوک تشخیص داده شد و به‌صورت خودکار رد شد.\n"
@@ -4606,6 +4629,9 @@ class ProductCreate(BaseModel):
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
+    compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
+    discount_days: Optional[int] = None
+    discount_max_uses: Optional[int] = None
 
 
 class ProductUpdate(BaseModel):
@@ -4613,8 +4639,12 @@ class ProductUpdate(BaseModel):
     price: Optional[int] = None
     description: Optional[str] = None
     duration_days: Optional[int] = None
+    source: Optional[str] = None
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
+    compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
+    discount_days: Optional[int] = None
+    discount_max_uses: Optional[int] = None
 
 
 class ConfigsAdd(BaseModel):
@@ -4749,7 +4779,11 @@ def api_admin_list_panel_servers(auth=Depends(require_full_access_admin)):
 async def api_admin_add_panel_server(body: PanelServerCreate, auth=Depends(require_full_access_admin)):
     _, db, _ = auth
     admin_id, _, _ = auth
-    body.api_username = body.api_username.strip() or TOKEN_ONLY_PANEL_TYPES.get(body.panel_type, "")
+    body.api_username = (
+        body.api_username.strip()
+        or TOKEN_ONLY_PANEL_TYPES.get(body.panel_type, "")
+        or ("apikey" if body.panel_type == "pasarguard" and body.api_password.strip().startswith("pg_key_") else "")
+    )
     if not body.name.strip() or not body.api_url.strip() or not body.api_username.strip() or not body.api_password.strip():
         raise HTTPException(status_code=400, detail=tr("نام، آدرس، یوزرنیم و پسورد الزامی هستند."))
     if body.panel_type not in PROVIDERS:
@@ -5066,6 +5100,12 @@ def api_admin_panel_servers_lite(auth=Depends(require_senior_admin)):
     return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
 
 
+@app.get("/api/admin/catalog-capabilities")
+def api_admin_catalog_capabilities(auth=Depends(require_senior_admin)):
+    _, db, tenant = auth
+    return {"bank_allowed": not is_volume_credit_bot(db, not bool(tenant.tenant_id))}
+
+
 @app.get("/api/admin/categories/{cat_id}/products")
 def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
     _, db, _ = auth
@@ -5073,6 +5113,10 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
     return [
         {
             "id": p["id"], "name": p["name"], "price": p["price"],
+            "compare_price": p["compare_price"] or 0,
+            "discount_expires_at": p["discount_expires_at"],
+            "discount_max_uses": p["discount_max_uses"] or 0,
+            "discount_used_count": p["discount_used_count"] or 0,
             "description": p["description"], "duration_days": p["duration_days"],
             "is_active": bool(p["is_active"]),
             "is_auto_provision": bool(p["is_auto_provision"]),
@@ -5114,6 +5158,8 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
     is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
     provision_server_id = body.provision_server_id if is_full_access else None
     is_auto_provision = bool(body.is_auto_provision or provision_server_id)
+    if not is_auto_provision and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
 
     if body.duration_days < 0:
         raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
@@ -5130,7 +5176,12 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
         body.category_id, body.name.strip(), body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, auto_provision_volume_gb=body.auto_provision_volume_gb,
         provision_server_id=provision_server_id, payment_methods=body.payment_methods,
+        compare_price=max(int(body.compare_price or 0), 0),
     )
+    if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
+        db.edit_product(product_id, compare_price=int(body.compare_price),
+                        discount_days=max(int(body.discount_days or 0), 0),
+                        discount_max_uses=max(int(body.discount_max_uses or 0), 0))
     return {"id": product_id}
 
 
@@ -5150,8 +5201,30 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
     if body.price is not None and body.price < 0:
         raise HTTPException(status_code=400, detail=tr("قیمت نامعتبر است."))
 
+    if body.source is not None and body.source not in ("bank", "direct"):
+        raise HTTPException(status_code=400, detail=tr("منبع تأمین نامعتبر است."))
+    if body.source == "bank" and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
+
+    source_kwargs = {}
     provision_server_id = None
-    if body.provision_server_id is not None:
+    if body.source is not None:
+        if not db.is_full_access_bot(not bool(tenant.tenant_id)):
+            raise HTTPException(status_code=403, detail=tr("تغییر منبع محصول فقط برای بات اصلی یا نمایندگی کامل مجاز است."))
+        if old_product["is_auto_provision"] and not old_product["provision_server_id"]:
+            raise HTTPException(status_code=400, detail=tr("تغییر منبع برای محصولات خودکارِ مبتنی بر اعتبار حجمی نماینده ممکن نیست."))
+    if body.source == "direct":
+        if not body.provision_server_id or not db.get_panel_server(body.provision_server_id):
+            raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
+        if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
+            raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
+        provision_server_id = body.provision_server_id
+        source_kwargs["is_auto_provision"] = True
+    elif body.source == "bank":
+        if body.duration_days is None and old_product["duration_days"] == 0:
+            raise HTTPException(status_code=400, detail=tr("برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید."))
+        source_kwargs.update(is_auto_provision=False, provision_server_id=None, auto_provision_volume_gb=None)
+    elif body.provision_server_id is not None:
         if not old_product["is_auto_provision"]:
             raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
         if not db.is_full_access_bot(not bool(tenant.tenant_id)):
@@ -5160,7 +5233,10 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
             raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
         provision_server_id = body.provision_server_id
 
-    effective_server_id = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
+    if body.source == "bank":
+        effective_server_id = None
+    else:
+        effective_server_id = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
 
     if body.duration_days is not None:
         if body.duration_days < 0:
@@ -5177,10 +5253,16 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
     # نکته: edit_product برای provision_server_id/auto_provision_volume_gb از سنتینل
     # Ellipsis استفاده می‌کند (یعنی «بدون تغییر»)؛ پس این دو را فقط وقتی صراحتاً
     # مقداردهی شده‌اند پاس می‌دهیم، وگرنه ممکن است به‌اشتباه NULL شوند.
-    edit_kwargs = {}
+    edit_kwargs = dict(source_kwargs)
+    if body.compare_price is not None:
+        edit_kwargs["compare_price"] = max(int(body.compare_price), 0)
+    if body.discount_days is not None:
+        edit_kwargs["discount_days"] = max(int(body.discount_days), 0)
+    if body.discount_max_uses is not None:
+        edit_kwargs["discount_max_uses"] = max(int(body.discount_max_uses), 0)
     if provision_server_id is not None:
         edit_kwargs["provision_server_id"] = provision_server_id
-    if body.auto_provision_volume_gb is not None:
+    if body.auto_provision_volume_gb is not None and body.source != "bank":
         edit_kwargs["auto_provision_volume_gb"] = body.auto_provision_volume_gb
     db.edit_product(
         product_id,
@@ -5195,7 +5277,13 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
             admin_id, "product_price_edit",
             f"محصول «{old_product['name']}» (#{product_id}) | قیمت قبلی: {old_product['price']:,} | قیمت جدید: {body.price:,}",
         )
-    if provision_server_id is not None and provision_server_id != old_product["provision_server_id"]:
+    if body.source is not None and (body.source == "direct") != bool(old_product["provision_server_id"]):
+        target = f"اتصال مستقیم به سرور #{provision_server_id}" if body.source == "direct" else "بانک کانفیگ"
+        db.log_admin_action(
+            admin_id, "product_source_edit",
+            f"محصول «{old_product['name']}» (#{product_id}) | منبع تغییر کرد به {target}",
+        )
+    elif provision_server_id is not None and provision_server_id != old_product["provision_server_id"]:
         db.log_admin_action(
             admin_id, "product_server_edit",
             f"محصول «{old_product['name']}» (#{product_id}) | سرور/اینباند تغییر کرد به سرور #{provision_server_id}",
@@ -5204,11 +5292,17 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
 
 
 @app.post("/api/admin/products/{product_id}/toggle")
-def api_admin_toggle_product(product_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_product(product_id):
+async def api_admin_toggle_product(product_id: int, auth=Depends(require_senior_admin)):
+    _, db, tenant = auth
+    if not await asyncio.to_thread(db.get_product, product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    db.toggle_product(product_id)
+    new_state = await asyncio.to_thread(db.toggle_product, product_id)
+    if new_state:
+        import product_waitlist
+        from admin_panel.telegram_notify import send_message as tg_send
+        asyncio.create_task(product_waitlist.notify_waitlist(
+            db, product_id, product_waitlist.token_sender(tg_send, tenant.bot_token)
+        ))
     return {"status": "ok"}
 
 
@@ -5222,7 +5316,7 @@ def api_admin_delete_product(product_id: int, auth=Depends(require_senior_admin)
 
 
 @app.get("/api/admin/products/{product_id}/configs")
-def api_admin_list_configs(product_id: int, auth=Depends(require_full_access_admin)):
+def api_admin_list_configs(product_id: int, auth=Depends(require_bank_admin)):
     _, db, _ = auth
     if not db.get_product(product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
@@ -5231,7 +5325,7 @@ def api_admin_list_configs(product_id: int, auth=Depends(require_full_access_adm
 
 
 @app.post("/api/admin/products/{product_id}/configs")
-def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(require_full_access_admin)):
+def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(require_bank_admin)):
     _, db, _ = auth
     if not db.get_product(product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
@@ -5243,7 +5337,7 @@ def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(requir
 
 
 @app.delete("/api/admin/configs/{config_id}")
-def api_admin_delete_config(config_id: int, auth=Depends(require_full_access_admin)):
+def api_admin_delete_config(config_id: int, auth=Depends(require_bank_admin)):
     _, db, tenant = auth
     row = db.get_config_by_id(config_id) if hasattr(db, "get_config_by_id") else None
     db.delete_config(config_id)
@@ -5838,6 +5932,8 @@ def api_admin_set_referral_settings(body: ReferralSettingsUpdate, auth=Depends(r
     db.set_setting("referral_invite_bonus_enabled", "1" if body.invite_bonus_enabled else "0")
     db.set_setting("referral_invite_bonus_amount", str(body.invite_bonus_amount))
     db.set_setting("referral_invite_bonus_max_count", str(body.invite_bonus_max_count))
+    if body.enabled or body.free_config_enabled or body.invite_bonus_enabled:
+        db.set_setting("referral_button_enabled", "1")
     return {"status": "ok"}
 
 
@@ -6723,7 +6819,7 @@ def api_admin_list_users(
     auth=Depends(require_full_admin),
 ):
     _, db, _ = auth
-    if status not in ("all", "active", "expired", "blocked"):
+    if status not in ("all", "active", "expired", "blocked", "none"):
         status = "all"
     limit = max(1, min(limit, 100))
     rows, total = db.search_users(query=query.strip(), status_filter=status, limit=limit, offset=offset)
@@ -7121,7 +7217,7 @@ def api_admin_adjust_wallet(body: WalletAdjust, auth=Depends(require_full_admin)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/admin/products/{product_id}/take-random-config")
-def api_admin_take_random_config(product_id: int, auth=Depends(require_senior_admin)):
+def api_admin_take_random_config(product_id: int, auth=Depends(require_bank_admin)):
     tg_id, db, _ = auth
     if not db.get_product(product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))

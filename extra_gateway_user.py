@@ -176,7 +176,7 @@ def register(router, db, is_main_bot: bool, order_error, topup_error, notify_adm
             if not egp.is_available(db, key, is_main_bot):
                 await call.answer(tr("این روش پرداخت در حال حاضر در دسترس نیست."), show_alert=True)
                 return
-            err = await topup_error(amount, key)
+            err = await topup_error(amount, key, call.from_user.id)
             if err:
                 await call.answer(err, show_alert=True)
                 return

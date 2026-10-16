@@ -109,7 +109,8 @@ class RebeccaProvider(BasePanelProvider):
             )
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         async with self._session() as session:
             _, current = await self._call(session, "GET", f"user/{username}", "دریافت اطلاعات کاربر")
             now_ts = int(time.time())
@@ -120,6 +121,7 @@ class RebeccaProvider(BasePanelProvider):
             new_expire = base + add_days * 86400 if add_days else current_expire
             new_limit = new_limit_bytes(
                 current.get("data_limit"), current.get("used_traffic"), add_volume_gb, reset_usage, preserve_remaining,
+                unlimited=unlimited_volume,
             )
             _, data = await self._call(
                 session, "PUT", f"user/{username}", "بروزرسانی کاربر",

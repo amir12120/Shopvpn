@@ -457,6 +457,10 @@ async def deliver_config_to_user(
     (نسخه‌ی aiogram - برای فراخوانی از داخل خودِ بات. برای پنل وب مستقل از
     admin_panel.config_delivery_web.deliver_config_to_user_web استفاده کن.)
     """
+    if db is not None and order_id is not None:
+        from gift_card_handlers import deliver_gift_order
+        if await deliver_gift_order(bot, db, order_id):
+            return
     if isinstance(links, str):
         links = [links]
     total = len(links)

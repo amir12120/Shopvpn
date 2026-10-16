@@ -1162,7 +1162,10 @@ class SystemMixin:
                 "COUNT(CASE WHEN o.status='approved' THEN 1 END) cnt "
                 "FROM orders o LEFT JOIN products p ON p.id=o.product_id"
             ).fetchone()
-        return {"revenue_toman": row["revenue"] or 0, "paid_orders": row["cnt"] or 0}
+            topup = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) s FROM wallet_topups WHERE status='approved'"
+            ).fetchone()["s"] or 0
+        return {"revenue_toman": (row["revenue"] or 0) + topup, "paid_orders": row["cnt"] or 0}
 
 
     def queue_db_purge(self, bot_token: str, db_path: str):
@@ -1767,3 +1770,122 @@ class SystemMixin:
             ).fetchone()
             return row["rating"] if row else None
 
+
+    def create_channel_post(self, admin_id: int, channel_id: str, caption: str, button_text: str, deeplink: str,
+                            photo_id: str = None, angle: str = "", status: str = "draft", kind: str = "post",
+                            poll_json: str = None) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO channel_posts(admin_id,channel_id,caption,button_text,deeplink,photo_id,angle,status,kind,poll_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (admin_id, channel_id, caption, button_text, deeplink, photo_id, angle, status, kind, poll_json),
+            )
+            return cur.lastrowid
+
+    def get_catalog_max_ids(self) -> tuple:
+        with self._get_conn() as conn:
+            product = conn.execute("SELECT COALESCE(MAX(id),0) FROM products").fetchone()[0]
+            code = conn.execute("SELECT COALESCE(MAX(id),0) FROM discount_codes").fetchone()[0]
+            return product, code
+
+    def list_products_after(self, last_id: int, limit: int = 5):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT id,name,is_active FROM products WHERE id>? ORDER BY id LIMIT ?", (last_id, limit),
+            ).fetchall()
+
+    def get_channel_post(self, post_id: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM channel_posts WHERE id=?", (post_id,)).fetchone()
+
+    def update_channel_post(self, post_id: int, **fields) -> None:
+        allowed = {"channel_id", "message_id", "status", "caption", "button_text", "deeplink", "photo_id", "is_pinned", "error", "sent_at", "scheduled_at"}
+        cols = [k for k in fields if k in allowed]
+        if not cols:
+            return
+        sets = ",".join(f"{k}=?" for k in cols) + ",updated_at=CURRENT_TIMESTAMP"
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE channel_posts SET {sets} WHERE id=?", [fields[k] for k in cols] + [post_id])
+
+    def list_channel_posts(self, status: str = None, limit: int = 8, offset: int = 0):
+        where, args = ("WHERE status=?", [status]) if status else ("WHERE status!='deleted'", [])
+        order = "scheduled_at ASC, id ASC" if status == "scheduled" else "id DESC"
+        with self._get_conn() as conn:
+            return conn.execute(
+                f"SELECT * FROM channel_posts {where} ORDER BY {order} LIMIT ? OFFSET ?", args + [limit, offset],
+            ).fetchall()
+
+    def count_channel_posts(self, status: str = None) -> int:
+        where, args = ("WHERE status=?", [status]) if status else ("WHERE status!='deleted'", [])
+        with self._get_conn() as conn:
+            return conn.execute(f"SELECT COUNT(*) FROM channel_posts {where}", args).fetchone()[0]
+
+    def get_due_channel_posts(self, now_iso: str, limit: int = 10):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM channel_posts WHERE status='scheduled' AND scheduled_at<=? ORDER BY scheduled_at,id LIMIT ?",
+                (now_iso, limit),
+            ).fetchall()
+
+    def claim_channel_post(self, post_id: int) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE channel_posts SET status='sending',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='scheduled'", (post_id,),
+            )
+            return cur.rowcount == 1
+
+    def recover_stuck_channel_posts(self) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE channel_posts SET status='error',error='ارسال نیمه‌کاره ماند (ری‌استارت بات)',updated_at=CURRENT_TIMESTAMP WHERE status='sending'",
+            )
+            return cur.rowcount
+
+    def record_channel_post_click(self, post_id: int, user_id: int) -> bool:
+        with self._get_conn() as conn:
+            if not conn.execute("SELECT 1 FROM channel_posts WHERE id=?", (post_id,)).fetchone():
+                return False
+            conn.execute("INSERT INTO channel_post_clicks(post_id,user_id) VALUES(?,?)", (post_id, user_id))
+            return True
+
+    def get_channel_post_stats(self) -> dict:
+        """آمار هر پست: کلیک، کاربر یکتا، و خریدِ تأییدشده‌ای که آخرین کلیک کاربر در ۷ روز قبل از سفارش روی همان پست بوده."""
+        with self._get_conn() as conn:
+            stats = {
+                r["post_id"]: {"clicks": r["c"], "users": r["u"], "purchases": 0, "buyers": 0, "revenue": 0}
+                for r in conn.execute("SELECT post_id, COUNT(*) c, COUNT(DISTINCT user_id) u FROM channel_post_clicks GROUP BY post_id")
+            }
+            if not stats:
+                return stats
+            rows = conn.execute(
+                "SELECT post_id, COUNT(*) n, COUNT(DISTINCT user_id) b, COALESCE(SUM(amount),0) rev FROM ("
+                " SELECT o.user_id user_id, COALESCE(o.final_price, p.price, 0) amount,"
+                "  (SELECT c.post_id FROM channel_post_clicks c WHERE c.user_id=o.user_id AND c.clicked_at<=o.created_at"
+                "   AND c.clicked_at>=datetime(o.created_at,'-7 days') ORDER BY c.clicked_at DESC, c.id DESC LIMIT 1) post_id"
+                " FROM orders o LEFT JOIN products p ON o.product_id=p.id"
+                " WHERE o.status='approved' AND o.created_at>=(SELECT MIN(clicked_at) FROM channel_post_clicks)"
+                ") WHERE post_id IS NOT NULL GROUP BY post_id"
+            ).fetchall()
+            for r in rows:
+                if r["post_id"] in stats:
+                    stats[r["post_id"]].update(purchases=r["n"], buyers=r["b"], revenue=r["rev"])
+            return stats
+
+    def get_channel_post_performance(self, limit: int = 3) -> list:
+        stats = self.get_channel_post_stats()
+        if not stats:
+            return []
+        ids = list(stats)
+        marks = ",".join("?" * len(ids))
+        with self._get_conn() as conn:
+            posts = conn.execute(
+                f"SELECT id, angle, caption, deeplink FROM channel_posts WHERE status='sent' AND id IN ({marks})", ids,
+            ).fetchall()
+        ranked = sorted(posts, key=lambda p: (stats[p["id"]]["revenue"], stats[p["id"]]["purchases"], stats[p["id"]]["clicks"]), reverse=True)
+        return [{"post": p, **stats[p["id"]]} for p in ranked[:limit]]
+
+    def delete_channel_post_record(self, post_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM channel_posts WHERE id=?", (post_id,))
+
+#‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
+# 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 

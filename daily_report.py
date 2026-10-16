@@ -93,7 +93,7 @@ def build_report_text(db, now_tehran: datetime) -> str:
         f"📅 {WEEKDAYS_FA[now_tehran.weekday()]} {to_jalali_str(now_tehran)}",
         "",
         f"🛒 سفارش تاییدشده: {stats['approved']:,}",
-        f"💰 درآمد: {stats['revenue']:,} تومان",
+        f"💰 درآمد: {stats['revenue']:,} تومان (فروش: {stats['orders_revenue']:,} + شارژ کیف پول: {stats['topup_revenue']:,})",
         f"🧾 میانگین سبد خرید: {stats['aov']:,} تومان",
         f"{_fmt_change_pct(stats['revenue_change_pct'])} نسبت به دیروز ({stats['prev_revenue']:,} تومان)",
         f"⏳ در انتظار: {stats['pending']:,} | ❌ ردشده: {stats['rejected']:,}",

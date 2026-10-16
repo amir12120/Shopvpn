@@ -31,6 +31,7 @@ TRANSITIVE_DEPS = {"pydantic", "starlette"}
 # dist-name -> import-name for the requirements that differ.
 DIST_ALIASES = {
     "python-dotenv": "dotenv",
+    "python-bidi": "bidi",
     "pillow": "PIL",
     "pyjwt": "jwt",
     "python-multipart": "multipart",
@@ -51,6 +52,31 @@ UPSTREAM_FEATURE_MODULES = (
     "draft_stream.py",
     "extra_settings_schema.py",
     "db/orders.py",
+    # --- upstream batch merged with the next release ---
+    "audit_forwarder.py",
+    "admin_channel_engage.py",
+    "admin_channel_plan.py",
+    "admin_channel_posts.py",
+    "admin_post_brand.py",
+    "channel_ai.py",
+    "channel_post_scheduler.py",
+    "channel_suggestions.py",
+    "gift_card_ai.py",
+    "gift_card_handlers.py",
+    "gift_card_render.py",
+    "gift_cards.py",
+    "jarvis_guide.py",
+    "leak_admin.py",
+    "leak_index.py",
+    "leak_scanner.py",
+    "post_image.py",
+    "price_display.py",
+    "product_waitlist.py",
+    "userbot.py",
+    "userbot_admin.py",
+    "db/gift_cards.py",
+    "db/leak_store.py",
+    "db/userbot_store.py",
 )
 
 # Upstream keeps re-uploading these with a module-level `from i18n import tr`
@@ -284,3 +310,57 @@ def test_lean_install_flags_survive_upstream_merges():
         )
     # CPU-only torch keeps the venv around 1.3 GB instead of pulling the CUDA build.
     assert "download.pytorch.org/whl/cpu" in (ROOT / "manage.sh").read_text(encoding="utf-8")
+
+
+
+def test_new_upstream_features_stay_wired():
+    """The merged upstream batch (userbot, leak scanner, gift cards, channel
+    tools, payment-gate conditions): presence is not enough — each feature must
+    stay reachable from a start-up task, handler, dispatcher or DB path, or it
+    silently does nothing on a real server."""
+    main_py = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "import userbot" in main_py
+    assert "userbot.run(main_db, BOT_TOKEN)" in main_py
+    assert "import leak_index" in main_py
+    assert "leak_index.run(main_db)" in main_py
+
+    # Gift cards hook both config-delivery paths and register their routers.
+    assert "from gift_card_handlers import deliver_gift_order" in (ROOT / "config_delivery.py").read_text(encoding="utf-8")
+    web = (ROOT / "admin_panel/config_delivery_web.py").read_text(encoding="utf-8")
+    assert "gift_get_order" in web and "gift_mark_order_delivered" in web
+    bot_manager = (ROOT / "bot_manager.py").read_text(encoding="utf-8")
+    assert "from gift_card_handlers import create_gift_router" in bot_manager
+    assert "from userbot_admin import create_userbot_router" in bot_manager
+    assert "from leak_admin import create_leak_router" in bot_manager
+    assert "from channel_post_scheduler import channel_post_loop" in bot_manager
+    assert "from audit_forwarder import audit_forward_loop" in bot_manager
+    handlers_user = (ROOT / "handlers_user.py").read_text(encoding="utf-8")
+    assert "from gift_card_handlers import redeem_gift_for_message" in handlers_user
+
+    # Payment-gate conditions: admin callback -> FSM state -> settings -> DB.
+    handlers_admin = (ROOT / "handlers_admin.py").read_text(encoding="utf-8")
+    assert 'F.data == "adm_pmgate"' in handlers_admin
+    assert "AdminPmGate.waiting_value" in handlers_admin
+    assert "from price_display import price_range" in handlers_admin
+    assert "import product_waitlist" in handlers_admin
+    states = (ROOT / "states.py").read_text(encoding="utf-8")
+    assert "class AdminPmGate(StatesGroup):" in states
+
+    # Channel tools must stay imported AND registered on the admin router —
+    # an import without register() is a menu button that does nothing.
+    for module in ("admin_channel_posts", "admin_channel_engage", "admin_channel_plan"):
+        assert f"import {module}" in handlers_admin, f"{module} import disappeared"
+        assert f"{module}.register(router, db, senior_admin_only, deny_mid)" in handlers_admin, (
+            f"{module} is imported but no longer registered on the admin router"
+        )
+    assert "import channel_suggestions" in (ROOT / "channel_post_scheduler.py").read_text(encoding="utf-8")
+    keyboards = (ROOT / "keyboards.py").read_text(encoding="utf-8")
+    assert "from price_display import price_label_plain" in keyboards
+    assert "def pm_gate_list_kb(" in keyboards
+    assert "def admin_category_item_keys(" in keyboards
+    assert "USER_SCREENS = {" in keyboards
+
+    # Channel-post CRUD lives in the DB layer the scheduler claims from.
+    db_system = (ROOT / "db/system.py").read_text(encoding="utf-8")
+    assert "def create_channel_post(" in db_system
+    assert "def claim_channel_post(" in db_system

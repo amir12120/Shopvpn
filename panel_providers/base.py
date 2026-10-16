@@ -34,6 +34,14 @@ class PanelUsernameTakenError(PanelError):
     pass
 
 
+def subscription_token(url: str) -> str:
+    """آخرین بخش مسیر یک لینک اشتراک (توکن)، بدون query و اسلش انتهایی."""
+    from urllib.parse import urlsplit
+
+    path = urlsplit(url or "").path.rstrip("/")
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
 def build_connector(server, ssl: bool = False):
     """کانکتور aiohttp برای اتصال به پنل: اگر روی این پنل یک پروکسی SOCKS
     تنظیم شده باشد (ستون socks_proxy - برای پنل‌هایی که مستقیم از سرور بات
@@ -92,7 +100,8 @@ class BasePanelProvider(ABC):
 
     @abstractmethod
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         """حجم/انقضای یک کاربر موجود روی پنل را برای «تمدید سرویس» افزایش می‌دهد.
         add_volume_gb/add_days روی مقدار فعلی جمع می‌شوند (نه جایگزین آن).
         اگر انقضای فعلی گذشته باشد، مبنای محاسبه‌ی انقضای جدید «اکنون» است، نه
@@ -141,6 +150,15 @@ class BasePanelProvider(ABC):
         برمی‌گرداند (در غیر این صورت None، یعنی لینک قبلی هنوز معتبر است).
         پیاده‌سازی پیش‌فرض: پشتیبانی نمی‌شود."""
         raise PanelError("این نوع پنل از تغییر نام کاربر روی خودِ پنل پشتیبانی نمی‌کند.")
+
+    supports_fingerprints = False
+
+    async def get_fingerprints(self, username: str) -> list:
+        """همه‌ی مقادیر محرمانه‌ای که این کاربر را روی پنل شناسایی می‌کنند
+        (UUID و پسورد پروتکل‌ها و توکن اشتراک) را به‌صورت لیست رشته برمی‌گرداند.
+        این مقادیر فقط برای ساخت ایندکس هشِ تشخیص نشت استفاده می‌شوند و
+        هرگز ذخیره‌ی متنی نمی‌شوند. پیش‌فرض: پشتیبانی نمی‌شود."""
+        raise PanelError("این نوع پنل از خواندن اثر انگشت کاربر پشتیبانی نمی‌کند.")
 
     supports_online_status = False
 

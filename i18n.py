@@ -889,6 +889,7 @@ _PHRASE_TRANSLATIONS.update({
     # ADMIN_PANEL_ITEMS
     "📂 مدیریت دسته‌بندی‌ها": "📂 Manage categories",
     "💼 تلگرام بیزنس": "💼 Telegram Business",
+    "🤖 یوزربات (پاسخ‌گوی پیوی مدیر)": "🤖 Userbot (owner PV auto-reply)",
     "📦 مدیریت محصولات": "📦 Manage products",
     "📊 حجم و پنل من": "📊 My volume & panel",
     "🔗 افزودن کانفیگ به محصول": "🔗 Add configs to a product",
@@ -915,7 +916,9 @@ _PHRASE_TRANSLATIONS.update({
     "🔌 هشدار اتصال/عدم‌اتصال کانفیگ": "🔌 Config connect/disconnect alert",
     "🎁 تخفیف تمدید کامل زودهنگام": "🎁 Early full-renewal discount",
     "📦 آستانه‌ی هشدار موجودی": "📦 Stock alert threshold",
-    "🛠 ساخت کانفیگ شخصی (پنل‌های VPN)": "🛠 Personal config creation (VPN panels)",
+    "🔮 پیش‌بینی ریزش و پیشنهاد بازگشت": "🔮 Churn prediction & win-back offers",
+    "🛠 ساخت کانفیگ شخصی": "🛠 Personal config creation",
+    "🖥 مدیریت پنل‌های VPN": "🖥 Manage VPN panels",
     "💳 قیمت‌گذاری تمدید حجم/زمان": "💳 Volume/time renewal pricing",
     "📤 تنظیمات ارسال کانفیگ": "📤 Config delivery settings",
     "🤝 تنظیمات زیرمجموعه‌گیری": "🤝 Referral settings",
@@ -965,3 +968,20 @@ _PHRASE_TRANSLATIONS.update({
     "⚠️ زبان همه‌ی کاربران ربات عوض می‌شه، نه فقط زبان تو. یکی رو انتخاب کن:": "⚠️ This changes the language for every bot user, not just yours. Pick one:",
     "✅ زبان همه‌ی کاربران ربات تغییر کرد.": "✅ Every bot user's language was changed.",
 })
+_PHRASE_TRANSLATIONS.update({
+"🤖 یوزربات (اکانت شخصی)":"🤖 Userbot (personal account)",
+"⚪️ وارد نشده":"⚪️ Not logged in",
+"🟢 متصل":"🟢 Connected",
+"🔴 قطع":"🔴 Disconnected",
+"وضعیت اتصال":"Connection status",
+"مدیر الان فعال است":"Admin is active now",
+"ورود به اکانت از منوی سرور (گزینه «ورود به اکانت تلگرام») انجام می‌شود.":"Account login is done from the server menu (the \"Login Telegram account\" option).",
+"وقتی مدیر در تلگرام فعال باشد (پیام می‌فرستد یا چت می‌خواند)، پشتیبان هوش مصنوعی جواب نمی‌دهد.":"While the admin is active on Telegram (sending messages or reading chats), the AI support does not reply.",
+"پاسخ‌دهی یوزربات":"Userbot replies",
+"توقف وقتی مدیر فعال است":"Pause while admin is active",
+"مدت فعال‌ماندن مدیر":"Admin active window",
+"دقیقه":"minutes",
+"⚙️ تنظیمات اتصال":"⚙️ Connection settings",
+})
+#‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
+# 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 

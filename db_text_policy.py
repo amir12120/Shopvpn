@@ -32,6 +32,7 @@ CUSTOM_TEXT_FIELDS = {
     "products": {"name", "description"},
     "test_config_plans": {"name", "name_prefix"},
     "scheduled_broadcasts": {"message_text"},
+    "channel_posts": {"angle", "caption", "button_text"},
     "support_messages": {"message"},
     "ai_support_messages": {"message"},
     "ai_faq_items": {"question", "answer"},

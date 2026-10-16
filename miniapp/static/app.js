@@ -2361,7 +2361,7 @@ async function renderStore() {
           <div class="product">
             <div>
               <div class="product-name">${p.name}</div>
-              <div class="price">${fmt(p.price)} تومان</div>
+              <div class="price">${priceHtml(p.price, p.original_price)}</div>
             </div>
             <button class="btn small" ${p.stock <= 0 ? "disabled" : ""}
               onclick="openProductPurchase(${p.id})">
@@ -2400,7 +2400,7 @@ async function renderPurchasePanel(productId, p, quantity, discountCode) {
     <div class="eyebrow">خرید محصول</div>
     <div class="card">
       <h3><span class="ic">📦</span>${p.name}</h3>
-      <div class="stat-row"><span>قیمت واحد</span><b>${fmt(p.price)} تومان</b></div>
+      <div class="stat-row"><span>قیمت واحد</span><b>${priceHtml(p.price, p.original_price)}</b></div>
       ${p.is_auto_provision
         ? `<div class="stat-row"><span>تأمین</span><b>⚡️ خودکار و لحظه‌ای</b></div>`
         : `<div class="stat-row"><span>موجودی</span><b>${p.stock} عدد</b></div>`}
@@ -2500,6 +2500,14 @@ function _randomCustomUsername() {
   let s = "u";
   for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
+}
+
+// قیمت محصول؛ اگر قیمت قبل از تخفیف بزرگ‌تر باشد، قیمت قبلی خط‌خورده کنارش نشان داده می‌شود.
+function priceHtml(price, originalPrice) {
+  const strike = originalPrice && Number(originalPrice) > Number(price)
+    ? `<s class="hint-text">${fmt(originalPrice)}</s> `
+    : "";
+  return `${strike}${fmt(price)} تومان`;
 }
 
 function _priceForVolume(tiers, gb) {
@@ -4211,6 +4219,7 @@ async function renderAdminPanelsSection() {
           api_password: document.getElementById("ps-password").value,
           template_username: document.getElementById("ps-template").value.trim(),
         };
+        if (panelType === "pasarguard" && !payload.api_username && payload.api_password.trim().startsWith("pg_key_")) payload.api_username = "apikey";
         if (!payload.name || !payload.api_url || !payload.api_username || !payload.api_password) {
           errBox.textContent = "نام، آدرس، یوزرنیم و پسورد الزامی هستند."; return;
         }
@@ -4752,7 +4761,13 @@ async function renderAdminCategories(body) {
   };
 }
 
-function productProvisionFieldsHtml(panelServers) {
+function productProvisionFieldsHtml(panelServers, bankAllowed = true) {
+  if (!bankAllowed) {
+    return `
+    <label class="field-label">محصول از اعتبار حجمی شما ساخته می‌شود</label>
+    <input class="input" id="new-prod-credit-volume" type="number" placeholder="حجم (گیگابایت)" style="margin-bottom:8px" />
+  `;
+  }
   if (!panelServers || !panelServers.length) return "";
   return `
     <label class="field-label">منبع کانفیگ</label>
@@ -4798,6 +4813,7 @@ async function renderAdminProducts(body) {
   const { categoryId, categoryName } = adminCatalogView;
   const products = await api(`/api/admin/categories/${categoryId}/products`);
   const panelServers = await api("/api/admin/panel-servers-lite").catch(() => []);
+  const bankAllowed = (await api("/api/admin/catalog-capabilities").catch(() => ({ bank_allowed: true }))).bank_allowed !== false;
   const paymentMethods = await api("/api/admin/payment-methods").catch(() => []);
   body.innerHTML = `
     <button class="btn outline small" id="back-to-cats" style="width:auto;margin-bottom:12px">→ بازگشت به دسته‌بندی‌ها</button>
@@ -4820,10 +4836,11 @@ async function renderAdminProducts(body) {
     <div class="card">
       <div class="eyebrow" style="margin-top:0">افزودن محصول جدید</div>
       <input class="input" id="new-prod-name" type="text" placeholder="نام محصول" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
-      <input class="input" id="new-prod-price" type="number" placeholder="قیمت (تومان)" style="margin-bottom:8px" />
+      <input class="input" id="new-prod-price" type="number" placeholder="قیمت اصلی (تومان)" style="margin-bottom:8px" />
+      ${productDiscountHtml("new-prod", null)}
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
-      ${productProvisionFieldsHtml(panelServers)}
+      ${productProvisionFieldsHtml(panelServers, bankAllowed)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <div class="field-error" id="new-prod-error"></div>
       <button class="btn" id="new-prod-save">➕ افزودن محصول</button>
@@ -4894,7 +4911,9 @@ async function renderAdminProducts(body) {
     const isDirect = sourceEl && sourceEl.value === "direct";
     const durationUnlimited = isDirect && newDurUnlimitedCb && newDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : (Number(document.getElementById("new-prod-duration").value) || 30);
-    const payload = { category_id: categoryId, name, price, duration_days: duration, description: desc };
+    const disc = readProductDiscount("new-prod", price, errBox);
+    if (!disc) return;
+    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
       const volumeUnlimited = newVolUnlimitedCb && newVolUnlimitedCb.checked;
@@ -4906,6 +4925,13 @@ async function renderAdminProducts(body) {
       payload.provision_server_id = provision_server_id;
       payload.auto_provision_volume_gb = auto_provision_volume_gb;
     }
+    const creditVolEl = document.getElementById("new-prod-credit-volume");
+    if (creditVolEl) {
+      const creditVolume = Number(creditVolEl.value);
+      if (!creditVolume || creditVolume < 0) { errBox.textContent = "حجم (گیگابایت) را مشخص کنید."; return; }
+      payload.is_auto_provision = true;
+      payload.auto_provision_volume_gb = creditVolume;
+    }
     payload.payment_methods = readProductPaymentMethodsFields(body);
     try {
       await api("/api/admin/products", { method: "POST", body: JSON.stringify(payload) });
@@ -4916,10 +4942,12 @@ async function renderAdminProducts(body) {
 
 async function renderAdminEditProduct(body) {
   const { product: p, categoryId, categoryName } = adminCatalogView;
-  const panelServers = p.is_auto_provision
+  const isCreditAuto = !!p.is_auto_provision && !p.provision_server_id;
+  const panelServers = !isCreditAuto
     ? await api("/api/admin/panel-servers-lite").catch(() => [])
     : [];
-  const isDirectEditable = p.is_auto_provision && panelServers.length > 0;
+  const isDirectEditable = !isCreditAuto && panelServers.length > 0;
+  const startDirect = !!p.provision_server_id;
   const durationIsUnlimited = p.duration_days === 0;
   const volumeIsUnlimited = p.auto_provision_volume_gb === 0;
   body.innerHTML = `
@@ -4928,17 +4956,24 @@ async function renderAdminEditProduct(body) {
       <div class="eyebrow" style="margin-top:0">✏️ ویرایش محصول</div>
       <label class="field-label">نام محصول</label>
       <input class="input" id="edit-prod-name" type="text" value="${(p.name || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
-      <label class="field-label">قیمت (تومان)</label>
-      <input class="input" id="edit-prod-price" type="number" value="${p.price}" style="margin-bottom:10px" />
+      <label class="field-label">قیمت اصلی (تومان)</label>
+      <input class="input" id="edit-prod-price" type="number" value="${Number(p.compare_price || 0) > Number(p.price) ? p.compare_price : p.price}" style="margin-bottom:10px" />
+      ${productDiscountHtml("edit-prod", p)}
       <label class="field-label">مدت اعتبار (روز)</label>
       <input class="input" id="edit-prod-duration" type="number" value="${p.duration_days}" style="margin-bottom:${isDirectEditable ? "4" : "10"}px" ${durationIsUnlimited ? "disabled" : ""} />
       ${isDirectEditable ? `
-      <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+      <label id="edit-prod-dur-unl-wrap" style="display:${startDirect ? "flex" : "none"};align-items:center;gap:6px;margin-bottom:10px">
         <input type="checkbox" id="edit-prod-duration-unlimited" ${durationIsUnlimited ? "checked" : ""} /> ♾ مدت اعتبار نامحدود
       </label>` : ""}
       <label class="field-label">توضیحات (اختیاری)</label>
       <input class="input" id="edit-prod-desc" type="text" value="${(p.description || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
-      ${p.is_auto_provision ? (panelServers.length ? `
+      ${isDirectEditable ? `
+      <label class="field-label">منبع تأمین محصول</label>
+      <div style="display:flex;gap:14px;margin-bottom:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="edit-prod-source" value="bank" ${startDirect ? "" : "checked"} /> بانک کانفیگ</label>
+        <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="edit-prod-source" value="direct" ${startDirect ? "checked" : ""} /> اتصال مستقیم به پنل</label>
+      </div>
+      <div id="edit-prod-direct" style="display:${startDirect ? "" : "none"}">
       <label class="field-label">پنل / اینباند (اتصال مستقیم)</label>
       <select class="input" id="edit-prod-server" style="margin-bottom:8px">
         ${panelServers.map((s) => `<option value="${s.id}" ${s.id === p.provision_server_id ? "selected" : ""}>${s.name}</option>`).join("")}
@@ -4947,8 +4982,9 @@ async function renderAdminEditProduct(body) {
       <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
         <input type="checkbox" id="edit-prod-volume-unlimited" ${volumeIsUnlimited ? "checked" : ""} /> ♾ حجم نامحدود
       </label>
-      <p class="hint-text">🔌 با تغییر پنل، ساخت‌های بعدیِ همین محصول از پنل/اینباند جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده تغییر نمی‌کنند.</p>
-      ` : `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb ? p.auto_provision_volume_gb + " گیگ" : "نامحدود"}) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی باشی.</p>`) : ""}
+      <p class="hint-text">🔌 با تغییر پنل یا منبع، ساخت‌های بعدیِ همین محصول طبق تنظیم جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده و کانفیگ‌های باقی‌مانده در بانک تغییر نمی‌کنند.</p>
+      </div>
+      ` : (isCreditAuto ? `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb ? p.auto_provision_volume_gb + " گیگ" : "نامحدود"}) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی باشی.</p>` : "")}
       <div class="field-error" id="edit-prod-error"></div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn" id="edit-prod-save">💾 ذخیره تغییرات</button>
@@ -4968,6 +5004,12 @@ async function renderAdminEditProduct(body) {
       document.getElementById("edit-prod-duration").disabled = editDurUnlimitedCb.checked;
     });
   }
+  body.querySelectorAll('input[name="edit-prod-source"]').forEach((r) => r.addEventListener("change", () => {
+    const direct = body.querySelector('input[name="edit-prod-source"]:checked').value === "direct";
+    document.getElementById("edit-prod-direct").style.display = direct ? "" : "none";
+    document.getElementById("edit-prod-dur-unl-wrap").style.display = direct ? "flex" : "none";
+    document.getElementById("edit-prod-duration").disabled = direct && editDurUnlimitedCb && editDurUnlimitedCb.checked;
+  }));
   const editVolUnlimitedCb = document.getElementById("edit-prod-volume-unlimited");
   if (editVolUnlimitedCb) {
     editVolUnlimitedCb.addEventListener("change", () => {
@@ -4980,12 +5022,17 @@ async function renderAdminEditProduct(body) {
     const name = document.getElementById("edit-prod-name").value.trim();
     const price = Number(document.getElementById("edit-prod-price").value);
     const description = document.getElementById("edit-prod-desc").value.trim();
-    const durationUnlimited = editDurUnlimitedCb && editDurUnlimitedCb.checked;
+    const editSourceEl = body.querySelector('input[name="edit-prod-source"]:checked');
+    const editIsDirect = editSourceEl ? editSourceEl.value === "direct" : !!p.provision_server_id;
+    const durationUnlimited = editIsDirect && editDurUnlimitedCb && editDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : Number(document.getElementById("edit-prod-duration").value);
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
-    const payload = { name, price, duration_days: duration, description };
+    const disc = readProductDiscount("edit-prod", price, errBox);
+    if (!disc) return;
+    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
     const serverSel = document.getElementById("edit-prod-server");
-    if (serverSel) {
+    if (editSourceEl) payload.source = editIsDirect ? "direct" : "bank";
+    if (serverSel && editIsDirect) {
       const provision_server_id = Number(serverSel.value);
       const volumeUnlimited = editVolUnlimitedCb && editVolUnlimitedCb.checked;
       const auto_provision_volume_gb = volumeUnlimited ? 0 : Number(document.getElementById("edit-prod-volume").value);
@@ -5173,6 +5220,7 @@ async function renderAdminUsersList(body) {
     { k: "active", label: "فعال" },
     { k: "expired", label: "منقضی‌شده" },
     { k: "blocked", label: "بلاک‌شده" },
+    { k: "none", label: "بدون سرویس" },
   ];
 
   body.innerHTML = `
@@ -7064,3 +7112,44 @@ const headerWalletBtn = document.getElementById("header-wallet-btn");
 if (headerWalletBtn) headerWalletBtn.onclick = () => switchTab("wallet");
 
 bootstrapEntryGates();
+/*‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍*/
+// 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
+
+function productDiscountHtml(prefix, product) {
+  const active = product && Number(product.compare_price || 0) > Number(product.price || 0);
+  const sel = (v) => (active ? "price" : "none") === v ? "selected" : "";
+  let days = "";
+  if (active && product.discount_expires_at) {
+    const ms = new Date(String(product.discount_expires_at).replace(/Z?$/, "Z")).getTime() - Date.now();
+    if (!isNaN(ms)) days = Math.max(Math.ceil(ms / 86400000), 1);
+  }
+  let uses = "";
+  const mx = Number((active && product.discount_max_uses) || 0);
+  if (mx > 0) uses = Math.max(mx - Number(product.discount_used_count || 0), 1);
+  return `
+      <label class="field-label">تخفیف</label>
+      <select class="input" id="${prefix}-dmode" style="margin-bottom:8px">
+        <option value="none" ${sel("none")}>بدون تخفیف</option>
+        <option value="price" ${sel("price")}>قیمت جدید (بعد از تخفیف)</option>
+        <option value="pct" ${sel("pct")}>درصدی</option>
+      </select>
+      <input class="input" id="${prefix}-dval" type="number" placeholder="قیمت جدید (تومان) یا درصد" value="${active ? product.price : ""}" style="margin-bottom:10px" />
+      <input class="input" id="${prefix}-ddays" type="number" min="0" placeholder="مدت تخفیف (روز) - خالی = نامحدود" value="${days}" style="margin-bottom:8px" />
+      <input class="input" id="${prefix}-duses" type="number" min="0" placeholder="سقف تعداد خرید - خالی = نامحدود" value="${uses}" style="margin-bottom:6px" />
+      <div class="muted" style="font-size:12px;margin-bottom:10px">اگر هر دو پر باشند، هرکدام زودتر برسد تخفیف تمام می‌شود.</div>`;
+}
+
+function readProductDiscount(prefix, base, errBox) {
+  const mode = document.getElementById(prefix + "-dmode").value;
+  const v = Number(document.getElementById(prefix + "-dval").value) || 0;
+  const days = Math.max(Math.floor(Number(document.getElementById(prefix + "-ddays").value) || 0), 0);
+  const uses = Math.max(Math.floor(Number(document.getElementById(prefix + "-duses").value) || 0), 0);
+  if (mode === "none") return { price: base, compare_price: 0, discount_days: 0, discount_max_uses: 0 };
+  if (mode === "price") {
+    if (!(v > 0 && v < base)) { errBox.textContent = "قیمت جدید باید از قیمت اصلی کمتر باشد."; return null; }
+    return { price: v, compare_price: base, discount_days: days, discount_max_uses: uses };
+  }
+  if (!(v >= 1 && v <= 99)) { errBox.textContent = "درصد تخفیف باید بین 1 تا 99 باشد."; return null; }
+  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base, discount_days: days, discount_max_uses: uses };
+}
+

@@ -122,6 +122,18 @@ jobs:
               "ai_support", "bank_inquiry", "campaign_ai", "churn_prediction",
               "draft_stream", "extra_settings_schema", "receipt_ai_check",
               "db", "translation_engine", "renewal_reminders",
+              # Features merged from upstream (userbot, leak scanner, gift cards,
+              # channel tools, payment-gate conditions, price/waitlist UX).
+              "userbot", "userbot_admin", "leak_scanner", "leak_index", "leak_admin",
+              "gift_cards", "gift_card_handlers", "gift_card_ai", "gift_card_render",
+              "channel_ai", "admin_channel_posts", "admin_channel_plan",
+              "admin_channel_engage", "channel_post_scheduler", "channel_suggestions",
+              "post_image", "admin_post_brand", "price_display", "product_waitlist",
+              "jarvis_guide", "audit_forwarder",
+              "db.gift_cards", "db.leak_store", "db.userbot_store",
+              # New third-party dependencies from requirements.txt: prove the
+              # lean install can actually import them on the target box.
+              "telethon", "arabic_reshaper", "bidi",
           ]
           for name in modules:
               importlib.import_module(name)

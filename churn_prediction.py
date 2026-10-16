@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 import ai_support
 import ai_text
+import report_router
 from notification_i18n import localized, send_telegram
 from sub_info import fetch_sub_info
 
@@ -258,6 +259,10 @@ async def churn_offer_loop(bot, db, interval_seconds: int = 6 * 3600) -> None:
         sent = 0
         try:
             sent = await check_and_send_churn_offers(bot, db)
+            if sent:
+                await report_router.notify(bot, db, "churn", report_router.format_event(
+                    "پیشنهاد بازگشت به کاربران در خطر ریزش", [("تعداد پیشنهاد ارسال‌شده", sent)], icon="📉",
+                    note="پیشنهادها را هوش مصنوعی بر اساس الگوی مصرف و سابقه‌ی هر کاربر ساخته است."))
         except Exception:
             logger.exception("خطا در چرخه‌ی پیش‌بینی ریزش")
         try:

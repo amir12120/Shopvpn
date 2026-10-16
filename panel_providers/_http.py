@@ -80,8 +80,12 @@ def inbound_ids(server) -> list:
     return [int(legacy)] if legacy else []
 
 
-def new_limit_bytes(current_limit, used, add_gb, reset_usage: bool, preserve_remaining: bool) -> int:
-    """سقف حجم جدید بر اساس همان قواعد update_user در BasePanelProvider."""
+def new_limit_bytes(current_limit, used, add_gb, reset_usage: bool, preserve_remaining: bool,
+                    unlimited: bool = False) -> int:
+    """سقف حجم جدید بر اساس همان قواعد update_user در BasePanelProvider.
+    unlimited=True یعنی سرویس نامحدود شود (سقف 0 = بدون محدودیت)."""
+    if unlimited:
+        return 0
     current_limit = int(current_limit or 0)
     add = int(float(add_gb or 0) * (1024 ** 3))
     if reset_usage and preserve_remaining:

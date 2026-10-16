@@ -200,7 +200,8 @@ class WGDashboardProvider(BasePanelProvider):
         return PanelUserResult(username=username, subscription_url=file_text, raw=peer)
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         config = self._config()
         async with self._session() as session:
             peer, _ = await self._find(session, config, username)
@@ -208,7 +209,8 @@ class WGDashboardProvider(BasePanelProvider):
             limit_job, date_job = self._jobs(peer)
             used = gb_to_bytes(float(peer.get("total_data") or 0) + float(peer.get("cumu_data") or 0))
             current_limit = gb_to_bytes(limit_job["Value"]) if limit_job else 0
-            new_limit = new_limit_bytes(current_limit, used, add_volume_gb, reset_usage, preserve_remaining)
+            new_limit = new_limit_bytes(current_limit, used, add_volume_gb, reset_usage, preserve_remaining,
+                                         unlimited=unlimited_volume)
             if reset_usage:
                 await self._api(
                     session, "POST", f"resetPeerData/{quote(config)}", "ریست مصرف",

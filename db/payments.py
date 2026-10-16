@@ -941,10 +941,30 @@ class PaymentsMixin:
                 return 0
         return _int("card_gate_min_purchases"), _int("card_gate_min_days")
 
-    def card_gate_passed(self, user_id: int) -> bool:
-        """آیا شماره کارت برای این کاربر نمایش داده شود؟ اگر هر دو شرط خاموش باشند، یا
+    @staticmethod
+    def payment_gate_setting_keys(method_key: str) -> tuple:
+        """کلید تنظیم (حداقل خرید, حداقل روز) برای یک روش پرداخت. کارت‌به‌کارت (دستی و
+        خودکار) همچنان یک شرط مشترک دارد؛ بقیه‌ی درگاه‌ها هرکدام شرط جدا."""
+        if method_key in ("card", "card_auto"):
+            return "card_gate_min_purchases", "card_gate_min_days"
+        return f"pm_gate_min_purchases_{method_key}", f"pm_gate_min_days_{method_key}"
+
+    def get_payment_gate_settings(self, method_key: str) -> tuple:
+        """(حداقل خرید موفق, حداقل روز از استارت) برای یک روش پرداخت؛ 0 یعنی خاموش."""
+        def _int(key):
+            try:
+                return max(0, int(self.get_setting(key, "0") or 0))
+            except (TypeError, ValueError):
+                return 0
+        purchases_key, days_key = self.payment_gate_setting_keys(method_key)
+        return _int(purchases_key), _int(days_key)
+
+    def payment_gate_passed(self, user_id: int, method_key: str) -> bool:
+        """آیا این روش پرداخت برای این کاربر فعال است؟ اگر هر دو شرط خاموش باشند، یا
         کاربر ادمین باشد، یا یکی از دو شرط (خرید موفق / روز از استارت) برقرار باشد: بله."""
-        min_purchases, min_days = self.get_card_gate_settings()
+        if not method_key or method_key == "wallet":
+            return True
+        min_purchases, min_days = self.get_payment_gate_settings(method_key)
         if min_purchases <= 0 and min_days <= 0:
             return True
         if user_id is None:
@@ -967,8 +987,13 @@ class PaymentsMixin:
                     return True
         return False
 
+    def card_gate_passed(self, user_id: int) -> bool:
+        """سازگاری با کد قدیمی: شرط نمایش شماره کارت."""
+        return self.payment_gate_passed(user_id, "card")
+
     def card_method_blocked_for_user(self, user_id: int, method_key: str) -> bool:
-        return method_key in self.CARD_GATE_METHODS and not self.card_gate_passed(user_id)
+        """نام قدیمی حفظ شده؛ حالا برای همه‌ی روش‌های پرداخت (غیر از کیف پول) کار می‌کند."""
+        return not self.payment_gate_passed(user_id, method_key)
 
     def wallet_topup_allows_payment_method(self, method_key: str) -> bool:
         allowed = self.get_wallet_topup_payment_methods()

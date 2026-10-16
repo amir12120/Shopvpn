@@ -164,20 +164,39 @@ async def resolve_account(db, user_id: int, kind: str, value: str) -> dict:
     outcomes = await asyncio.gather(*[_safe_lookup(s, kind, value) for s in servers])
     out = {"candidates": [], "already_yours": False, "taken": False, "unreachable": False}
     failures = 0
-    for cand, err in outcomes:
+    link_host = _host(value) if kind == "link" else ""
+    # یک اشتراک/نام کاربری ممکن است روی چند پنل (از جمله پنل نمایندگی که الان
+    # زیر همین بات است) وجود داشته باشد. وضعیت همه‌ی نسخه‌ها را جداگانه می‌سنجیم،
+    # سپس به ازای هر نام کاربری فقط یک کاندید نشان می‌دهیم.
+    groups: dict = {}
+    for srv, (cand, err) in zip(servers, outcomes):
         if err is not None and "پیدا نشد" not in str(err):
             failures += 1
         if not cand:
             continue
+        srv_hosts = {_host(server_value(srv, "api_url", "")), _host(server_value(srv, "xui_sub_base_url", ""))}
+        matches_host = bool(link_host) and link_host in srv_hosts
         existing = await asyncio.to_thread(
             db.find_custom_config_by_panel_username, cand["server_id"], cand["username"]
         )
-        if existing:
-            if int(existing["user_id"]) == int(user_id):
-                out["already_yours"] = True
+        key = str(cand["username"]).lower()
+        groups.setdefault(key, []).append((cand, matches_host, existing))
+
+    for key, copies in groups.items():
+        if any(ex and int(ex["user_id"]) == int(user_id) for _, _, ex in copies):
+            out["already_yours"] = True
+            continue
+        owned_by_other = [(c, ex) for c, _, ex in copies if ex]
+        if owned_by_other:
+            cand, ex = owned_by_other[0]
+            if ex["source"] == "reseller" and kind == "link":
+                # کانفیگی که نماینده برای مشتری ساخته؛ با لینک ساب (اثبات مالکیت) به حساب
+                # مشتری منتقل می‌شود. با نام کاربری تنها انتقال نمی‌شود.
+                out["candidates"].append(dict(cand, claim_id=int(ex["id"]), claim_from=int(ex["user_id"])))
             else:
                 out["taken"] = True
             continue
-        out["candidates"].append(cand)
+        free = sorted(copies, key=lambda t: not t[1])
+        out["candidates"].append(free[0][0])
     out["unreachable"] = bool(failures) and failures == len(outcomes) and not out["candidates"]
     return out

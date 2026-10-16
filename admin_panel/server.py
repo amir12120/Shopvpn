@@ -62,13 +62,14 @@ from admin_panel.config_delivery_web import deliver_config_to_user_web
 from admin_panel.webpush import PUSH_ENABLED, send_push
 import fcm_client
 import report_router
-from reseller_auto_provision import provision_auto_config, ProvisionError
+from reseller_auto_provision import provision_auto_config, is_volume_credit_bot, ProvisionError
 from service_refund import quote_service_refund, refund_quote_text, grant_service_refund_credit, refund_result_text
 from service_alerts import send_service_alert_sync
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from stock_alerts import check_and_notify_low_stock
 import ai_support
 from renewal_engine import execute_renewal, RenewalError
+import leak_index
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES,
@@ -506,7 +507,7 @@ async def _server_status_loop():
                                 # با HTTP خام (توکن بات) به تاپیک «سرویس» ارسال می‌شود.
                                 try:
                                     await report_router.send_raw_to_group(
-                                        _bot_token(), db, "service",
+                                        _bot_token(), db, "panel",
                                         f"🔴 قطعی کانفیگ\n\nکانفیگ «{key}» آفلاین شده است.",
                                     )
                                 except Exception:
@@ -522,7 +523,7 @@ async def _server_status_loop():
                                 })
                                 try:
                                     await report_router.send_raw_to_group(
-                                        _bot_token(), db, "service",
+                                        _bot_token(), db, "panel",
                                         f"🟢 اتصال مجدد کانفیگ\n\nکانفیگ «{key}» دوباره آنلاین شد.",
                                     )
                                 except Exception:
@@ -792,18 +793,54 @@ def require_full_access_tenant(admin=Depends(get_current_admin)):
     return admin
 
 
+def _tenant_is_vip_credit() -> bool:
+    tenant = _current_tenant.get()
+    return is_volume_credit_bot(tenant.db, tenant.bot_id is None)
+
+
+def require_bank_tenant(admin=Depends(get_current_admin)):
+    """نمایندگی VIP (اعتبار حجمی) بانک کانفیگ ندارد."""
+    if _tenant_is_vip_credit():
+        raise HTTPException(403, tr("نمایندگی VIP بانک کانفیگ ندارد."))
+    return admin
+
+
+def _client_ip(request: Request) -> str:
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return fwd or (request.client.host if request.client else "") or "?"
+
+
 @app.post("/api/login")
-def api_login(body: LoginBody, response: Response):
+def api_login(body: LoginBody, response: Response, request: Request):
     tenant = resolve_tenant_by_slug(body.b or "")
     if not tenant:
         raise HTTPException(401, tr("این پنل در دسترس نیست."))
     admin = tenant.db.get_web_admin_by_username(body.username)
     if not admin or not admin["is_active"] or not verify_password(body.password, admin["password_hash"]):
+        ip = _client_ip(request)
+        report_router.fire_and_forget_raw(
+            tenant.bot_token, tenant.db, "login",
+            report_router.format_event("ورود ناموفق به پنل وب", [
+                ("نام کاربری", report_router.code(body.username[:64])),
+                ("IP", report_router.code(ip)),
+                ("وضعیت حساب", "" if not admin else ("غیرفعال" if not admin["is_active"] else "رمز اشتباه")),
+            ], icon="🚫", note="اگر این تلاش از شما نیست، رمز را عوض کنید."),
+            throttle_key=f"login-fail:{tenant.slug}:{ip}", throttle_seconds=120,
+        )
         raise HTTPException(401, tr("یوزرنیم یا پسورد اشتباه است."))
     token = create_session_token(
         ADMIN_PANEL_SECRET, admin["id"], admin["username"], admin["role"], tenant=tenant.slug,
     )
     tenant.db.touch_web_admin_login(admin["id"])
+    report_router.fire_and_forget_raw(
+        tenant.bot_token, tenant.db, "login",
+        report_router.format_event("ورود موفق به پنل وب", [
+            ("مدیر", report_router.code(admin["username"])),
+            ("نقش", admin["role"]),
+            ("IP", report_router.code(_client_ip(request))),
+        ], icon="🔐"),
+        throttle_key=f"login-ok:{tenant.slug}:{admin['id']}", throttle_seconds=600,
+    )
     response.set_cookie(
         COOKIE_NAME, token, httponly=True, samesite="lax", max_age=12 * 3600, path="/",
     )
@@ -1385,6 +1422,8 @@ def api_app_config(admin=Depends(get_current_admin)):
                     {"key": "price", "label": "قیمت (تومان)", "type": "number"},
                     {"key": "description", "label": "توضیحات", "type": "textarea"},
                     {"key": "duration_days", "label": "مدت اعتبار (روز)", "type": "number"},
+                    {"key": "source", "label": "منبع تأمین (خالی=بدون تغییر)", "type": "select",
+                     "options": [["bank", "بانک کانفیگ"], ["direct", "اتصال مستقیم به پنل"]]},
                     {"key": "provision_server_id", "label": "پنل VPN (فقط اتصال مستقیم)", "type": "select_remote",
                      "options_source": "/api/panel-servers-lite", "option_value_key": "id", "option_label_key": "name",
                      "nullable": True},
@@ -3342,6 +3381,7 @@ async def api_admin_custom_config_cut_access(custom_config_id: int, admin=Depend
         raise HTTPException(502, tr(f"قطع دسترسی ناموفق بود: {e}"))
     if result.subscription_url:
         (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], result.subscription_url))
+    leak_index.schedule_refresh(db, cc["id"])
     (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "cut_access",
         f"دسترسی قطع و لینک جدید صادر شد (پنل وب - {admin['username']})"))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_cut_access",
@@ -3646,6 +3686,9 @@ async def api_reseller_self_delete(config_id: int, admin=Depends(get_current_adm
     if not removed:
         raise HTTPException(404, tr("سرویس یافت نشد."))
     refunded = await grant_service_refund_credit(main_db, owner_id, quote, panel_deleted, cc["username"])
+    if refunded > 0:
+        await report_router.notify_raw(_bot_token(), db, "refund", report_router.build_refund_event(
+            owner_id, cc["username"], quote, refunded, "پنل وب نماینده"))
     await asyncio.to_thread(main_db.log_admin_action, admin["id"], "reseller_self_delete",
                             f"نماینده {owner_id} سرویس «{cc['username']}» را حذف کرد؛ برگشتی: {refunded} (پنل وب)",
                             "reseller", owner_id)
@@ -3702,6 +3745,9 @@ class ProductBody(BaseModel):
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
+    compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
+    discount_days: Optional[int] = None  # مدت اعتبار تخفیف (روز)؛ 0 = بدون محدودیت زمانی
+    discount_max_uses: Optional[int] = None  # سقف تعداد خرید با تخفیف؛ 0 = بدون سقف
 
 
 @app.get("/api/products")
@@ -3749,11 +3795,18 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
             raise HTTPException(403, tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
         if not body.is_auto_provision:
             raise HTTPException(403, tr("این نمایندگی فقط می‌تواند محصول خودکار (از اعتبار حجمی) بسازد؛ نه بانک کانفیگ دستی."))
+    if not (body.is_auto_provision or body.provision_server_id) and _tenant_is_vip_credit():
+        raise HTTPException(403, tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
     pid = db.add_product(
         body.category_id, body.name, body.price, body.description, body.duration_days,
         body.is_auto_provision or bool(body.provision_server_id), body.auto_provision_volume_gb,
         body.provision_server_id, payment_methods=body.payment_methods,
+        compare_price=max(int(body.compare_price or 0), 0),
     )
+    if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
+        db.edit_product(pid, compare_price=int(body.compare_price),
+                        discount_days=max(int(body.discount_days or 0), 0),
+                        discount_max_uses=max(int(body.discount_max_uses or 0), 0))
     pm_log = "همه" if not body.payment_methods else "، ".join(body.payment_methods)
     db.log_admin_action(admin["id"], "product_add", f"{body.name} | پرداخت: {pm_log} (پنل وب - {admin['username']})", "product", pid)
     return {"id": pid}
@@ -3770,6 +3823,9 @@ class ProductEditBody(BaseModel):
     source: Optional[str] = None
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
+    compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
+    discount_days: Optional[int] = None
+    discount_max_uses: Optional[int] = None
 
 
 @app.put("/api/products/{product_id}")
@@ -3783,6 +3839,8 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
 
     if body.source is not None and body.source not in ("bank", "direct"):
         raise HTTPException(status_code=400, detail=tr("منبع تأمین نامعتبر است."))
+    if body.source == "bank" and _tenant_is_vip_credit():
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
 
     # سنتینل Ellipsis یعنی «بدون تغییر» (به db.edit_product پاس داده می‌شود).
     is_auto_provision = ...
@@ -3835,15 +3893,23 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         product_id, body.name, body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, provision_server_id=provision_server_id,
         auto_provision_volume_gb=auto_provision_volume_gb, category_id=body.category_id,
+        compare_price=(max(int(body.compare_price), 0) if body.compare_price is not None else ...),
+        discount_days=(max(int(body.discount_days), 0) if body.discount_days is not None else ...),
+        discount_max_uses=(max(int(body.discount_max_uses), 0) if body.discount_max_uses is not None else ...),
     )
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
     return {"ok": True}
 
 
 @app.post("/api/products/{product_id}/toggle")
-def api_toggle_product(product_id: int, admin=Depends(require_permission("catalog"))):
-    db.toggle_product(product_id)
-    db.log_admin_action(admin["id"], "product_toggle", str(product_id), "product", product_id)
+async def api_toggle_product(product_id: int, admin=Depends(require_permission("catalog"))):
+    new_state = await asyncio.to_thread(db.toggle_product, product_id)
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "product_toggle", str(product_id), "product", product_id)
+    if new_state:
+        import product_waitlist
+        asyncio.create_task(product_waitlist.notify_waitlist(
+            db, product_id, product_waitlist.token_sender(tg_send, _bot_token())
+        ))
     return {"ok": True}
 
 
@@ -3885,18 +3951,18 @@ class ConfigsAddBody(BaseModel):
 
 
 @app.get("/api/products/{product_id}/configs")
-def api_product_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_product_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     stats = db.get_config_stats(product_id)
     return {"items": rows_to_list(db.get_unused_configs(product_id)), "used_count": stats["used"]}
 
 
 @app.get("/api/products/{product_id}/configs/used")
-def api_product_used_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_product_used_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     return {"items": rows_to_list(db.get_used_configs(product_id))}
 
 
 @app.delete("/api/products/{product_id}/configs/{config_id}/used")
-def api_delete_used_config(product_id: int, config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_delete_used_config(product_id: int, config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     row = db.admin_delete_bank_config(config_id)
     if not row or row["product_id"] != product_id:
         raise HTTPException(404, tr("کانفیگ یافت نشد."))
@@ -3909,7 +3975,7 @@ def api_delete_used_config(product_id: int, config_id: int, admin=Depends(requir
 
 
 @app.post("/api/products/{product_id}/configs")
-def api_add_configs(product_id: int, body: ConfigsAddBody, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_add_configs(product_id: int, body: ConfigsAddBody, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     links = [l.strip() for l in body.links.splitlines() if l.strip()]
     added, duplicates = db.add_configs(product_id, links)
     db.log_admin_action(admin["id"], "configs_add", f"{added} لینک به محصول #{product_id} (پنل وب - {admin['username']})", "product", product_id)
@@ -3917,7 +3983,7 @@ def api_add_configs(product_id: int, body: ConfigsAddBody, admin=Depends(require
 
 
 @app.delete("/api/configs/{config_id}")
-def api_delete_config(config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_delete_config(config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     row = db.get_config_by_id(config_id) if hasattr(db, "get_config_by_id") else None
     db.delete_config(config_id)
     if row:
@@ -5653,6 +5719,8 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
     username = body.api_username.strip()
     if body.panel_type in TOKEN_ONLY_PANEL_TYPES:
         username = username or TOKEN_ONLY_PANEL_TYPES[body.panel_type]
+    if body.panel_type == "pasarguard" and not username and body.api_password.strip().startswith("pg_key_"):
+        username = "apikey"
 
     if body.panel_type in INBOUND_SELECT_PANEL_TYPES:
         server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group)
@@ -6349,6 +6417,8 @@ def api_set_referral_settings(body: ReferralSettingsBody, admin=Depends(require_
     db.set_setting("referral_invite_bonus_enabled", "1" if body.invite_bonus_enabled else "0")
     db.set_setting("referral_invite_bonus_amount", str(body.invite_bonus_amount))
     db.set_setting("referral_invite_bonus_max_count", str(body.invite_bonus_max_count))
+    if body.enabled or body.free_config_enabled or body.invite_bonus_enabled:
+        db.set_setting("referral_button_enabled", "1")
     db.log_admin_action(admin["id"], "setting_change", f"referral settings (پنل وب - {admin['username']})", "setting", "referral")
     return {"ok": True}
 
@@ -7021,12 +7091,13 @@ class ButtonItemUpdateBody(BaseModel):
     key: str
     text: Optional[str] = None
     style: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 @app.post("/api/buttons/item")
 def api_buttons_update_item(body: ButtonItemUpdateBody, admin=Depends(require_permission("settings"))):
     try:
-        button_registry.update_item(db, body.group, body.key, text=body.text, style=body.style)
+        button_registry.update_item(db, body.group, body.key, text=body.text, style=body.style, enabled=body.enabled)
     except ValueError as e:
         raise HTTPException(400, str(e))
     db.log_admin_action(
@@ -7052,6 +7123,44 @@ def api_buttons_update_order(body: ButtonOrderUpdateBody, admin=Depends(require_
         admin["id"], "button_reorder",
         f"ترتیب گروه «{body.group}» تغییر کرد (پنل وب - {admin['username']})",
         "setting", body.group,
+    )
+    return {"ok": True}
+
+
+class ButtonLayoutBody(BaseModel):
+    group: str
+    order: list[str]
+    breaks: list[str] = []
+
+
+@app.post("/api/buttons/layout")
+def api_buttons_update_layout(body: ButtonLayoutBody, admin=Depends(require_permission("settings"))):
+    try:
+        button_registry.update_layout(db, body.group, body.order, body.breaks)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.log_admin_action(
+        admin["id"], "button_reorder",
+        f"چیدمان گروه «{body.group}» تغییر کرد (پنل وب - {admin['username']})",
+        "setting", body.group,
+    )
+    return {"ok": True}
+
+
+class AdminItemCategoriesBody(BaseModel):
+    overrides: dict[str, str]
+
+
+@app.post("/api/buttons/admin-item-categories")
+def api_buttons_admin_item_categories(body: AdminItemCategoriesBody, admin=Depends(require_permission("settings"))):
+    try:
+        button_registry.set_admin_item_categories(db, body.overrides)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.log_admin_action(
+        admin["id"], "button_reorder",
+        f"دسته‌ی دکمه‌های پنل مدیریت جابجا شد (پنل وب - {admin['username']})",
+        "setting", "admin_item_categories",
     )
     return {"ok": True}
 

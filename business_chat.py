@@ -442,8 +442,8 @@ def create_business_router(db, language_mw=None) -> Router:
             [InlineKeyboardButton(text=f"{_onoff(sales)} {tr('کارت خرید داخل چت بیزنس')}", callback_data="adm_biz_sales")],
             [InlineKeyboardButton(text=tr("🔗 اتصال‌ها"), callback_data="adm_biz_conns")],
             [InlineKeyboardButton(text=f"{tr('🤝 چت‌های تحویل‌شده به انسان')} ({humans})", callback_data="adm_biz_humans")],
-            [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
         ]
+        rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")])
         await _show(call, text, _admin_kb_rows(rows))
 
     @router.callback_query(F.data == "adm_business_settings")

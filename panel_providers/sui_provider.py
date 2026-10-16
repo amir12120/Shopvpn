@@ -150,7 +150,8 @@ class SUIProvider(BasePanelProvider):
         return PanelUserResult(username=username, subscription_url=url, raw=client)
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         async with self._session() as session:
             client = await self._find(session, username)
             updated = dict(client)
@@ -158,7 +159,8 @@ class SUIProvider(BasePanelProvider):
                 current = int(client.get("expiry") or 0)
                 updated["expiry"] = max(current, int(time.time())) + add_days * 86400
             used = int(client.get("up") or 0) + int(client.get("down") or 0)
-            updated["volume"] = new_limit_bytes(client.get("volume"), used, add_volume_gb, reset_usage, preserve_remaining)
+            updated["volume"] = new_limit_bytes(client.get("volume"), used, add_volume_gb, reset_usage, preserve_remaining,
+                                                     unlimited=unlimited_volume)
             if reset_usage:
                 updated["up"] = 0
                 updated["down"] = 0

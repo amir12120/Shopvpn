@@ -53,13 +53,31 @@ async def execute_renewal(db, order) -> str:
         try:
             provider = get_provider(server)
             before = await renewal_log.service_snapshot(db, cc, provider)
+            # تمدید کامل: مصرف ریست نمی‌شود؛ حجم بسته‌ی جدید مستقیماً روی سقف قبلی جمع می‌شود
+            # (در نتیجه حجم باقیمانده + بسته‌ی جدید)، دقیقاً مثل زمان که روی زمان باقیمانده جمع می‌شود.
+            # فرمول قبلی (سقف = باقیمانده + بسته، سپس ریست مصرف) به موفق‌شدن مرحله‌ی ریست وابسته بود؛
+            # اگر ریست اعمال نمی‌شد، باقیمانده‌ی نهایی می‌شد «دو برابرِ باقیمانده‌ی قبلی» و بسته‌ی جدید گم می‌شد.
+            # فقط وقتی سقف فعلی مشخص و محدود نباشد (سرویس نامحدود/وضعیت نامعلوم)، رفتار قبلی حفظ می‌شود.
+            reset_usage = (mode == "full")
+            preserve_remaining = (mode == "full")
+            if mode == "full" and add_volume and before.get("total_bytes"):
+                reset_usage = False
+                preserve_remaining = False
+            # پلن با حجم ۰ یعنی «نامحدود»: در تمدید کامل/حجم باید سقف حجم سرویس هم نامحدود شود
+            # (قبلاً add_volume=0 فقط «بدون تغییر حجم» تلقی می‌شد و فقط زمان اضافه می‌شد).
+            unlimited_volume = mode in ("full", "volume") and not add_volume
+            if unlimited_volume:
+                preserve_remaining = False
             await provider.update_user(
-                cc["username"], add_volume_gb=add_volume, add_days=add_days, reset_usage=(mode == "full"),
-                preserve_remaining=(mode == "full"), **provider_kwargs(provider, renewal_users),
+                cc["username"], add_volume_gb=add_volume, add_days=add_days, reset_usage=reset_usage,
+                preserve_remaining=preserve_remaining, unlimited_volume=unlimited_volume,
+                **provider_kwargs(provider, renewal_users),
             )
-            if mode == "full" and add_volume:
-                # سقف واقعیِ بعد از preserve_remaining را از خود پنل می‌خوانیم تا رکورد
-                # محلی دقیقاً هم‌سو با پنل بماند (نه با محاسبه‌ی جداگانه و احتمالاً ناهم‌خوان).
+            if unlimited_volume:
+                set_volume_gb = 0
+            elif mode == "full" and add_volume:
+                # سقف واقعیِ بعد از preserve_remaining را از خود پنل می‌خوانیم تا رکورد‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
+                # محلی دقیقاً هم‌سو با پنل بماند (نه با محاسبه‌ی جداگانه و احتمالاً ناهم‌خوان).‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
                 usage = await provider.get_user_usage(cc["username"])
                 set_volume_gb = usage["data_limit_bytes"] / (1024 ** 3)
         except PanelError as e:

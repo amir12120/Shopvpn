@@ -303,6 +303,42 @@ class PanelsMixin:
             )
 
 
+    def bump_report_topic_stat(self, chat_id: int, topic_key: str) -> None:
+        """شمارنده‌ی روزانه‌ی پیام‌های ارسال‌شده به هر تاپیک (برای صفحه‌ی آمار مدیریت تاپیک‌ها)."""
+        now = datetime.utcnow()
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO report_topic_stats (chat_id, topic_key, day, count, last_at) VALUES (?, ?, ?, 1, ?) "
+                "ON CONFLICT(chat_id, topic_key, day) DO UPDATE SET count=count+1, last_at=excluded.last_at",
+                (chat_id, topic_key, now.strftime("%Y-%m-%d"), now.isoformat()),
+            )
+            if now.minute == 0 and now.second < 5:
+                conn.execute(
+                    "DELETE FROM report_topic_stats WHERE day < ?",
+                    ((now - timedelta(days=90)).strftime("%Y-%m-%d"),),
+                )
+
+    def get_report_topic_stats(self, chat_id: int, days: int = 7) -> dict:
+        """{topic_key: {"count": تعداد در بازه, "today": امروز, "last_at": آخرین ارسال}}"""
+        now = datetime.utcnow()
+        since = (now - timedelta(days=max(days - 1, 0))).strftime("%Y-%m-%d")
+        today = now.strftime("%Y-%m-%d")
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT topic_key, day, count, last_at FROM report_topic_stats WHERE chat_id=? AND day>=?",
+                (chat_id, since),
+            ).fetchall()
+        out = {}
+        for r in rows:
+            e = out.setdefault(r["topic_key"], {"count": 0, "today": 0, "last_at": None})
+            e["count"] += r["count"]
+            if r["day"] == today:
+                e["today"] += r["count"]
+            if r["last_at"] and (e["last_at"] is None or r["last_at"] > e["last_at"]):
+                e["last_at"] = r["last_at"]
+        return out
+
+
     def get_latest_panel_health_event_id(self) -> int:
         with self._get_conn() as conn:
             row = conn.execute("SELECT MAX(id) m FROM panel_health_events").fetchone()

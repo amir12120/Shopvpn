@@ -320,7 +320,8 @@ class MarzneshinProvider(BasePanelProvider):
         return sub_url
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         async with self._session() as session:
             token = await self._get_token(session)
             headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
@@ -356,7 +357,9 @@ class MarzneshinProvider(BasePanelProvider):
             # دستی)، حجم باقیمانده‌ی مصرف‌نشده حفظ و بستهٔ جدید رویش اضافه می‌شود - چون زمان
             # همیشه به همین شکل حفظ‌شونده محاسبه می‌شود. تمدید «افزایشی» (reset_usage=False)
             # همیشه روی سقف قبلی جمع می‌زند.
-            if reset_usage and preserve_remaining:
+            if unlimited_volume:
+                new_limit = 0  # 0 = نامحدود
+            elif reset_usage and preserve_remaining:
                 remaining = max(int(current.get("data_limit") or 0) - int(current.get("used_traffic") or 0), 0)
                 new_limit = remaining + int(add_volume_gb * (1024 ** 3))
             elif add_volume_gb:

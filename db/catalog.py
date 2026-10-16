@@ -252,7 +252,8 @@ class CatalogMixin:
     def add_product(self, category_id: int, name: str, price: int, description: str = "", duration_days: int = 30,
                      is_auto_provision: bool = False, auto_provision_volume_gb: int = None,
                      provision_server_id: int = None, payment_methods=None,
-                     base_users: int = 0, extra_user_price: int = 0, max_users: int = 0) -> int:
+                     base_users: int = 0, extra_user_price: int = 0, max_users: int = 0,
+                     compare_price: int = 0) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -263,22 +264,53 @@ class CatalogMixin:
         base_users = max(int(base_users or 0), 0) if is_auto_provision else 0
         extra_user_price = max(int(extra_user_price or 0), 0)
         max_users = max(int(max_users or 0), 0)
+        compare_price = max(int(compare_price or 0), 0)
         if not base_users or extra_user_price <= 0 or max_users <= base_users:
             extra_user_price, max_users = 0, 0
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO products (category_id, name, price, description, duration_days, "
                 "is_auto_provision, auto_provision_volume_gb, provision_server_id, payment_methods, "
-                "base_users, extra_user_price, max_users) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "base_users, extra_user_price, max_users, compare_price) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price, description, duration_days,
                  1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, pm_value,
-                 base_users, extra_user_price, max_users),
+                 base_users, extra_user_price, max_users, compare_price),
             )
             return cur.lastrowid
 
 
+    def expire_product_discounts(self) -> int:
+        """تخفیف محصولاتی که مهلتشان تمام شده یا سقف تعداد خریدشان پر شده را تمام می‌کند
+        و قیمت را به قیمت اصلی (compare_price) برمی‌گرداند. ارزان است و قبل از هر خواندن
+        محصول صدا زده می‌شود، پس انقضا دقیق است و به حلقه‌ی ساعتی وابسته نیست."""
+        now = datetime.utcnow().isoformat()
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE products SET price=compare_price, compare_price=0, discount_expires_at=NULL, "
+                "discount_max_uses=0, discount_used_count=0 "
+                "WHERE COALESCE(compare_price,0) > price AND ("
+                "(discount_expires_at IS NOT NULL AND discount_expires_at<>'' AND discount_expires_at<=?) "
+                "OR (COALESCE(discount_max_uses,0) > 0 AND COALESCE(discount_used_count,0) >= discount_max_uses))",
+                (now,),
+            )
+            return cur.rowcount
+
+    def _count_product_discount_use(self, conn, order_id: int):
+        """بعد از تایید سفارش عادی، یک مصرف از سقف تعداد تخفیف محصول کم می‌کند (به‌ازای تعداد خرید)."""
+        row = conn.execute(
+            "SELECT product_id, quantity, COALESCE(is_renewal,0) r FROM orders WHERE id=?", (order_id,)
+        ).fetchone()
+        if not row or row["r"] or not row["product_id"]:
+            return
+        conn.execute(
+            "UPDATE products SET discount_used_count=COALESCE(discount_used_count,0)+? "
+            "WHERE id=? AND COALESCE(compare_price,0) > price AND COALESCE(discount_max_uses,0) > 0",
+            (max(int(row["quantity"] or 1), 1), row["product_id"]),
+        )
+
     def get_products(self, category_id: int, active_only=True):
+        self.expire_product_discounts()
         with self._get_conn() as conn:
             if active_only:
                 rows = conn.execute(
@@ -293,6 +325,7 @@ class CatalogMixin:
 
 
     def get_all_products(self):
+        self.expire_product_discounts()
         with self._get_conn() as conn:
             return conn.execute(
                 "SELECT p.*, c.name as category_name FROM products p "
@@ -315,6 +348,7 @@ class CatalogMixin:
 
 
     def get_product(self, product_id: int):
+        self.expire_product_discounts()
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
 
@@ -325,12 +359,37 @@ class CatalogMixin:
             if row:
                 new_val = 0 if row["is_active"] else 1
                 conn.execute("UPDATE products SET is_active=? WHERE id=?", (new_val, product_id))
+                return new_val
+            return None
+
+    def add_product_waitlist(self, product_id: int, user_id: int) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO product_waitlist (product_id, user_id) VALUES (?, ?)",
+                (product_id, user_id),
+            )
+            return cur.rowcount > 0
+
+    def get_product_waitlist(self, product_id: int) -> list:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM product_waitlist WHERE product_id=? ORDER BY created_at, rowid",
+                (product_id,),
+            ).fetchall()
+            return [r["user_id"] for r in rows]
+
+    def remove_product_waitlist(self, product_id: int, user_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM product_waitlist WHERE product_id=? AND user_id=?", (product_id, user_id)
+            )
 
 
     def edit_product(self, product_id: int, name: str = None, price: int = None,
                       description: str = None, duration_days: int = None,
                       is_auto_provision=..., auto_provision_volume_gb=...,
-                      provision_server_id=..., payment_methods=..., category_id: int = None):
+                      provision_server_id=..., payment_methods=..., category_id: int = None,
+                      compare_price=..., discount_days=..., discount_max_uses=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -355,6 +414,23 @@ class CatalogMixin:
         if payment_methods is not ...:
             fields.append("payment_methods=?")
             values.append(json.dumps(payment_methods, ensure_ascii=False) if payment_methods else None)
+        if compare_price is not ...:
+            # 0/None یعنی حذف تخفیف (خط‌خورده نمایش داده نمی‌شود)
+            fields.append("compare_price=?"); values.append(max(int(compare_price or 0), 0))
+            if int(compare_price or 0) <= 0:
+                # با حذف تخفیف، محدودیت‌ها و شمارنده هم پاک می‌شوند
+                fields.append("discount_expires_at=NULL")
+                fields.append("discount_max_uses=0")
+                fields.append("discount_used_count=0")
+        if compare_price is not ... and int(compare_price or 0) > 0:
+            # هر بار تخفیف جدید ثبت شود، محدودیت‌ها از نو (بر اساس مقدار داده‌شده) شروع می‌شوند
+            days = 0 if discount_days is ... else max(int(discount_days or 0), 0)
+            uses = 0 if discount_max_uses is ... else max(int(discount_max_uses or 0), 0)
+            if discount_days is not ... or discount_max_uses is not ...:
+                expires = (datetime.utcnow() + timedelta(days=days)).isoformat() if days else None
+                fields.append("discount_expires_at=?"); values.append(expires)
+                fields.append("discount_max_uses=?"); values.append(uses)
+                fields.append("discount_used_count=0")
         if not fields:
             return
         values.append(product_id)
@@ -390,6 +466,7 @@ class CatalogMixin:
     def delete_product(self, product_id: int):
         with self._get_conn() as conn:
             conn.execute("DELETE FROM products WHERE id=?", (product_id,))
+            conn.execute("DELETE FROM product_waitlist WHERE product_id=?", (product_id,))
 
     # -----------------------------------------------------------------------
     # مخزن کانفیگ (بانک لینک)
@@ -1130,6 +1207,45 @@ class CatalogMixin:
             ).fetchall()
 
 
+    def get_expiring_services_overview(self, days: int = 3, limit: int = 15) -> dict:
+        """سرویس‌های فعالی که تا N روز آینده منقضی می‌شوند (فقط‌خواندنی، نزدیک‌ترین انقضا اول)."""
+        days = max(1, min(int(days), 60))
+        limit = max(1, min(int(limit), 50))
+        now = datetime.utcnow()
+        now_iso, end_iso = now.isoformat(), (now + timedelta(days=days)).isoformat()
+        custom_where = "cc.status='active' AND cc.expires_at IS NOT NULL AND cc.expires_at>? AND cc.expires_at<=?"
+        bank_where = "c.is_used=1 AND c.is_disabled=0 AND c.expires_at IS NOT NULL AND c.expires_at>? AND c.expires_at<=?"
+        with self._get_conn() as conn:
+            custom = conn.execute(
+                "SELECT 'custom' AS kind, cc.id AS id, cc.user_id AS user_id, u.username AS username, "
+                "cc.expires_at AS expires_at, cc.panel_server_id AS panel_server_id "
+                "FROM custom_configs cc LEFT JOIN users u ON u.telegram_id=cc.user_id "
+                f"WHERE {custom_where} ORDER BY cc.expires_at LIMIT ?",
+                (now_iso, end_iso, limit),
+            ).fetchall()
+            bank = conn.execute(
+                "SELECT 'bank' AS kind, c.id AS id, c.assigned_user_id AS user_id, u.username AS username, "
+                "c.expires_at AS expires_at, NULL AS panel_server_id "
+                "FROM configs c LEFT JOIN users u ON u.telegram_id=c.assigned_user_id "
+                f"WHERE {bank_where} ORDER BY c.expires_at LIMIT ?",
+                (now_iso, end_iso, limit),
+            ).fetchall()
+            custom_total = conn.execute(
+                f"SELECT COUNT(*) c FROM custom_configs cc WHERE {custom_where}", (now_iso, end_iso)
+            ).fetchone()["c"]
+            bank_total = conn.execute(
+                f"SELECT COUNT(*) c FROM configs c WHERE {bank_where}", (now_iso, end_iso)
+            ).fetchone()["c"]
+        rows = sorted((dict(r) for r in list(custom) + list(bank)), key=lambda r: r["expires_at"])[:limit]
+        return {
+            "days": days,
+            "total_expiring": custom_total + bank_total,
+            "direct_panel_services": custom_total,
+            "bank_configs": bank_total,
+            "services": rows,
+        }
+
+
     def get_expiring_configs_for_user(self, user_tg_id: int, days_before: int = None):
         """کانفیگ‌های فعال کاربر (خریداری‌شده از انبار + ساخته‌شده مستقیم روی پنل) که تا چند روز آینده منقضی می‌شوند."""
         if days_before is None:
@@ -1249,6 +1365,12 @@ class CatalogMixin:
             )
             new_id = cur.lastrowid
         self.add_custom_config_history(new_id, "purchase", f"{volume_gb} گیگ / {duration_days} روز")
+        if order_id:
+            try:
+                self.gift_attach_order(order_id, new_id, user_id)
+            except Exception:
+                import logging
+                logging.getLogger("catalog").exception("gift attach failed for order %s", order_id)
         return new_id
 
 

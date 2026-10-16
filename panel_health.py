@@ -57,7 +57,7 @@ def _minutes_since(iso: str):
 
 
 async def _alert_admins(bot, db, text: str) -> None:
-    await report_router.report(bot, db, "service", text, senior_only=True)
+    await report_router.report(bot, db, "panel", text, senior_only=True)
 
 
 def _seconds_since(iso: str):

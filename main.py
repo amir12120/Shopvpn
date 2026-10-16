@@ -104,6 +104,10 @@ async def main():
     reconcile_task = asyncio.create_task(
         manager.reconcile_resellers_loop(main_db, BOT_TOKEN, interval=10)
     )
+    import userbot
+    userbot_task = asyncio.create_task(userbot.run(main_db, BOT_TOKEN))
+    import leak_index
+    leak_index_task = asyncio.create_task(leak_index.run(main_db))
 
     try:
         await manager.wait_all()
@@ -120,6 +124,16 @@ async def main():
         reconcile_task.cancel()
         try:
             await reconcile_task
+        except (Exception, asyncio.CancelledError):
+            pass
+        userbot_task.cancel()
+        try:
+            await userbot_task
+        except (Exception, asyncio.CancelledError):
+            pass
+        leak_index_task.cancel()
+        try:
+            await leak_index_task
         except (Exception, asyncio.CancelledError):
             pass
         await manager.stop_all()

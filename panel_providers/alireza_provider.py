@@ -176,6 +176,7 @@ class AlirezaProvider(BasePanelProvider):
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False,
                            user_limit: int = None) -> PanelUserResult:
         async with await self._authed_session() as session:
             client, inbound_id, stats = await self._find(session, username)
@@ -185,7 +186,8 @@ class AlirezaProvider(BasePanelProvider):
             if add_days:
                 updated["expiryTime"] = max(current_expiry, now_ms) + add_days * 86400000
             used = int(stats.get("up") or 0) + int(stats.get("down") or 0)
-            updated["totalGB"] = new_limit_bytes(client.get("totalGB"), used, add_volume_gb, reset_usage, preserve_remaining)
+            updated["totalGB"] = new_limit_bytes(client.get("totalGB"), used, add_volume_gb, reset_usage, preserve_remaining,
+                                                    unlimited=unlimited_volume)
             updated["enable"] = True
             if user_limit is not None:
                 updated["limitIp"] = int(user_limit)

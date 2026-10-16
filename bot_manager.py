@@ -29,6 +29,8 @@ from config import (
 from database import Database
 from handlers_user import create_user_router
 from business_chat import create_business_router
+from userbot_admin import create_userbot_router
+from leak_admin import create_leak_router
 from handlers_admin import create_admin_router
 from renewal_reminders import renewal_reminder_loop
 from connect_alerts import connect_alert_loop
@@ -44,7 +46,11 @@ from daily_report import daily_report_loop
 from cleanup_loop import cleanup_loop
 from lottery_loop import lottery_loop
 from signup_gift import signup_gift_loop
+import gift_cards
+from gift_card_handlers import create_gift_router
+import report_router
 from report_router import ReportGroupGuardMiddleware
+from audit_forwarder import audit_forward_loop
 from global_switch import GlobalBotSwitchMiddleware
 import keyboards as kb
 import tutorial_hub
@@ -53,6 +59,7 @@ from i18n import (
     start_missing_tracking, stop_missing_tracking, pop_missing_lookups, merge_language_catalog,
 )
 from broadcast_i18n import send_scheduled_broadcast
+from channel_post_scheduler import channel_post_loop
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +80,13 @@ async def scheduled_broadcast_loop(bot, db):
                         failed+=1
                     await asyncio.sleep(0.05)
                 await asyncio.to_thread(db.mark_scheduled_broadcast, job["id"], "sent", sent, failed)
+                await report_router.notify(bot, db, "campaign", report_router.format_event(
+                    "ارسال همگانی زمان‌بندی‌شده انجام شد", [
+                        ("شناسه", report_router.code(f"#{job['id']}")),
+                        ("موفق", sent),
+                        ("ناموفق", failed),
+                        ("متن", (job["message_text"] or "")[:200]),
+                    ], icon="📣"))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -237,6 +251,63 @@ class AdminPresenceMiddleware:
         return await handler(event, data)
 
 
+_error_report_seen: dict = {}
+ERROR_REPORT_DEDUP_SECONDS = 600
+
+
+async def _report_error_to_group(bot, db, event: ErrorEvent) -> None:
+    """خطای پردازش‌نشده را (با حذف تکراری در ۱۰ دقیقه) در تاپیک «خطا» گزارش می‌دهد.
+    متن پیام/دکمه‌ی کاربر عمداً گزارش نمی‌شود؛ فقط نوع آپدیت و آیدی کاربر."""
+    try:
+        if report_router.get_chat_id(db) is None:
+            return
+        exc = event.exception
+        where = ""
+        tb = exc.__traceback__
+        while tb is not None and tb.tb_next is not None:
+            tb = tb.tb_next
+        if tb is not None:
+            where = f"{os.path.basename(tb.tb_frame.f_code.co_filename)}:{tb.tb_lineno} ({tb.tb_frame.f_code.co_name})"
+        signature = f"{type(exc).__name__}|{where}"
+        now = asyncio.get_event_loop().time()
+        last = _error_report_seen.get(signature)
+        if last is not None and now - last < ERROR_REPORT_DEDUP_SECONDS:
+            return
+        _error_report_seen[signature] = now
+        if len(_error_report_seen) > 500:
+            for k in [k for k, v in _error_report_seen.items() if now - v > ERROR_REPORT_DEDUP_SECONDS]:
+                _error_report_seen.pop(k, None)
+        update = event.update
+        kind = "callback_query" if update.callback_query else ("message" if update.message else "other")
+        user = (update.callback_query or update.message).from_user if (update.callback_query or update.message) else None
+        await report_router.notify(bot, db, "error", report_router.format_event(
+            "خطای پردازش‌نشده در بات", [
+                ("نوع", report_router.code(type(exc).__name__)),
+                ("پیام", str(exc)[:300]),
+                ("محل", report_router.code(where) if where else ""),
+                ("آپدیت", kind),
+                ("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or "") if user else ""),
+            ], icon="🚨", note="خطاهای تکراریِ مشابه تا ۱۰ دقیقه دوباره گزارش نمی‌شوند."))
+    except Exception:
+        logger.debug("گزارش خطا به گروه ناموفق بود.", exc_info=True)
+
+
+async def _announce_startup(bot, db) -> None:
+    """پس از راه‌اندازی بات اصلی، یک پیام کوتاه در تاپیک «سیستم» می‌گذارد (نسخه + زمان)."""
+    try:
+        await asyncio.sleep(5)
+        version = ""
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as fh:
+                version = fh.read().strip()
+        except OSError:
+            pass
+        await report_router.notify(bot, db, "system", report_router.format_event(
+            "بات راه‌اندازی شد", [("نسخه", report_router.code(version) if version else "")], icon="🟢"))
+    except Exception:
+        logger.debug("اعلان راه‌اندازی ناموفق بود.", exc_info=True)
+
+
 async def _global_error_handler(event: ErrorEvent) -> bool:
     """هندلر سراسری خطا.
 
@@ -375,7 +446,11 @@ class BotManager:
             )
             fsm_storage = MemoryStorage()
         dp = Dispatcher(storage=fsm_storage)
-        dp.errors.register(_global_error_handler)
+        async def _error_with_report(event: ErrorEvent, _bot=bot, _db=db) -> bool:
+            await _report_error_to_group(_bot, _db, event)
+            return await _global_error_handler(event)
+
+        dp.errors.register(_error_with_report)
         language_mw = LanguageMiddleware(db)
         dp.message.outer_middleware(language_mw)
         dp.callback_query.outer_middleware(language_mw)
@@ -409,6 +484,9 @@ class BotManager:
 
         if is_main_bot:
             dp.include_router(create_business_router(db, language_mw))
+            dp.include_router(create_userbot_router(db))
+            dp.include_router(create_leak_router(db))
+        dp.include_router(create_gift_router(db, is_main_bot=is_main_bot))
         dp.include_router(create_admin_router(db, is_main_bot=is_main_bot, bot_manager=self))
         dp.include_router(create_user_router(db, is_main_bot=is_main_bot, bot_manager=self))
 
@@ -466,10 +544,15 @@ class BotManager:
         panel_health_task = asyncio.create_task(panel_health_loop(bot, db)) if is_main_bot else None
         daily_report_task = asyncio.create_task(daily_report_loop(bot, db))
         scheduled_broadcast_task = asyncio.create_task(scheduled_broadcast_loop(bot, db))
+        channel_post_task = asyncio.create_task(channel_post_loop(bot, db))
         cleanup_task = asyncio.create_task(cleanup_loop(bot, db))
         lottery_task = asyncio.create_task(lottery_loop(bot, db))
         reseller_expiry_task = asyncio.create_task(db.reseller_expiry_loop(bot))
         signup_gift_task = asyncio.create_task(signup_gift_loop(bot, db))
+        gift_expiry_task = asyncio.create_task(gift_cards.expiry_loop(db, bot))
+        audit_task = asyncio.create_task(audit_forward_loop(bot, db))
+        if is_main_bot:
+            asyncio.create_task(_announce_startup(bot, db))
 
         self.instances[token] = {
             "bot": bot, "dp": dp, "task": task, "reminder_task": reminder_task,
@@ -477,9 +560,10 @@ class BotManager:
             "backup_task": backup_task, "cache_refresh_task": cache_refresh_task,
             "temp_msg_task": temp_msg_task, "extra_gateway_task": extra_gateway_task,
             "panel_health_task": panel_health_task, "daily_report_task": daily_report_task,
-            "scheduled_broadcast_task": scheduled_broadcast_task,
+            "scheduled_broadcast_task": scheduled_broadcast_task, "channel_post_task": channel_post_task,
             "cleanup_task": cleanup_task, "lottery_task": lottery_task,
             "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task,
+            "gift_expiry_task": gift_expiry_task, "audit_task": audit_task,
             "db_path": db_path,
         }
         logger.info("بات با db_path=%s راه‌اندازی شد.", db_path)
@@ -487,9 +571,10 @@ class BotManager:
 
     _STOP_TASK_KEYS = (
         "reminder_task", "connect_alert_task", "churn_offer_task", "backup_task",
-        "scheduled_broadcast_task", "cache_refresh_task", "temp_msg_task",
+        "scheduled_broadcast_task", "channel_post_task", "cache_refresh_task", "temp_msg_task",
         "extra_gateway_task", "panel_health_task", "daily_report_task",
         "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task",
+        "gift_expiry_task", "audit_task",
     )
 
     async def stop_bot(self, token: str) -> bool:

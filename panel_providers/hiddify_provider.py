@@ -177,7 +177,8 @@ class HiddifyProvider(BasePanelProvider):
             return False
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         async with self._session() as session:
             user = await self._find_by_name(session, username)
             # تمدید «کامل» (reset_usage=True) یعنی مصرف صفر می‌شود. سقف حجم جدید به دو
@@ -191,7 +192,9 @@ class HiddifyProvider(BasePanelProvider):
             #     که زمان (package_days) همیشه جمعی محاسبه می‌شود و این ناهم‌خوانی همان
             #     مشکل گزارش‌شده بود.
             # تمدید «افزایشی» (reset_usage=False) همیشه روی سقف قبلی اضافه می‌شود.
-            if reset_usage and preserve_remaining:
+            if unlimited_volume:
+                new_limit = 0  # 0 = نامحدود
+            elif reset_usage and preserve_remaining:
                 remaining = max(
                     float(user.get("usage_limit_GB") or 0) - float(user.get("current_usage_GB") or 0), 0,
                 )
@@ -259,6 +262,14 @@ class HiddifyProvider(BasePanelProvider):
                         raise PanelError(f"خطا در تغییر نام کاربر (کد {resp.status}): {text[:300]}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
+
+    supports_fingerprints = True
+
+    async def get_fingerprints(self, username: str) -> list:
+        """UUID کاربر، که در هیدیفای همزمان شناسه‌ی کاربر و توکن لینک اشتراک است."""
+        async with self._session() as session:
+            user = await self._find_by_name(session, username)
+        return [str(user["uuid"])] if user.get("uuid") else []
 
     async def revoke_credentials(self, username: str) -> PanelUserResult:
         """روی هیدیفای خودِ UUID هم شناسه‌ی کاربر و هم لینک اشتراک است، پس

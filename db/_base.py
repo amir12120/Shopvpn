@@ -345,6 +345,35 @@ class DatabaseBase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_scheduled_broadcasts_status_time ON scheduled_broadcasts(status, scheduled_at);
 
+                CREATE TABLE IF NOT EXISTS channel_posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER,
+                    channel_id TEXT,
+                    message_id INTEGER,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    angle TEXT,
+                    caption TEXT NOT NULL,
+                    button_text TEXT,
+                    deeplink TEXT,
+                    photo_id TEXT,
+                    is_pinned INTEGER DEFAULT 0,
+                    error TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    sent_at TEXT,
+                    scheduled_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_channel_posts_status ON channel_posts(status, id);
+
+                CREATE TABLE IF NOT EXISTS channel_post_clicks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    clicked_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_channel_post_clicks_post ON channel_post_clicks(post_id);
+                CREATE INDEX IF NOT EXISTS idx_channel_post_clicks_user ON channel_post_clicks(user_id, clicked_at);
+
                 CREATE TABLE IF NOT EXISTS wallet_transfers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sender_id INTEGER NOT NULL,
@@ -499,6 +528,15 @@ class DatabaseBase:
                     PRIMARY KEY (chat_id, topic_key)
                 );
 
+                CREATE TABLE IF NOT EXISTS report_topic_stats (
+                    chat_id INTEGER NOT NULL,
+                    topic_key TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    last_at TEXT,
+                    PRIMARY KEY (chat_id, topic_key, day)
+                );
+
                 CREATE TABLE IF NOT EXISTS wallet_topups (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -627,6 +665,88 @@ class DatabaseBase:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (conn_row, chat_id, message_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS userbot_chats (
+                    chat_id INTEGER PRIMARY KEY,
+                    mode TEXT DEFAULT 'auto',
+                    greeted INTEGER DEFAULT 0,
+                    first_name TEXT DEFAULT '',
+                    username TEXT DEFAULT '',
+                    msg_count INTEGER DEFAULT 0,
+                    ai_count INTEGER DEFAULT 0,
+                    human_since TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS userbot_ai_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_userbot_ai_chat ON userbot_ai_messages (chat_id, id);
+
+                CREATE TABLE IF NOT EXISTS userbot_exceptions (
+                    user_id INTEGER PRIMARY KEY,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS userbot_stats (
+                    day TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    n INTEGER DEFAULT 0,
+                    PRIMARY KEY (day, key)
+                );
+
+                CREATE TABLE IF NOT EXISTS credential_index (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hash TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'secret',
+                    panel_server_id INTEGER,
+                    username TEXT,
+                    user_id INTEGER,
+                    config_id INTEGER NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (config_id, hash)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_credential_index_hash ON credential_index (hash);
+
+                CREATE TABLE IF NOT EXISTS leak_channels (
+                    channel_id INTEGER PRIMARY KEY,
+                    title TEXT DEFAULT '',
+                    username TEXT DEFAULT '',
+                    active INTEGER DEFAULT 1,
+                    last_post_id INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS leak_seen_posts (
+                    channel_id INTEGER NOT NULL,
+                    post_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (channel_id, post_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS leak_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    config_id INTEGER NOT NULL,
+                    channel_id INTEGER DEFAULT 0,
+                    channel_title TEXT DEFAULT '',
+                    post_link TEXT NOT NULL,
+                    matched_kind TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'new',
+                    warn_count INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TEXT,
+                    UNIQUE (config_id, post_link)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_leak_events_user ON leak_events (user_id);
 
                 CREATE TABLE IF NOT EXISTS ai_faq_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1067,6 +1187,13 @@ class DatabaseBase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reseller_credit_log_user ON reseller_credit_log(user_id);
 
+                CREATE TABLE IF NOT EXISTS product_waitlist (
+                    product_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (product_id, user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS order_surveys (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id INTEGER NOT NULL UNIQUE,
@@ -1418,13 +1545,13 @@ class DatabaseBase:
         "crypto_invoices", "support_messages", "support_conversations",
         "admin_presence", "tickets", "ticket_messages", "ticket_departments", "ticket_department_admins", "admin_logs",
         "abangateway_invoices", "blupal_invoices", "noapay_invoices", "extra_gateway_invoices", "custom_gateways", "custom_gateway_invoices",
-        "card_to_card_cards", "card_to_card_invoices", "panel_servers", "panel_health", "panel_health_events", "report_topics",
+        "card_to_card_cards", "card_to_card_invoices", "panel_servers", "panel_health", "panel_health_events", "report_topics", "report_topic_stats",
         "custom_config_pricing_tiers", "custom_config_products",
         "custom_config_product_pricing_tiers", "custom_configs",
         "custom_config_history", "location_change_log", "bulk_gift_jobs", "bulk_gift_items", "price_change_log", "lottery_log", "reseller_credit_log", "wallet_transactions", "wallet_tx_label", "coin_batches", "coin_wallet_credits", "reseller_requests",
         "reseller_product_credit", "reseller_inline_commission_log", "reseller_tiers",
         "reseller_tier_qty_discounts", "reseller_tier_requests",
-        "payment_webhook_logs", "web_push_subscriptions", "temp_messages", "order_surveys",
+        "payment_webhook_logs", "web_push_subscriptions", "temp_messages", "order_surveys", "channel_posts", "channel_post_clicks",
         "referral_fraud_flags",
         "settings",
     )
@@ -1589,6 +1716,9 @@ class DatabaseBase:
             ("mobile_app_tokens", "scope", "TEXT NOT NULL DEFAULT 'read,users,orders'"),
             ("support_messages", "is_read_by_admin", "INTEGER DEFAULT 0"),
             ("tickets", "claimed_by", "INTEGER"),
+            ("channel_posts", "scheduled_at", "TEXT"),
+            ("channel_posts", "kind", "TEXT DEFAULT 'post'"),
+            ("channel_posts", "poll_json", "TEXT"),
             ("tickets", "department_id", "INTEGER"),
             ("orders", "quantity", "INTEGER DEFAULT 1"),
             ("orders", "config_name", "TEXT"),
@@ -1640,6 +1770,13 @@ class DatabaseBase:
             ("products", "extra_user_price", "INTEGER DEFAULT 0"),
             ("products", "max_users", "INTEGER DEFAULT 0"),
             ("products", "base_users", "INTEGER DEFAULT 0"),
+            # قیمت قبل از تخفیف (فقط نمایشی: خط‌خورده کنار قیمت فعلی). 0 یعنی بدون تخفیف.
+            ("products", "compare_price", "INTEGER DEFAULT 0"),
+            # محدودیت تخفیف محصول: انقضا (UTC ISO)، سقف تعداد خرید و شمارنده‌ی خریدهای انجام‌شده.
+            # هر کدام زودتر برسد تخفیف خودکار تمام می‌شود و قیمت به قیمت اصلی برمی‌گردد.
+            ("products", "discount_expires_at", "TEXT"),
+            ("products", "discount_max_uses", "INTEGER DEFAULT 0"),
+            ("products", "discount_used_count", "INTEGER DEFAULT 0"),
             ("orders", "user_limit", "INTEGER"),
             ("orders", "renewal_user_limit", "INTEGER"),
             ("custom_configs", "user_limit", "INTEGER"),

@@ -118,7 +118,8 @@ class MikroTikProvider(BasePanelProvider):
         )
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           unlimited_volume: bool = False) -> PanelUserResult:
         raise PanelError(_UNSUPPORTED)
 
     async def revoke_credentials(self, username: str) -> PanelUserResult:

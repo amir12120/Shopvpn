@@ -76,6 +76,13 @@ class AdminBusiness(StatesGroup):
     waiting_exception_id = State()
 
 
+class AdminUserbot(StatesGroup):
+    waiting_first_message = State()
+    waiting_persona = State()
+    waiting_exception_id = State()
+    waiting_hours = State()
+
+
 class AdminTutorialDeviceAdd(StatesGroup):
     waiting_name = State()
 
@@ -279,8 +286,42 @@ class AdminCampaign(StatesGroup):
     waiting_goal = State()
     choosing = State()
     waiting_photo = State()
+    waiting_banner_colors = State()
     waiting_channel = State()
     confirming = State()
+    waiting_manual_caption = State()
+    waiting_manual_button = State()
+    waiting_manual_link = State()
+    waiting_manual_value = State()
+
+
+class AdminChannelPost(StatesGroup):
+    waiting_value = State()
+    waiting_schedule = State()
+
+
+class AdminChannelPlan(StatesGroup):
+    confirming = State()
+
+
+class AdminChannelAI(StatesGroup):
+    waiting_key = State()
+    waiting_text_model = State()
+    waiting_image_model = State()
+    waiting_logo = State()
+    waiting_banner_base_prompt = State()
+    waiting_style_ref = State()
+
+
+class AdminChannelEngage(StatesGroup):
+    waiting_topic = State()
+    confirming = State()
+
+
+class AdminPostBrand(StatesGroup):
+    waiting_color = State()
+    waiting_logo = State()
+    waiting_font = State()
 
 
 class AdminAddAdmin(StatesGroup):
@@ -426,6 +467,10 @@ class AdminRenewalSettings(StatesGroup):
     waiting_expiry_hours = State()
 
 
+class AdminChurnSettings(StatesGroup):
+    waiting_value = State()
+
+
 class AdminStockAlertSettings(StatesGroup):
     waiting_threshold = State()
 
@@ -434,6 +479,11 @@ class AdminMinAmountSettings(StatesGroup):
     """حداقل مبلغ مجاز برای هر روش پرداختِ داخلی (کارت/کریپتو/آبان‌گیت‌وی) +
     حداقل مبلغ شارژ کیف پول. کلید تنظیمی که در حال ویرایش است (مثلاً
     'min_amount_card') در state ذخیره می‌شود تا یک هندلر برای همه کافی باشد."""
+    waiting_value = State()
+
+
+class AdminPmGate(StatesGroup):
+    """مقدار شرط فعال‌سازی یک درگاه؛ کلید تنظیم در حال ویرایش در state می‌ماند."""
     waiting_value = State()
 
 
@@ -528,6 +578,12 @@ class AdminAddPanelServer(StatesGroup):
 
 class AdminEditProduct(StatesGroup):
     waiting_volume = State()
+    waiting_src_volume = State()
+    waiting_src_bank_days = State()
+    waiting_discount_price = State()
+    waiting_discount_percent = State()
+    waiting_discount_days = State()
+    waiting_discount_uses = State()
     waiting_sub_base_url = State()
     waiting_user_base = State()
     waiting_user_extra_price = State()

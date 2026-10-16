@@ -264,7 +264,7 @@ async def check_invoice(db, invoice) -> str:
 
 
 async def _notify_admins(db, bot, text: str):
-    await report_router.report(bot, db, "error", text)
+    await report_router.report(bot, db, "gateway", text)
 
 
 async def _finalize_reseller(db, bot, invoice) -> str:

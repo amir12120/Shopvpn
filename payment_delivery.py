@@ -17,6 +17,7 @@ from direct_panel_provision import provision_direct, ProvisionError as DirectPro
 from stock_alerts import check_and_notify_low_stock
 from renewal_engine import execute_renewal, RenewalError
 from notification_i18n import send_telegram
+import leak_index
 
 logger = logging.getLogger("payment_delivery")
 
@@ -75,10 +76,11 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
         except Exception as e:
             db.release_order_claim(order_id)
             return tr(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nبا پشتیبانی تماس بگیرید.")
-        db.add_custom_config(
+        new_cc_id = db.add_custom_config(
             order["user_id"], server["id"], result.username, order["custom_volume_gb"],
             duration_days, result.subscription_url, order_id=order_id,
         )
+        leak_index.schedule_refresh(db, new_cc_id)
         db.approve_custom_config_order(order_id)
         await deliver_config_to_user(
             bot, order["user_id"], "کانفیگ شخصی",
