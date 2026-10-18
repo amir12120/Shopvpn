@@ -339,6 +339,10 @@ EOF
 # behind. If the first word of ExecStart does not exist (an old Infisical
 # wrapper, a missing interpreter), rewrite the unit to start the venv Python
 # directly and verify that instead.
+if [ ! -f "$SERVICE_FILE" ]; then
+    echo "⛔️ The service file $SERVICE_FILE could not be written."
+    exit 1
+fi
 MISSING_BIN="$(unit_missing_binary "$SERVICE_FILE")"
 if [ -n "$MISSING_BIN" ]; then
     echo "⚠️ systemd cannot execute '$MISSING_BIN'; rewriting the service to start Python directly..."
