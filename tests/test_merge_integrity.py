@@ -77,6 +77,16 @@ UPSTREAM_FEATURE_MODULES = (
     "db/gift_cards.py",
     "db/leak_store.py",
     "db/userbot_store.py",
+    # --- upstream batch: competitive seasons, daily quiz, lootbox engagement,
+    # --- smart leak/channel discovery ---
+    "daily_quiz.py",
+    "engagement.py",
+    "engagement_handlers.py",
+    "leak_discovery.py",
+    "season_quiz_handlers.py",
+    "seasons.py",
+    "db/engagement.py",
+    "db/seasons.py",
 )
 
 # Upstream keeps re-uploading these with a module-level `from i18n import tr`
@@ -407,3 +417,189 @@ def test_payment_method_gate_is_wired_end_to_end():
 
     miniapp = (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
     assert miniapp.count("db.payment_gate_passed(") >= 4
+
+
+def test_seasons_quiz_and_lootbox_stay_wired():
+    """The seasons / daily-quiz / lootbox batch must stay reachable end to end.
+
+    Presence is not wiring: a season loop that is never scheduled, a router
+    that is imported but not included, or a lootbox order only the bot can
+    approve all look perfectly healthy in a diff and do nothing on a server.
+    """
+    bot_manager = (ROOT / "bot_manager.py").read_text(encoding="utf-8")
+    assert "import daily_quiz" in bot_manager
+    assert "import seasons" in bot_manager
+    assert "from season_quiz_handlers import create_season_quiz_router" in bot_manager
+    assert "from engagement_handlers import create_engagement_router" in bot_manager
+    assert "dp.include_router(create_season_quiz_router(db, is_main_bot=is_main_bot))" in bot_manager
+    assert "dp.include_router(create_engagement_router(db, is_main_bot=is_main_bot))" in bot_manager
+    assert "asyncio.create_task(seasons.season_loop(db, bot))" in bot_manager
+    assert "asyncio.create_task(daily_quiz.quiz_loop(db, bot))" in bot_manager
+
+    # Streak/points bookkeeping is triggered from the blocked-user touch path.
+    blocked_user = (ROOT / "blocked_user.py").read_text(encoding="utf-8")
+    assert "import engagement" in blocked_user
+    assert 'engagement.schedule_touch(self.db, data["bot"], user.id)' in blocked_user
+
+    # The mixins must ride on the Database class or their tables are unreachable.
+    db_init = (ROOT / "db/__init__.py").read_text(encoding="utf-8")
+    for needle in (
+        "from .seasons import SeasonsMixin",
+        "from .engagement import EngagementMixin",
+        "    SeasonsMixin,",
+        "    EngagementMixin,",
+    ):
+        assert needle in db_init, f"db/__init__.py lost {needle!r}"
+
+    db_seasons = (ROOT / "db/seasons.py").read_text(encoding="utf-8")
+    for needle in (
+        "class SeasonsMixin",
+        "def season_get_active(",
+        "def season_standings(",
+        "def season_user_stats(",
+        "def badge_list(",
+    ):
+        assert needle in db_seasons, f"db/seasons.py lost {needle!r}"
+
+    db_engagement = (ROOT / "db/engagement.py").read_text(encoding="utf-8")
+    for needle in (
+        "class EngagementMixin",
+        "def approve_lootbox_order(",
+        "def box_type_get(",
+        "def box_type_allows_payment_method(",
+    ):
+        assert needle in db_engagement, f"db/engagement.py lost {needle!r}"
+
+    seasons_py = (ROOT / "seasons.py").read_text(encoding="utf-8")
+    for needle in ("def season_loop(", "def enabled(", "def mask_name(", "def prize_lines(",
+                   "def fmt_local("):
+        assert needle in seasons_py, f"seasons.py lost {needle!r}"
+
+    daily_quiz = (ROOT / "daily_quiz.py").read_text(encoding="utf-8")
+    assert "def quiz_loop(" in daily_quiz
+    assert "def answer_quiz_for_message(" in daily_quiz
+    assert "def schedule_touch(" in (ROOT / "engagement.py").read_text(encoding="utf-8")
+
+    season_handlers = (ROOT / "season_quiz_handlers.py").read_text(encoding="utf-8")
+    assert "def create_season_quiz_router(" in season_handlers
+    assert "def show_season_for_message(" in season_handlers
+    engagement_handlers = (ROOT / "engagement_handlers.py").read_text(encoding="utf-8")
+    for needle in (
+        "def create_engagement_router(",
+        "def notify_lootbox_delivered(",
+        "def show_lootbox_for_message(",
+        "def show_progress_for_message(",
+    ):
+        assert needle in engagement_handlers, f"engagement_handlers.py lost {needle!r}"
+
+    # Bot side: the account-hub entries and the lootbox payment-method gate.
+    handlers_user = (ROOT / "handlers_user.py").read_text(encoding="utf-8")
+    assert "from daily_quiz import answer_quiz_for_message" in handlers_user
+    assert "from season_quiz_handlers import show_season_for_message" in handlers_user
+    assert "from engagement_handlers import show_lootbox_for_message, show_progress_for_message" in handlers_user
+    for action in ('"__open_season__"', '"__open_lootbox__"', '"__open_progress__"',
+                   '"__quiz_answer__:"'):
+        assert action in handlers_user, f"the account-hub entry {action} disappeared"
+    assert "db.box_type_allows_payment_method" in handlers_user
+    assert 'order["lootbox_type_id"]' in handlers_user
+
+    # All three approval surfaces must keep telling the buyer about the boxes.
+    handlers_admin = (ROOT / "handlers_admin.py").read_text(encoding="utf-8")
+    assert "db.approve_lootbox_order" in handlers_admin
+    assert "from engagement_handlers import notify_lootbox_delivered" in handlers_admin
+    assert "kb.user_group_stats_kb" in handlers_admin
+    payment_delivery = (ROOT / "payment_delivery.py").read_text(encoding="utf-8")
+    assert 'if order["lootbox_type_id"]:' in payment_delivery
+    assert "db.approve_lootbox_order(order_id)" in payment_delivery
+    assert "notify_lootbox_delivered(" in payment_delivery
+    assert '"lootbox_type_id" in keys and order["lootbox_type_id"]' in (
+        ROOT / "extra_gateway_user.py").read_text(encoding="utf-8")
+
+    # Schema, settings and ledger labels the feature needs to function at all.
+    db_base = (ROOT / "db/_base.py").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS leak_candidates" in db_base
+    assert "CREATE TABLE IF NOT EXISTS leak_queries" in db_base
+    assert '("orders", "lootbox_type_id", "INTEGER")' in db_base
+    db_constants = (ROOT / "db/constants.py").read_text(encoding="utf-8")
+    assert '"acct_show_lootbox"' in db_constants
+    assert '"acct_lootbox": {"label"' in db_constants
+    assert '"acct_orders", "acct_tutorial", "acct_referral", "acct_wallet", "acct_lootbox"' in db_constants
+    db_orders = (ROOT / "db/orders.py").read_text(encoding="utf-8")
+    for needle in ('"season_prize"', '"lootbox_buy"', '"milestone_prize"'):
+        assert needle in db_orders, f"db/orders.py lost {needle}"
+
+    keyboards = (ROOT / "keyboards.py").read_text(encoding="utf-8")
+    assert "def user_group_stats_kb(" in keyboards
+    assert '"acct_lootbox": ("acct_show_lootbox", "lb_menu")' in keyboards
+    assert '("adm_season_quiz"' in keyboards
+    assert '("adm_engage"' in keyboards
+    assert '"wal_progress"' in keyboards
+
+    # Mini app: the season endpoint feeds the season card in the account page.
+    miniapp = (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
+    assert '@app.get("/api/season")' in miniapp
+    assert "season_logic.enabled(db)" in miniapp
+    assert "db.season_standings(" in miniapp
+    app_js = (ROOT / "miniapp/static/app.js").read_text(encoding="utf-8")
+    assert "/api/season" in app_js
+    assert "function seasonCard(" in app_js
+
+
+def test_leak_discovery_stays_wired():
+    """Upstream's smart channel discovery must keep its crawler, store and admin UI."""
+    leak_discovery = (ROOT / "leak_discovery.py").read_text(encoding="utf-8")
+    for needle in ("class Discovery", "def message_text(", "def collect_refs(", "KEY_ENABLED"):
+        assert needle in leak_discovery, f"leak_discovery.py lost {needle!r}"
+
+    leak_scanner = (ROOT / "leak_scanner.py").read_text(encoding="utf-8")
+    assert "import leak_discovery as ld" in leak_scanner
+    assert "def install_realtime(" in leak_scanner
+    assert "async def run_dedicated(" in leak_scanner
+    assert "ld.Discovery(" in leak_scanner
+    assert "events.MessageEdited" in leak_scanner  # edited posts are re-scanned
+
+    main_py = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "import leak_scanner" in main_py
+    assert "leak_scanner.run_dedicated(main_db, BOT_TOKEN)" in main_py
+
+    db_leak_store = (ROOT / "db/leak_store.py").read_text(encoding="utf-8")
+    for needle in (
+        "def upsert_leak_candidate(",
+        "def ensure_leak_queries(",
+        "def list_prunable_leak_channels(",
+        "def record_leak_query_run(",
+    ):
+        assert needle in db_leak_store, f"db/leak_store.py lost {needle!r}"
+
+    leak_admin = (ROOT / "leak_admin.py").read_text(encoding="utf-8")
+    assert "import leak_discovery as ld" in leak_admin
+    assert '"adm_leak_d"' in leak_admin
+    assert "ld.KEY_ENABLED" in leak_admin  # the discovery settings menu
+
+    # Review callbacks must survive the report-group ownership check.
+    report_router = (ROOT / "report_router.py").read_text(encoding="utf-8")
+    assert '"lk:rot:", "lk:warn:", "lk:ign:",' in report_router
+    assert '"adm_user_configs:",' in report_router
+
+
+def test_rejected_upstream_paths_stay_out():
+    """Upstream re-uploads its own install scripts, docs and a root-level test on
+    every push. Those were rejected on purpose, so they must not creep back in."""
+    assert not (ROOT / "test_leak_discovery.py").exists(), "upstream's root test came back"
+    assert not (ROOT / "_.gitignore.txt").exists(), "upstream's gitignore dump came back"
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Config Leak Detection & Smart Discovery" not in readme, (
+        "an upstream README section replaced the fork's documentation"
+    )
+
+    manage = (ROOT / "manage.sh").read_text(encoding="utf-8")
+    assert "telegram_accounts_menu()" not in manage, "upstream's manage.sh menu came back"
+    # …while the fork's own service helpers are still there.
+    assert "wait_for_service_ready()" in manage
+    assert "restart_service_and_wait()" in manage
+
+    # Telegram session files hold live credentials and must never be committable.
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "userbot_session.json" in gitignore
+    assert "leak_session.json" in gitignore
