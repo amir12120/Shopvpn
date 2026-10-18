@@ -436,6 +436,7 @@ ACCOUNT_TOGGLE_KEYS = [
     ("acct_show_tutorial", "📚 نمایش «آموزش»", "1"),
     ("acct_show_referral", "🤝 نمایش «زیرمجموعه‌گیری من»", "1"),
     ("acct_show_wallet", "👛 نمایش «کیف پول من»", "1"),
+    ("acct_show_lootbox", "🎁 نمایش «صندوق شانس» (فقط وقتی صندوق شانس روشن باشد)", "1"),
     ("acct_show_add_service", "➕ نمایش «افزودن حساب (اتصال کانفیگ قبلی)»", "1"),
     ("acct_add_service_by_username", "🔑 افزودن حساب با نام کاربری کانفیگ (علاوه بر لینک ساب)", "1"),
     ("svc_show_renew_full", "🛠 دکمه «تمدید کامل سرویس»", "1"),
@@ -482,9 +483,10 @@ ACCOUNT_HUB_META = {
     "acct_tutorial": {"label": "آموزش", "default_text": "📚 آموزش"},
     "acct_referral": {"label": "زیرمجموعه‌گیری من", "default_text": "🤝 زیرمجموعه‌گیری من"},
     "acct_wallet": {"label": "کیف پول من", "default_text": "👛 کیف پول من"},
+    "acct_lootbox": {"label": "صندوق شانس", "default_text": "🎁 صندوق شانس"},
     "acct_add_service": {"label": "افزودن حساب", "default_text": "➕ افزودن حساب (اتصال کانفیگ قبلی)"},
 }
-DEFAULT_ACCOUNT_HUB_ORDER = ["acct_orders", "acct_tutorial", "acct_referral", "acct_wallet", "acct_add_service"]
+DEFAULT_ACCOUNT_HUB_ORDER = ["acct_orders", "acct_tutorial", "acct_referral", "acct_wallet", "acct_lootbox", "acct_add_service"]
 
 BUYFLOW_META = {
     "btn_custom_config": {"label": "ساخت کانفیگ شخصی", "default_text": "🛠 ساخت کانفیگ شخصی"},

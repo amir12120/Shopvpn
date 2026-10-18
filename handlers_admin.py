@@ -3300,6 +3300,34 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_30ff7b82', 'این سفارش قبلاً بررسی شده است.'), show_alert=True)
             return
 
+        # ===== سفارش صندوق شانس: بعد از تایید رسید، صندوق‌ها همان لحظه به کاربر تحویل می‌شوند =====
+        if order["lootbox_type_id"]:
+            box_ids = await asyncio.to_thread(db.approve_lootbox_order, order_id)
+            if not box_ids:
+                await asyncio.to_thread(db.release_order_claim, order_id)
+                await call.answer(db.get_text('handlers_admin.lootbox_deliver_failed', '⛔️ تحویل صندوق ناموفق بود؛ دوباره تلاش کنید.'), show_alert=True)
+                return
+            (await asyncio.to_thread(db.log_admin_action,
+                call.from_user.id, "lootbox_order_approve",
+                f"سفارش صندوق شانس #{order_id} | کاربر {order['user_id']} | تعداد: {len(box_ids)} | مبلغ: {order['final_price']:,}",
+            ))
+            try:
+                from engagement_handlers import notify_lootbox_delivered
+                await notify_lootbox_delivered(bot, db, order["user_id"], order["lootbox_type_id"], box_ids)
+                await _notify_user_inline_menu(bot, order["user_id"])
+            except Exception:
+                pass
+            try:
+                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و صندوق شانس به کاربر تحویل داده شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
+            except Exception:
+                try:
+                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و صندوق شانس به کاربر تحویل داده شد.", reply_markup=kb.user_quick_actions_kb(order["user_id"]))
+                except Exception:
+                    pass
+            await call.answer(tr("سفارش تایید و صندوق شانس تحویل داده شد."))
+            await _notify_admin_panel_menu(bot, call.from_user.id, call)
+            return
+
         # ===== سفارش تمدید سرویس از حساب کاربری =====
         if order["is_renewal"]:
             try:
@@ -13374,7 +13402,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         for chunk_start in range(0, len(text), 3500):
             await call.message.answer(text[chunk_start:chunk_start + 3500])
         is_blocked = (user["is_blocked"] if "is_blocked" in user.keys() else 0) == 1
-        await call.message.answer(tr(f"🔍 آمار کامل کاربر {tg_id}"), reply_markup=kb.user_full_stats_kb(tg_id, is_blocked))
+        _stats_kb = kb.user_group_stats_kb if report_router.is_report_group_message(db, call.message) else kb.user_full_stats_kb
+        await call.message.answer(tr(f"🔍 آمار کامل کاربر {tg_id}"), reply_markup=_stats_kb(tg_id, is_blocked))
         await call.answer()
 
     def _eligible_configs_for_bulk_toggle(custom_configs: list) -> list:
@@ -14421,7 +14450,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         stats = await asyncio.to_thread(db.get_user_full_stats, tg_id)
         is_blocked = (user["is_blocked"] if "is_blocked" in user.keys() else 0) == 1
         text = _fmt_user_full_stats_report(stats)
-        markup = kb.user_full_stats_kb(tg_id, is_blocked)
+        in_group = report_router.is_report_group_message(db, call.message)
+        markup = kb.user_group_stats_kb(tg_id, is_blocked) if in_group else kb.user_full_stats_kb(tg_id, is_blocked)
         try:
             await call.message.reply(text, reply_markup=markup)
         except TelegramBadRequest:

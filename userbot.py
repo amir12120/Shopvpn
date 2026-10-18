@@ -25,6 +25,8 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "userbot_session.json")
+# اکانت جدا برای اسکنر نشت (اختیاری): اگر این فایل باشد اسکنر دیگر از اکانت پاسخ‌گوی مشتری استفاده نمی‌کند.
+SCANNER_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "leak_session.json")
 SERVICE_USER_ID = 777000
 FALLBACK_REPLY = "اوه، یه اشکال کوچولو پیش اومد 😅 پیامت رو همین الان به پشتیبان انسانی می‌سپارم تا زودتر حلش کنه."
 MEDIA_ACK_TEXT = "فایلت رسید 🙏 فروشنده خودش بررسی می‌کنه و جواب می‌ده؛ تا اون موقع اگه سؤالی داری همین‌جا بنویس، در خدمتم 😊"
@@ -189,9 +191,9 @@ def paused_by_admin(db, chat_id) -> bool:
 
 
 # ---- session storage ------------------------------------------------------------------------------------
-def load_session():
+def load_session(path: str = None):
     try:
-        with open(SESSION_PATH, "r", encoding="utf-8") as fh:
+        with open(path or SESSION_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         return {
             "api_id": int(data["api_id"]),
@@ -203,18 +205,19 @@ def load_session():
         return None
 
 
-def save_session(api_id: int, api_hash: str, session: str, user: dict):
-    tmp = SESSION_PATH + ".tmp"
+def save_session(api_id: int, api_hash: str, session: str, user: dict, path: str = None):
+    path = path or SESSION_PATH
+    tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"api_id": api_id, "api_hash": api_hash, "session": session, "user": user}, fh)
-    os.replace(tmp, SESSION_PATH)
-    os.chmod(SESSION_PATH, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
 
 
-def remove_session() -> bool:
+def remove_session(path: str = None) -> bool:
     try:
-        os.remove(SESSION_PATH)
+        os.remove(path or SESSION_PATH)
         return True
     except FileNotFoundError:
         return False
@@ -328,7 +331,16 @@ def fetch_api_credentials(phone: str):
         return None
 
 
-async def interactive_login() -> bool:
+def _known_api():
+    """api_id/api_hash ذخیره‌شده در هر یک از دو نشست (یوزربات یا اسکنر) تا دوباره پرسیده نشود."""
+    for path in (SESSION_PATH, SCANNER_SESSION_PATH):
+        creds = load_session(path)
+        if creds:
+            return creds["api_id"], creds["api_hash"]
+    return None
+
+
+async def interactive_login(path: str = None) -> bool:
     from telethon import TelegramClient
     from telethon.errors import (
         FloodWaitError, PasswordHashInvalidError, PhoneCodeExpiredError,
@@ -336,32 +348,40 @@ async def interactive_login() -> bool:
     )
     from telethon.sessions import StringSession
 
-    print("api_id / api_hash: type them, or press Enter to get them automatically from my.telegram.org.")
-    raw_id = _ask("api_id (Enter = automatic): ")
-    if raw_id:
-        try:
-            api_id = int(raw_id)
-        except ValueError:
-            print("api_id must be a number.")
-            return False
-        api_hash = _ask("api_hash: ")
-        phone = _ask("Phone number with country code (e.g. +98912...): ")
-    else:
-        phone = _ask("Phone number with country code (e.g. +98912...): ")
-        auto = fetch_api_credentials(phone) if phone else None
-        if auto is None:
-            print("Automatic api_id failed. You can enter api_id / api_hash manually (empty = cancel).")
-            raw_id = _ask("api_id: ")
-            if not raw_id:
-                return False
+    api_id = api_hash = phone = None
+    known = _known_api()
+    if known:
+        answer = _ask(f"Use the saved api_id={known[0]} / api_hash? [Y/n]: ").lower()
+        if answer not in ("n", "no"):
+            api_id, api_hash = known
+            phone = _ask("Phone number with country code (e.g. +98912...): ")
+    if api_id is None:
+        print("api_id / api_hash: type them, or press Enter to get them automatically from my.telegram.org.")
+        raw_id = _ask("api_id (Enter = automatic): ")
+        if raw_id:
             try:
                 api_id = int(raw_id)
             except ValueError:
                 print("api_id must be a number.")
                 return False
             api_hash = _ask("api_hash: ")
+            phone = _ask("Phone number with country code (e.g. +98912...): ")
         else:
-            api_id, api_hash = auto
+            phone = _ask("Phone number with country code (e.g. +98912...): ")
+            auto = fetch_api_credentials(phone) if phone else None
+            if auto is None:
+                print("Automatic api_id failed. You can enter api_id / api_hash manually (empty = cancel).")
+                raw_id = _ask("api_id: ")
+                if not raw_id:
+                    return False
+                try:
+                    api_id = int(raw_id)
+                except ValueError:
+                    print("api_id must be a number.")
+                    return False
+                api_hash = _ask("api_hash: ")
+            else:
+                api_id, api_hash = auto
     if not api_hash or not phone:
         print("api_hash and phone are required.")
         return False
@@ -409,17 +429,17 @@ async def interactive_login() -> bool:
             "first_name": me.first_name or "",
             "username": me.username or "",
             "phone": me.phone or phone,
-        })
+        }, path)
         print(f"Logged in as {me.first_name or ''} (@{me.username or '-'}) id={me.id}")
         return True
     finally:
         await client.disconnect()
 
 
-async def logout() -> bool:
-    creds = load_session()
+async def logout(path: str = None) -> bool:
+    creds = load_session(path)
     if creds is None:
-        return remove_session()
+        return remove_session(path)
     try:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
@@ -432,7 +452,7 @@ async def logout() -> bool:
             await client.disconnect()
     except Exception as exc:
         print(f"Remote logout skipped: {exc}")
-    return remove_session()
+    return remove_session(path)
 
 
 
@@ -1138,7 +1158,7 @@ async def run(db, bot_token: str):
                     raise RuntimeError("AuthKeyUnregisteredError")
                 me = await client.get_me()
                 ctx["me_id"] = me.id
-                if not leak_started:
+                if not leak_started and not os.path.exists(SCANNER_SESSION_PATH):
                     # اسکنر تشخیص نشت روی همین کلاینت و همین سشن یوزربات کار می‌کند
                     leak_started = True
                     _spawn(leak_scanner.run(client, db, bot))
@@ -1195,7 +1215,21 @@ def _cli(argv) -> int:
         user = creds["user"]
         print(f"logged in: {user.get('first_name', '')} (@{user.get('username') or '-'}) id={user.get('id')}")
         return 0
-    print("usage: userbot.py login|logout|status")
+    if cmd == "login-scanner":
+        return 0 if asyncio.run(interactive_login(SCANNER_SESSION_PATH)) else 1
+    if cmd == "logout-scanner":
+        asyncio.run(logout(SCANNER_SESSION_PATH))
+        print("Scanner session removed (the scanner falls back to the userbot account).")
+        return 0
+    if cmd == "status-scanner":
+        creds = load_session(SCANNER_SESSION_PATH)
+        if creds is None:
+            print("no dedicated scanner account (the scanner uses the userbot account)")
+            return 1
+        user = creds["user"]
+        print(f"scanner account: {user.get('first_name', '')} (@{user.get('username') or '-'}) id={user.get('id')}")
+        return 0
+    print("usage: userbot.py login|logout|status|login-scanner|logout-scanner|status-scanner")
     return 2
 
 

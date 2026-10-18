@@ -1299,6 +1299,8 @@ class OrdersMixin:
         "lottery": "قرعه‌کشی", "location_fee": "تغییر لوکیشن", "location_refund": "بازگشت هزینه‌ی تغییر لوکیشن",
         "coin_convert": "تبدیل سکه", "coin_expire": "انقضای موجودی حاصل از سکه", "admin_adjust": "تنظیم دستی ادمین", "admin_bulk_deduct": "کاهش گروهی توسط ادمین",
         "gift_card_out": "ساخت کارت هدیه", "gift_card_in": "دریافت کارت هدیه", "gift_card_refund": "بازگشت کارت هدیه",
+        "season_prize": "جایزه فصل رقابتی",
+        "lootbox_buy": "خرید صندوق شانس", "lootbox_prize": "جایزه صندوق شانس", "milestone_prize": "جایزه نقطه عطف پیشرفت",
     }
 
 

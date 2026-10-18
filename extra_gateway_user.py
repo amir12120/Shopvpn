@@ -131,6 +131,8 @@ def register(router, db, is_main_bot: bool, order_error, topup_error, notify_adm
 
     async def _order_label(order, order_id: int) -> str:
         keys = order.keys()
+        if "lootbox_type_id" in keys and order["lootbox_type_id"]:
+            return f"صندوق شانس #{order_id}"
         if "is_renewal" in keys and order["is_renewal"]:
             return f"تمدید سرویس #{order_id}"
         if "is_custom_config" in keys and order["is_custom_config"]:

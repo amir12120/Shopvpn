@@ -31,6 +31,24 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
     if not db.claim_order(order_id):
         return tr("✅ این سفارش قبلاً بررسی و تحویل داده شده است.")
 
+    if order["lootbox_type_id"]:
+        # خرید «صندوق شانس» مثل یک محصول: بعد از پرداخت (هر روشی)، صندوق‌ها همان لحظه به کاربر تحویل می‌شوند.
+        box_ids = db.approve_lootbox_order(order_id)
+        if not box_ids:
+            db.release_order_claim(order_id)
+            return tr("⚠️ تحویل صندوق ناموفق بود؛ سفارش برای بررسی دوباره آزاد شد.")
+        try:
+            from engagement_handlers import notify_lootbox_delivered
+            await notify_lootbox_delivered(bot, db, order["user_id"], order["lootbox_type_id"], box_ids)
+        except Exception:
+            logger.exception("اطلاع‌رسانی تحویل صندوق شانس برای سفارش #%s ناموفق بود", order_id)
+        if notify_admins_fn:
+            try:
+                await notify_admins_fn(bot, order_id)
+            except Exception:
+                pass
+        return tr("✅ پرداخت تایید شد و صندوق شانس به کاربر تحویل داده شد.")
+
     if order["is_renewal"]:
         try:
             result_text = await execute_renewal(db, order)

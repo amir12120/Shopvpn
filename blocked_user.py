@@ -14,6 +14,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
 
 from i18n import tr
+import engagement
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ class BlockedUserMiddleware(BaseMiddleware):
 
         db_user = await asyncio.to_thread(self.db.get_user, user.id)
         if not db_user or not db_user["is_blocked"]:
+            if data.get("bot") is not None and self.db.get_setting("streak_enabled", "0") == "1":
+                engagement.schedule_touch(self.db, data["bot"], user.id)
             return await handler(event, data)
 
         if isinstance(event, CallbackQuery):

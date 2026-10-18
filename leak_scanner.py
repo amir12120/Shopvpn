@@ -31,6 +31,7 @@ import time
 from collections import deque
 from urllib.parse import unquote
 
+import leak_discovery as ld
 import leak_index
 from panel_providers import get_provider
 from panel_providers.base import PanelError, subscription_token
@@ -60,8 +61,14 @@ MIN_SECRET_LEN = leak_index.MIN_SECRET_LEN
 
 # وضعیت مشترک بین حلقه‌ی اسکن و منوی ادمین
 STATE = {
-    "client": None, "paused_until": 0.0, "stamps": deque(),
+    "client": None, "paused_until": 0.0, "stamps": deque(), "last_flood": 0,
+    "discovery": None, "realtime_handlers": [],
+    # کش فهرست کانال‌های زیر نظر برای هندلر لحظه‌ای (بدون خواندن دیتابیس در هر پیام)
+    "watched": {}, "watched_at": 0.0, "scanner_on": False,
 }
+WATCH_CACHE_SECONDS = 60
+MAX_CHANNELS_PER_CYCLE = 40
+JOINED_CATCHUP_FACTOR = 4
 
 
 # ---------------------------------------------------------------- settings helpers
@@ -102,7 +109,9 @@ def get_client():
 
 
 # ---------------------------------------------------------------- parsing
-LINK_RE = re.compile(r"\b(?:vless|vmess|trojan|ss)://[^\s<>\"'`]+|\bhttps?://[^\s<>\"'`]+", re.IGNORECASE)
+LINK_RE = re.compile(
+    r"\b(?:vless|vmess|trojan|ss|hysteria2|hy2|tuic)://[^\s<>\"'`]+|\bhttps?://[^\s<>\"'`]+", re.IGNORECASE,
+)
 
 
 def _b64decode(text: str) -> str:
@@ -143,6 +152,19 @@ def _parse_link(link: str) -> list:
             return []
         password = decoded.split(":", 1)[1]
         return [("password", password)] if password else []
+
+    if scheme in ("hysteria2", "hy2"):
+        if "@" not in body:
+            return []
+        auth = unquote(body.split("@", 1)[0]).strip()
+        return [("password", auth)] if auth else []
+
+    if scheme == "tuic":
+        if "@" not in body:
+            return []
+        userinfo = unquote(body.split("@", 1)[0]).strip()
+        uuid, _, password = userinfo.partition(":")
+        return [pair for pair in (("uuid", uuid), ("password", password)) if pair[1]]
 
     if scheme in ("http", "https"):
         token = subscription_token(link)
@@ -343,7 +365,26 @@ async def _handle_post(db, bot, text: str, channel_id: int, channel_title: str, 
             ok, msg = await rotate_event(db, bot, event_id, actor="خودکار")
             status_line = "🔄 لینک به‌صورت خودکار چرخانده شد." if ok else f"⚠️ چرخاندن خودکار ناموفق: {msg}"
         await send_alert(db, bot, event_id, status_line)
+    await _learn_from_post(db, text, channel_id, channel_title, channel_username, created)
     return created
+
+
+async def _learn_from_post(db, text: str, channel_id: int, title: str, username: str, created: int) -> None:
+    """آمار کانال، دنبال‌کردن لینک‌ها و کاندیداکردن کانالی که نشت از آن آمده (بدون درخواست به تلگرام)."""
+    try:
+        has_config = 1 if ld.count_config_links(text) else 0
+        await asyncio.to_thread(db.bump_leak_channel_stats, channel_id, has_config, created)
+        if not ld.flag(db, ld.KEY_ENABLED):
+            return
+        await asyncio.to_thread(ld.collect_refs, db, text, f"crawl:{(username or title or channel_id)}")
+        if has_config or created:
+            key = f"u:{username.lower()}" if username else f"c:{channel_id}"
+            await asyncio.to_thread(
+                db.upsert_leak_candidate, key, channel_id, username or "", "", title or "", 0, "",
+                "leak_hit" if created else "config_seen", "", 20 if created else 1,
+            )
+    except Exception:
+        logger.debug("leak learn from post failed", exc_info=True)
 
 
 class LeakScanner:
@@ -381,6 +422,7 @@ class LeakScanner:
         try:
             return await factory()
         except FloodWaitError as exc:
+            STATE["last_flood"] = int(exc.seconds or 60)
             pause = min(int(exc.seconds or 60), MAX_FLOOD_PAUSE_SECONDS)
             STATE["paused_until"] = time.monotonic() + pause
             logger.warning("leak scanner paused for %ss by FloodWait", pause)
@@ -389,11 +431,23 @@ class LeakScanner:
     async def scan_channels(self) -> None:
         from telethon.tl.types import PeerChannel
 
+        interval = max(int_setting(self.db, KEY_SCAN_MINUTES, 15), 1) * 60
+        now = time.time()
+        due = []
         for ch in await asyncio.to_thread(self.db.list_active_leak_channels):
+            # کانال‌هایی که یوزربات عضوشان است لحظه‌ای پایش می‌شوند؛ پیمایش دوره‌ای فقط جبران خاموشی است.
+            gap = interval * (JOINED_CATCHUP_FACTOR if ch["joined"] else 1)
+            last = float(ch["last_scan_ts"] or 0)
+            if now - last >= gap * 0.9:
+                due.append((last, ch))
+        due.sort(key=lambda item: item[0])
+
+        for _, ch in due[:MAX_CHANNELS_PER_CYCLE]:
             try:
                 entity = await self.client.get_entity(PeerChannel(ch["channel_id"]))
             except Exception:
                 logger.info("leak scanner: channel %s could not be resolved", ch["channel_id"])
+                await asyncio.to_thread(self.db.set_leak_channel_scanned, ch["channel_id"], time.time())
                 continue
             title = getattr(entity, "title", "") or ch["title"]
             username = getattr(entity, "username", "") or ch["username"] or ""
@@ -404,11 +458,13 @@ class LeakScanner:
                 latest = await self._call(lambda: self.client.get_messages(entity, limit=1))
                 if latest:
                     await asyncio.to_thread(self.db.set_leak_channel_last_post, ch["channel_id"], latest[0].id)
+                await asyncio.to_thread(self.db.set_leak_channel_scanned, ch["channel_id"], time.time())
                 continue
 
             messages = await self._call(
                 lambda: self.client.get_messages(entity, limit=100, min_id=last_seen)
             )
+            await asyncio.to_thread(self.db.set_leak_channel_scanned, ch["channel_id"], time.time())
             if not messages:
                 continue
             newest = last_seen
@@ -417,7 +473,7 @@ class LeakScanner:
                 if not await asyncio.to_thread(self.db.mark_leak_post_seen, ch["channel_id"], msg.id):
                     continue
                 await _handle_post(
-                    self.db, self.bot, getattr(msg, "message", "") or "",
+                    self.db, self.bot, ld.message_text(msg),
                     ch["channel_id"], title, username, msg.id,
                 )
             await asyncio.to_thread(self.db.set_leak_channel_last_post, ch["channel_id"], newest)
@@ -441,7 +497,7 @@ class LeakScanner:
                 continue
             chat = chats.get(channel_id)
             await _handle_post(
-                self.db, self.bot, getattr(msg, "message", "") or "", channel_id,
+                self.db, self.bot, ld.message_text(msg), channel_id,
                 getattr(chat, "title", "") or "", getattr(chat, "username", "") or "", msg.id,
             )
 
@@ -465,13 +521,135 @@ class LeakScanner:
             await asyncio.sleep(minutes * 60 * random.uniform(0.9, 1.2))
 
 
+async def _watch_cache(db) -> dict:
+    """{channel_id: (title, username)} کانال‌های فعال + روشن‌بودن اسکنر؛ هر ۶۰ ثانیه از دیتابیس تازه می‌شود."""
+    now = time.monotonic()
+    if now - STATE["watched_at"] > WATCH_CACHE_SECONDS or STATE["watched_at"] == 0.0:
+        rows = await asyncio.to_thread(db.list_active_leak_channels)
+        STATE["watched"] = {r["channel_id"]: (r["title"], r["username"]) for r in rows}
+        STATE["scanner_on"] = flag(db, KEY_ENABLED)
+        STATE["watched_at"] = now
+    return STATE["watched"] if STATE["scanner_on"] else {}
+
+
+def install_realtime(client, db, bot) -> None:
+    """پایش لحظه‌ای: پست تازه و ویرایش‌شده‌ی کانال‌های عضو‌شده بدون هیچ درخواست اضافه بررسی می‌شود."""
+    from telethon import events
+
+    async def _process(event, edited: bool) -> None:
+        msg = event.message
+        channel_id = getattr(getattr(msg, "peer_id", None), "channel_id", None)
+        if not channel_id:
+            return
+        watched = await _watch_cache(db)
+        if channel_id not in watched:
+            return
+        text = ld.message_text(msg)
+        if not text or not any(mark in text for mark in ("://", "t.me/", "@")):
+            return
+        # پست ویرایش‌شده دوباره بررسی می‌شود (کانفیگ را گاهی بعداً ویرایش می‌کنند)؛ یکتایی رویداد جلوی تکرار را می‌گیرد.
+        if not edited and not await asyncio.to_thread(db.mark_leak_post_seen, channel_id, msg.id):
+            return
+        title, username = watched[channel_id]
+        await _handle_post(db, bot, text, channel_id, title or "", username or "", msg.id)
+
+    async def on_new(event):
+        try:
+            await _process(event, edited=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("leak realtime handler failed", exc_info=True)
+
+    async def on_edit(event):
+        try:
+            await _process(event, edited=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("leak realtime edit handler failed", exc_info=True)
+
+    new_filter = events.NewMessage(incoming=True, func=lambda e: not e.is_private)
+    edit_filter = events.MessageEdited(incoming=True, func=lambda e: not e.is_private)
+    client.add_event_handler(on_new, new_filter)
+    client.add_event_handler(on_edit, edit_filter)
+    STATE["realtime_handlers"] = [(on_new, new_filter), (on_edit, edit_filter)]
+
+
+def _remove_realtime(client) -> None:
+    for handler, event_filter in STATE["realtime_handlers"]:
+        try:
+            client.remove_event_handler(handler, event_filter)
+        except Exception:
+            pass
+    STATE["realtime_handlers"] = []
+
+
 async def run(client, db, bot) -> None:
     """از userbot.run، بعد از اتصال موفق یوزربات صدا زده می‌شود و تا قطع شدن آن ادامه دارد."""
     STATE["client"] = client
+    STATE["watched_at"] = 0.0
+    scanner = LeakScanner(client, db, bot)
+    discovery = ld.Discovery(client, db, bot, scanner._call, _handle_post, STATE)
+    STATE["discovery"] = discovery
+    tasks = []
     try:
-        await LeakScanner(client, db, bot).loop()
+        install_realtime(client, db, bot)
+        tasks = [asyncio.create_task(scanner.loop()), asyncio.create_task(discovery.loop())]
+        await asyncio.gather(*tasks)
     finally:
+        for task in tasks:
+            task.cancel()
+        _remove_realtime(client)
         STATE["client"] = None
+        STATE["discovery"] = None
+
+
+async def run_dedicated(db, bot_token: str) -> None:
+    """اسکنر روی اکانت اختصاصی (leak_session.json)، مستقل از اکانت پاسخ‌گوی مشتری.
+
+    بدون آن فایل هیچ کاری نمی‌کند (اسکنر در این حالت از userbot.run روی اکانت یوزربات اجرا می‌شود).
+    با پیدا شدن فایل (بعد از login-scanner) خودکار شروع می‌شود؛ ری‌استارت لازم نیست.
+    """
+    import userbot
+
+    while userbot.load_session(userbot.SCANNER_SESSION_PATH) is None:
+        await asyncio.sleep(30)
+    creds = userbot.load_session(userbot.SCANNER_SESSION_PATH)
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
+    except ImportError:
+        logger.warning("leak scanner account found but telethon/aiogram is not installed")
+        return
+    bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    client = TelegramClient(StringSession(creds["session"]), creds["api_id"], creds["api_hash"], flood_sleep_threshold=60)
+    client.parse_mode = None
+    try:
+        while True:
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    logger.error("leak scanner account session is no longer valid; run: python userbot.py login-scanner")
+                    return
+                await run(client, db, bot)   # تا قطع شدن اتصال ادامه دارد
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("leak scanner account error; retrying", exc_info=True)
+            await asyncio.sleep(30)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
 
 
 async def add_channel(client, db, ident: str) -> str:
@@ -493,5 +671,6 @@ async def add_channel(client, db, ident: str) -> str:
     title = getattr(entity, "title", "") or str(entity.id)
     username = getattr(entity, "username", "") or ""
     await asyncio.to_thread(db.add_leak_channel, entity.id, title, username, last_id)
+    STATE["watched_at"] = 0.0
     return title
 

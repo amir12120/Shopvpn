@@ -384,8 +384,10 @@ async function renderReferral() {
       content.innerHTML = `<div class="state-msg"><span class="ic">◌</span>زیرمجموعه‌گیری در حال حاضر غیرفعال است.</div>`;
       return;
     }
+    const season = await api("/api/season").catch(() => null);
     content.innerHTML = `
       ${referralCard(r)}
+      ${seasonCard(season)}
     `;
     const copyBtn = document.getElementById("copy-referral-btn");
     if (copyBtn) copyBtn.onclick = () => {
@@ -1069,6 +1071,42 @@ async function claimTestConfig(btn) {
   }
 }
 
+function seasonCard(s) {
+  if (!s || (!s.enabled && !(s.badges && s.badges.length))) return "";
+  const badges = (s.badges || []).length
+    ? `<div class="eyebrow" style="margin-top:12px">نشان‌های من</div>${s.badges.map((b) => `<div class="stat-row"><span>${b.emoji}</span><b>${b.title}</b></div>`).join("")}`
+    : "";
+  if (!s.enabled || !s.active) {
+    return `
+    <div class="eyebrow">فصل رقابتی</div>
+    <div class="card">
+      <h3><span class="ic">🏆</span>فصل رقابتی</h3>
+      <div class="stat-row"><span>وضعیت</span><b>${s.enabled ? "فصل تازه به‌زودی شروع می‌شود" : "غیرفعال"}</b></div>
+      ${badges}
+    </div>`;
+  }
+  const medals = ["🥇", "🥈", "🥉"];
+  const mine = s.mine && s.mine.rank
+    ? `${fmt(s.mine.score)} امتیاز | رتبه ${fmt(s.mine.rank)}`
+    : "هنوز امتیازی نداری";
+  const top = s.top.length
+    ? s.top.map((t) => `<div class="stat-row"><span>${medals[t.rank - 1] || t.rank + "."} ${t.name}${t.me ? " 👈" : ""}</span><b>${fmt(t.score)}</b></div>`).join("")
+    : `<div class="stat-row"><span>هنوز کسی امتیاز نگرفته؛ اولین نفر باش!</span></div>`;
+  return `
+    <div class="eyebrow">فصل رقابتی</div>
+    <div class="card">
+      <h3><span class="ic">🏆</span>${s.title}</h3>
+      <div class="stat-row"><span>پایان فصل</span><b>${s.ends_at}</b></div>
+      <div class="stat-row"><span>هر دعوت جدید</span><b>${fmt(s.invite_points)} امتیاز</b></div>
+      <div class="stat-row"><span>اگر دعوت‌شده خرید کند</span><b>+${fmt(s.purchase_points)} امتیاز</b></div>
+      <div class="stat-row"><span>امتیاز و رتبه‌ی تو</span><b>${mine}</b></div>
+      <div class="eyebrow" style="margin-top:12px">جوایز</div>
+      ${s.prizes.map((p) => `<div class="stat-row"><span>${p}</span></div>`).join("")}
+      <div class="eyebrow" style="margin-top:12px">جدول برترین‌ها</div>
+      ${top}
+      ${badges}
+    </div>`;
+}
 function referralCard(r) {
   const rows = [];
   if (r.commission_enabled) {

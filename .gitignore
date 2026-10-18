@@ -17,6 +17,8 @@ translation-venv/
 .env
 .env.*
 !.env.example
+userbot_session.json
+leak_session.json
 
 # Databases
 *.db

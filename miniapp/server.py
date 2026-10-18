@@ -1520,6 +1520,43 @@ async def api_referral(auth=Depends(get_verified_user)):
     }
 
 
+@app.get("/api/season")
+async def api_season(auth=Depends(get_verified_user)):
+    tg_id, db, tenant = auth
+    import seasons as season_logic
+    badges = [
+        {"emoji": b["emoji"] or "🎖", "title": html_lib.escape(b["title"])}
+        for b in db.badge_list(tg_id)
+    ]
+    if not season_logic.enabled(db):
+        return {"enabled": False, "badges": badges}
+    season = db.season_get_active()
+    if not season:
+        return {"enabled": True, "active": False, "badges": badges}
+    standings = db.season_standings(season["id"], 10)
+    mine = db.season_user_stats(season["id"], tg_id)
+    return {
+        "enabled": True,
+        "active": True,
+        "title": html_lib.escape(season["title"]),
+        "ends_at": season_logic.fmt_local(season["ends_at"]),
+        "invite_points": season["invite_points"],
+        "purchase_points": season["purchase_points"],
+        "prizes": season_logic.prize_lines(season_logic.prizes_snapshot(db), db),
+        "mine": mine,
+        "top": [
+            {
+                "rank": index,
+                "name": season_logic.mask_name(row["first_name"], row["username"], row["user_id"]),
+                "score": row["score"],
+                "me": row["user_id"] == tg_id,
+            }
+            for index, row in enumerate(standings, start=1)
+        ],
+        "badges": badges,
+    }
+
+
 # ---------------------------------------------------------------------------
 # هشدار انقضا
 # ---------------------------------------------------------------------------

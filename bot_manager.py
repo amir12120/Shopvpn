@@ -48,6 +48,10 @@ from lottery_loop import lottery_loop
 from signup_gift import signup_gift_loop
 import gift_cards
 from gift_card_handlers import create_gift_router
+import daily_quiz
+import seasons
+from season_quiz_handlers import create_season_quiz_router
+from engagement_handlers import create_engagement_router
 import report_router
 from report_router import ReportGroupGuardMiddleware
 from audit_forwarder import audit_forward_loop
@@ -487,6 +491,8 @@ class BotManager:
             dp.include_router(create_userbot_router(db))
             dp.include_router(create_leak_router(db))
         dp.include_router(create_gift_router(db, is_main_bot=is_main_bot))
+        dp.include_router(create_season_quiz_router(db, is_main_bot=is_main_bot))
+        dp.include_router(create_engagement_router(db, is_main_bot=is_main_bot))
         dp.include_router(create_admin_router(db, is_main_bot=is_main_bot, bot_manager=self))
         dp.include_router(create_user_router(db, is_main_bot=is_main_bot, bot_manager=self))
 
@@ -550,6 +556,8 @@ class BotManager:
         reseller_expiry_task = asyncio.create_task(db.reseller_expiry_loop(bot))
         signup_gift_task = asyncio.create_task(signup_gift_loop(bot, db))
         gift_expiry_task = asyncio.create_task(gift_cards.expiry_loop(db, bot))
+        season_task = asyncio.create_task(seasons.season_loop(db, bot)) if is_main_bot else None
+        quiz_task = asyncio.create_task(daily_quiz.quiz_loop(db, bot)) if is_main_bot else None
         audit_task = asyncio.create_task(audit_forward_loop(bot, db))
         if is_main_bot:
             asyncio.create_task(_announce_startup(bot, db))
@@ -564,6 +572,7 @@ class BotManager:
             "cleanup_task": cleanup_task, "lottery_task": lottery_task,
             "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task,
             "gift_expiry_task": gift_expiry_task, "audit_task": audit_task,
+            "season_task": season_task, "quiz_task": quiz_task,
             "db_path": db_path,
         }
         logger.info("بات با db_path=%s راه‌اندازی شد.", db_path)
@@ -574,7 +583,7 @@ class BotManager:
         "scheduled_broadcast_task", "channel_post_task", "cache_refresh_task", "temp_msg_task",
         "extra_gateway_task", "panel_health_task", "daily_report_task",
         "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task",
-        "gift_expiry_task", "audit_task",
+        "gift_expiry_task", "audit_task", "season_task", "quiz_task",
     )
 
     async def stop_bot(self, token: str) -> bool:

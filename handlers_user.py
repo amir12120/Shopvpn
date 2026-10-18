@@ -28,6 +28,10 @@ from md_utils import escape_md, escape_html
 from price_display import price_label_plain
 import keyboards as kb
 from gift_card_handlers import redeem_gift_for_message
+from daily_quiz import answer_quiz_for_message
+from season_quiz_handlers import show_season_for_message
+from engagement_handlers import show_lootbox_for_message, show_progress_for_message
+import seasons as season_logic
 from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
 import ai_media
@@ -186,7 +190,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if await asyncio.to_thread(db.card_method_blocked_for_user, order["user_id"], method_key):
             return "⛔️ این روش پرداخت هنوز برای حساب شما فعال نشده است. از روش‌های دیگر استفاده کنید."
         product_id = order["product_id"] if "product_id" in order.keys() else None
-        if "is_custom_config" in order.keys() and order["is_custom_config"]:
+        if "lootbox_type_id" in order.keys() and order["lootbox_type_id"]:
+            if not (await asyncio.to_thread(db.box_type_allows_payment_method, order["lootbox_type_id"], method_key)):
+                return "⛔️ این روش پرداخت برای این صندوق مجاز نیست."
+        elif "is_custom_config" in order.keys() and order["is_custom_config"]:
             if not (await asyncio.to_thread(db.custom_config_allows_payment_method, order["custom_product_id"], method_key)):
                 return "⛔️ این روش پرداخت برای ساخت کانفیگ شخصی مجاز نیست."
         elif product_id and not (await asyncio.to_thread(db.product_allows_payment_method, product_id, method_key)):
@@ -526,6 +533,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 await _open_service_from_deeplink(message, action.split(":", 1)[1])
             elif action.startswith("__redeem_gift__:"):
                 await redeem_gift_for_message(db, message, action.split(":", 1)[1])
+            elif action == "__open_season__":
+                await show_season_for_message(db, message)
+            elif action == "__open_lootbox__":
+                await show_lootbox_for_message(db, message)
+            elif action == "__open_progress__":
+                await show_progress_for_message(db, message)
+            elif action.startswith("__quiz_answer__:"):
+                _quiz_id, _choice = action.split(":")[1:3]
+                await answer_quiz_for_message(db, message, int(_quiz_id), int(_choice))
             else:
                 await message.answer(action)
 
@@ -774,6 +790,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 post_start_actions.append(f"__open_svcitem__:{token[4:]}")
             elif token.startswith("gift_") and len(token) > 5:
                 post_start_actions.append(f"__redeem_gift__:{token[5:]}")
+            elif token == "season" and is_main_bot:
+                post_start_actions.append("__open_season__")
+            elif token == "lootbox" and is_main_bot:
+                post_start_actions.append("__open_lootbox__")
+            elif token == "progress" and is_main_bot:
+                post_start_actions.append("__open_progress__")
+            elif is_main_bot and re.fullmatch(r"quiz_\d{1,9}_\d{1,2}", token):
+                post_start_actions.append("__quiz_answer__:" + token[5:].replace("_", ":"))
             elif token == "nofj":
                 pass  # دیگر نیازی نیست؛ ورود با هر دیپ‌لینکی خودش معافیت می‌دهد (بالاتر انجام شد)
             elif _CHANNEL_POST_TOKEN.fullmatch(token):
@@ -851,6 +875,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 await _open_service_from_deeplink(message, action.split(":", 1)[1])
             elif action.startswith("__redeem_gift__:"):
                 await redeem_gift_for_message(db, message, action.split(":", 1)[1])
+            elif action == "__open_season__":
+                await show_season_for_message(db, message)
+            elif action == "__open_lootbox__":
+                await show_lootbox_for_message(db, message)
+            elif action == "__open_progress__":
+                await show_progress_for_message(db, message)
+            elif action.startswith("__quiz_answer__:"):
+                _quiz_id, _choice = action.split(":")[1:3]
+                await answer_quiz_for_message(db, message, int(_quiz_id), int(_choice))
             else:
                 await message.answer(action)
 
@@ -1492,6 +1525,53 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         aid, caption, reply_markup=reply_markup,
                     )
                 sent = await _send_admin_notification(bot, admin_id, factory, "سفارش کانفیگ شخصی", order_id)
+                if sent:
+                    (await asyncio.to_thread(db.set_order_admin_message, order_id, admin_id, sent.message_id))
+            return
+
+        if order["lootbox_type_id"]:
+            # سفارش «خرید صندوق شانس» - product_id سنتینل ۰ است، پس caption از lootbox_types ساخته می‌شود.
+            user_row = (await asyncio.to_thread(db.get_user, order["user_id"]))
+            username = user_row["username"] if user_row else ""
+            first_name = user_row["first_name"] if user_row else ""
+            box_type = (await asyncio.to_thread(db.box_type_get, order["lootbox_type_id"]))
+            box_label = f"{box_type['emoji'] or '📦'} {box_type['title']}" if box_type else f"#{order['lootbox_type_id']}"
+            purchase_info_line = await _user_purchase_info_line(user_row)
+            quantity = order["quantity"] or 1
+            caption = (
+                f"🧾 سفارش صندوق شانس #{order_id}\n"
+                f"👤 کاربر: {escape_html(first_name)} (@{escape_html(username) or '---'})\n"
+                f"🆔 آیدی عددی: {order['user_id']}\n"
+                f"{purchase_info_line}"
+                f"📦 صندوق: {box_label}" + (f" × {quantity}\n" if quantity > 1 else "\n")
+                + f"💰 قیمت پایه: {order['base_price']:,} تومان\n"
+            )
+            if order["wallet_used"]:
+                caption += f"👛 استفاده از کیف پول: {order['wallet_used']:,} تومان\n"
+            caption += f"💵 مبلغ قابل پرداخت: {order['final_price']:,} تومان"
+            already_approved = order["status"] != "pending"
+            reply_markup = kb.user_quick_actions_kb(order["user_id"]) if already_approved else kb.order_review_kb(order_id, order["user_id"])
+            if ai_rejected_note:
+                caption += "\n\n" + ai_rejected_note
+            elif already_approved:
+                caption += "\n\n✅ این سفارش به‌طور خودکار تایید و صندوق برای کاربر ثبت شد."
+            if not receipt_file_id and not already_approved:
+                caption += "\n\n(بدون نیاز به رسید - مبلغ کاملاً از کیف پول پوشش داده شده)"
+            elif receipt_file_id and not already_approved:
+                caption += "\n\n" + (await _admin_card_hint_line())
+                caption += _ai_note_line(ai_note, ai_available)
+            if await _report_order_to_group(bot, order_id, caption, reply_markup, receipt_file_id, receipt_type):
+                return
+            for admin_id in (await asyncio.to_thread(db.list_admins)):
+                if receipt_file_id:
+                    factory = lambda aid=admin_id: _send_receipt_to_admin(
+                        bot, aid, receipt_file_id, receipt_type, caption, reply_markup
+                    )
+                else:
+                    factory = lambda aid=admin_id: bot.send_message(
+                        aid, caption, reply_markup=reply_markup,
+                    )
+                sent = await _send_admin_notification(bot, admin_id, factory, "سفارش صندوق شانس", order_id)
                 if sent:
                     (await asyncio.to_thread(db.set_order_admin_message, order_id, admin_id, sent.message_id))
             return
@@ -3627,6 +3707,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         for o in db.get_user_orders(user_tg_id):
             if o["status"] == "rejected":
                 continue
+            if o["lootbox_type_id"]:
+                # سفارش «صندوق شانس» سرویسی نیست؛ صندوق‌ها از «صندوق شانس» دیده/باز می‌شوند.
+                continue
             if o["is_renewal"]:
                 # سفارش‌های «تمدید سرویس» فقط یک رکورد داخلی برای پرداخت‌اند
                 # (product_id=0 سنتینل، بدون کانفیگ/محصول واقعی مال خودشان)؛
@@ -5515,9 +5598,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         lines.append(f"👥 تعداد زیرمجموعه‌های شما: {stats['count']}")
         lines.append(f"👛 موجودی کیف پول شما: {stats['credit']:,} تومان")
 
+        markup = kb.referral_share_kb(link)
+        if is_main_bot and season_logic.enabled(db):
+            markup.inline_keyboard.append([InlineKeyboardButton(text=tr("🏆 فصل رقابتی"), callback_data="season_view")])
         await message.answer(
             "\n".join(lines),
-            reply_markup=kb.referral_share_kb(link),
+            reply_markup=markup,
         )
 
     # -----------------------------------------------------------------------
