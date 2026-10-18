@@ -102,6 +102,34 @@ jobs:
           fi
           echo "project after cleanup: $(du -sh "$D" | cut -f1)"
 
+      - name: The generated service can actually start
+        # A unit whose ExecStart binary does not exist never starts: systemd
+        # answers status=203/EXEC and the bot is simply "not running". Release
+        # 4.12.0 shipped every unit wrapped in `infisical run --env=dev --`, a
+        # CLI install.sh never installs, and nothing here noticed because the
+        # smoke test only created the unit. Check what systemd would execute.
+        run: |
+          set -e
+          unit=/etc/systemd/system/v2raybot.service
+          exec_line="$(grep -m1 '^ExecStart=' "$unit" | sed 's/^ExecStart=//')"
+          first="$(printf '%s' "$exec_line" | awk '{print $1}')"
+          echo "ExecStart: $exec_line"
+          if [ "$first" = "infisical" ]; then
+            echo "::error::the unit needs the Infisical CLI, which this installer does not install"
+            exit 1
+          fi
+          case "$first" in
+            /*) test -x "$first" || { echo "::error::$first is not executable"; exit 1; } ;;
+            *)  command -v "$first" >/dev/null || { echo "::error::$first is not installed"; exit 1; } ;;
+          esac
+          grep -q "$HOME/v2ray_bot/venv/bin/python3" "$unit"
+          echo "the unit starts a binary that exists"
+
+      - name: Installed packages are consistent (pip check)
+        # "The bot will not start" is usually a dependency that was added to the
+        # code but not installed; pip check reports exactly that, offline.
+        run: "$HOME/v2ray_bot/venv/bin/python3 -m pip check"
+
       - name: Runtime dependencies import
         run: |
           "$HOME/v2ray_bot/venv/bin/python3" -c \

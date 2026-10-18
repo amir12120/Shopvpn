@@ -466,7 +466,7 @@ OWNER_ID=your_numeric_telegram_id
 ### 4. Запуск
 
 ```bash
-infisical run --env=dev -- python main.py
+python main.py
 ```
 
 Для промышленной эксплуатации используйте автоматический установщик/systemd или другой менеджер процессов.

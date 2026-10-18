@@ -42,6 +42,114 @@ export GIT_TERMINAL_PROMPT=0
 PIP_CPU_TORCH="pip install -q --no-cache-dir --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch"
 PIP_REQS="pip install -q --no-cache-dir --disable-pip-version-check -r requirements.txt"
 
+# ---------------------------------------------------------------------------
+# How the services are started
+#
+# Secrets can be injected from Infisical, but the `infisical` CLI is a
+# third-party binary that a fresh server does not have. A unit whose ExecStart
+# begins with `infisical run ...` therefore dies immediately with status=203/EXEC
+# ("No such file or directory") and the bot never starts, even though the install
+# itself finished. Infisical is used only when it is really usable here: the CLI
+# on PATH *and* this checkout linked to a project (.infisical.json). Otherwise
+# the unit starts the virtualenv's Python directly, which reads the very same
+# settings from the on-disk .env.
+#
+#   SHOPVPN_USE_INFISICAL=1  force the wrapper (still only if the CLI exists)
+#   SHOPVPN_USE_INFISICAL=0  never wrap the services with Infisical
+#   SHOPVPN_INFISICAL_ENV    Infisical environment to inject (default: dev)
+# ---------------------------------------------------------------------------
+infisical_available() {
+    [ "${SHOPVPN_USE_INFISICAL:-auto}" = "0" ] && return 1
+    command -v infisical > /dev/null 2>&1 || return 1
+    [ -f "${INSTALL_DIR:-.}/.infisical.json" ] || return 1
+    return 0
+}
+
+# service_exec_start <interpreter> [args...] -> the value for ExecStart=
+service_exec_start() {
+    if infisical_available; then
+        printf 'infisical run --env=%s -- %s' "${SHOPVPN_INFISICAL_ENV:-dev}" "$*"
+    else
+        printf '%s' "$*"
+    fi
+}
+
+# command_exists <command line> -> its first word is an executable we can run
+command_exists() {
+    local first
+    first="$(printf '%s' "$1" | awk '{print $1}')"
+    [ -n "$first" ] || return 1
+    case "$first" in
+        /*) [ -x "$first" ] ;;
+        *)  command -v "$first" > /dev/null 2>&1 ;;
+    esac
+}
+
+# unit_execstart <unit-file> -> the ExecStart line without its key
+unit_execstart() {
+    sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -1
+}
+
+# unit_missing_binary <unit-file> -> the command systemd cannot run (empty when
+# the unit is fine). systemd refuses a unit whose ExecStart binary does not exist
+# with status=203/EXEC; before, that only showed up as a bot that never came up.
+unit_missing_binary() {
+    local line
+    line="$(unit_execstart "$1")"
+    [ -n "$line" ] || return 0
+    command_exists "$line" && return 0
+    printf '%s' "$(printf '%s' "$line" | awk '{print $1}')"
+}
+
+# set_unit_execstart <unit-file> <new command line>
+# Rewritten line by line on purpose: awk/sed would interpret backslashes and
+# `&` inside the path (and GNU sed would turn `\U` into upper-casing), which
+# corrupts the command in the unit.
+set_unit_execstart() {
+    local unit_file="$1" new_line="$2" tmp line
+    tmp="$(mktemp)"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ExecStart=*) printf 'ExecStart=%s\n' "$new_line" ;;
+            *)           printf '%s\n' "$line" ;;
+        esac
+    done < "$unit_file" > "$tmp"
+    sudo cp "$tmp" "$unit_file"
+    rm -f "$tmp"
+}
+
+# The command a ShopVPN unit is expected to run, used when a unit cannot be
+# repaired by simply dropping a wrapper.
+unit_default_execstart() {
+    case "$1" in
+        "$SERVICE_NAME") echo "$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py" ;;
+        *-miniapp)       echo "$INSTALL_DIR/venv/bin/uvicorn miniapp.server:app --host 127.0.0.1 --port 8001" ;;
+        *-adminpanel)    echo "$INSTALL_DIR/venv/bin/uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002" ;;
+        *-api)           echo "$INSTALL_DIR/venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8003 --workers 1" ;;
+    esac
+}
+
+# repair_unit_execstart <unit-file> <fallback command line>
+#   prints "fixed"  when ExecStart was rewritten to something runnable,
+#   prints nothing  when the unit was already fine,
+#   returns 1       when nothing can make ExecStart runnable.
+repair_unit_execstart() {
+    local unit_file="$1" fallback="$2" line fixed
+    [ -f "$unit_file" ] || return 0
+    [ -z "$(unit_missing_binary "$unit_file")" ] && return 0
+    line="$(unit_execstart "$unit_file")"
+    fixed="$(printf '%s' "$line" | sed -E \
+        's/^infisical[[:space:]]+(run[[:space:]]+)?([[:space:]]*--[^[:space:]]+)*[[:space:]]+--[[:space:]]+//')"
+    if [ "$fixed" = "$line" ] || ! command_exists "$fixed"; then
+        fixed="$fallback"
+    fi
+    if ! command_exists "$fixed"; then
+        return 1
+    fi
+    set_unit_execstart "$unit_file" "$fixed"
+    printf 'fixed\n'
+}
+
 fetch_project_code() {
     local target_dir="$1"
     local ok=0
@@ -659,6 +767,50 @@ MSG_EN[lt_removed]="✅ LibreTranslate removed."
 MSG_FA[lt_removed]="✅ LibreTranslate حذف شد."
 MSG_EN[lt_not_installed]="ℹ️ LibreTranslate is not installed on this server."
 MSG_FA[lt_not_installed]="ℹ️ LibreTranslate روی این سرور نصب نیست."
+MSG_EN[infisical_detected]="🔐 Infisical CLI detected — services inject secrets from the '%s' environment."
+MSG_FA[infisical_detected]="🔐 CLI اینفیژیکال پیدا شد — سرویس‌ها اسرار را از محیط «%s» تزریق می‌کنند."
+MSG_EN[infisical_needs_cli]="ℹ️ This checkout is linked to Infisical but the CLI is not installed; services use .env."
+MSG_FA[infisical_needs_cli]="ℹ️ این پوشه به Infisical وصل است ولی CLI نصب نیست؛ سرویس‌ها از .env استفاده می‌کنند."
+MSG_EN[unit_start_command]="🚀 Service start command: %s"
+MSG_FA[unit_start_command]="🚀 دستور اجرای سرویس: %s"
+MSG_EN[unit_unfixable]="⛔️ Service '%s' cannot start: '%s' is missing."
+MSG_FA[unit_unfixable]="⛔️ سرویس «%s» اجرا نمی‌شود: «%s» وجود ندارد."
+MSG_EN[menu_32]="Diagnose & repair services (bot/panel/Mini App/API won't start)"
+MSG_FA[menu_32]="عیب‌یابی و تعمیر سرویس‌ها (بات/پنل/مینی‌اپ/API بالا نمی‌آید)"
+MSG_EN[doctor_header]="SERVICE DIAGNOSIS"
+MSG_FA[doctor_header]="عیب‌یابی سرویس‌ها"
+MSG_EN[doctor_venv_ok]="Python environment: %s"
+MSG_FA[doctor_venv_ok]="محیط پایتون: %s"
+MSG_EN[doctor_venv_missing]="Python environment is missing or broken: %s"
+MSG_FA[doctor_venv_missing]="محیط پایتون وجود ندارد یا خراب است: %s"
+MSG_EN[doctor_install_hint]="Install/repair it with install (menu 1), or: bash install.sh"
+MSG_FA[doctor_install_hint]="با گزینهٔ ۱ (نصب) درستش کن، یا: bash install.sh"
+MSG_EN[doctor_env_ok]="Settings file: %s"
+MSG_FA[doctor_env_ok]="فایل تنظیمات: %s"
+MSG_EN[doctor_env_missing]="Settings file .env is missing — without BOT_TOKEN/OWNER_ID the bot cannot start."
+MSG_FA[doctor_env_missing]="فایل .env وجود ندارد — بدون BOT_TOKEN و OWNER_ID بات بالا نمی‌آید."
+MSG_EN[doctor_import_ok]="The project and its dependencies load inside the venv."
+MSG_FA[doctor_import_ok]="پروژه و پیش‌نیازهایش داخل venv بارگذاری می‌شوند."
+MSG_EN[doctor_import_failed]="The project does not load inside the venv (a missing package is the usual cause):"
+MSG_FA[doctor_import_failed]="پروژه داخل venv بارگذاری نمی‌شود (معمولاً به‌خاطر پکیج ناقص):"
+MSG_EN[doctor_pip_ok]="Installed packages are consistent (pip check)."
+MSG_FA[doctor_pip_ok]="پکیج‌های نصب‌شده سازگارند (pip check)."
+MSG_EN[doctor_pip_broken]="Some package requirements are not satisfied:"
+MSG_FA[doctor_pip_broken]="شرط بعضی پکیج‌ها برقرار نیست:"
+MSG_EN[doctor_no_unit]="%s: not installed"
+MSG_FA[doctor_no_unit]="%s: نصب نشده"
+MSG_EN[doctor_fixed]="%s: repaired"
+MSG_FA[doctor_fixed]="%s: تعمیر شد"
+MSG_EN[doctor_running]="%s: running"
+MSG_FA[doctor_running]="%s: در حال اجراست"
+MSG_EN[doctor_not_running]="%s: NOT running (last log lines below)"
+MSG_FA[doctor_not_running]="%s: اجرا نمی‌شود (آخرین خطوط لاگ پایین‌تر)"
+MSG_EN[doctor_unfixable]="%s: cannot start — '%s' is missing. Reinstall this component from the menu."
+MSG_FA[doctor_unfixable]="%s: اجرا نمی‌شود — «%s» وجود ندارد. این بخش را از منو دوباره نصب کن."
+MSG_EN[doctor_all_ok]="Everything the services need is in place."
+MSG_FA[doctor_all_ok]="هر چیزی که سرویس‌ها لازم دارند سر جایش است."
+MSG_EN[doctor_warn]="Some checks failed — read the notes above."
+MSG_FA[doctor_warn]="بعضی بررسی‌ها ناموفق بود — توضیحات بالا را بخوان."
 
 # t <key> [args...] -> prints the localized, formatted string for the
 # current APP_LANG (falls back to English if a key is somehow missing).
@@ -869,7 +1021,13 @@ EOF
     echo -e "${CYAN}💾 فضای مصرفی -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1) | کل پروژه: $(du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1)${RESET}"
 
     echo -e "${CYAN}$(t creating_service)${RESET}"
+    if infisical_available; then
+        echo -e "  ${GREEN}$(t infisical_detected "${SHOPVPN_INFISICAL_ENV:-dev}")${RESET}"
+    elif [ -f "$INSTALL_DIR/.infisical.json" ] && [ "${SHOPVPN_USE_INFISICAL:-auto}" != "0" ]; then
+        echo -e "  ${YELLOW}$(t infisical_needs_cli)${RESET}"
+    fi
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+    EXEC_START="$(service_exec_start "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/main.py")"
     sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
 Description=V2Ray Telegram Sales Bot
@@ -878,7 +1036,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -888,6 +1046,12 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+
+    # Never leave behind a unit systemd cannot execute (status=203/EXEC).
+    if ! repair_unit_execstart "$SERVICE_FILE" "$(unit_default_execstart "$SERVICE_NAME")" > /dev/null; then
+        echo -e "  ${RED}$(t unit_unfixable "$SERVICE_NAME" "$(unit_missing_binary "$SERVICE_FILE")")${RESET}"
+    fi
+    echo -e "  ${CYAN}$(t unit_start_command "$(unit_execstart "$SERVICE_FILE")")${RESET}"
 
     if restart_service_and_wait "$SERVICE_NAME"; then
         echo -e "${GREEN}${BOLD}$(t install_done)${RESET}"
@@ -1463,6 +1627,7 @@ setup_miniapp() {
 
     echo -e "${CYAN}$(t creating_miniapp_service)${RESET}"
     MINIAPP_SERVICE="${SERVICE_NAME}-miniapp"
+    EXEC_START="$(service_exec_start "$INSTALL_DIR/venv/bin/uvicorn" "miniapp.server:app" "--host" "127.0.0.1" "--port" "8001")"
     sudo bash -c "cat > /etc/systemd/system/${MINIAPP_SERVICE}.service" <<EOF
 [Unit]
 Description=V2Ray Mini App Backend
@@ -1471,7 +1636,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/uvicorn miniapp.server:app --host 127.0.0.1 --port 8001
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -1481,6 +1646,8 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable "$MINIAPP_SERVICE" > /dev/null 2>&1
+    repair_unit_execstart "/etc/systemd/system/${MINIAPP_SERVICE}.service" \
+        "$(unit_default_execstart "$MINIAPP_SERVICE")" > /dev/null
     sudo systemctl restart "$MINIAPP_SERVICE"
 
     echo -e "${CYAN}$(t configuring_nginx "$DOMAIN")${RESET}"
@@ -1617,6 +1784,7 @@ setup_admin_panel() {
 
     echo -e "${CYAN}$(t creating_panel_service)${RESET}"
     PANEL_SERVICE="${SERVICE_NAME}-adminpanel"
+    EXEC_START="$(service_exec_start "$INSTALL_DIR/venv/bin/uvicorn" "admin_panel.server:app" "--host" "127.0.0.1" "--port" "8002")"
     sudo bash -c "cat > /etc/systemd/system/${PANEL_SERVICE}.service" <<EOF
 [Unit]
 Description=ShopVPN Standalone Admin Panel
@@ -1625,7 +1793,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -1635,6 +1803,8 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable "$PANEL_SERVICE" > /dev/null 2>&1
+    repair_unit_execstart "/etc/systemd/system/${PANEL_SERVICE}.service" \
+        "$(unit_default_execstart "$PANEL_SERVICE")" > /dev/null
     sudo systemctl restart "$PANEL_SERVICE"
 
     echo -e "${CYAN}$(t configuring_nginx "$DOMAIN")${RESET}"
@@ -2249,6 +2419,7 @@ setup_api() {
 
     echo -e "${CYAN}$(t creating_api_service)${RESET}"
     API_SERVICE="${SERVICE_NAME}-api"
+    EXEC_START="$(service_exec_start "$INSTALL_DIR/venv/bin/uvicorn" "api.main:app" "--host" "127.0.0.1" "--port" "8003" "--workers" "1")"
     sudo bash -c "cat > /etc/systemd/system/${API_SERVICE}.service" <<EOF
 [Unit]
 Description=ShopVPN Integration API
@@ -2257,7 +2428,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8003 --workers 1
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -2267,6 +2438,8 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable "$API_SERVICE" > /dev/null 2>&1
+    repair_unit_execstart "/etc/systemd/system/${API_SERVICE}.service" \
+        "$(unit_default_execstart "$API_SERVICE")" > /dev/null
     sudo systemctl restart "$API_SERVICE"
 
     echo -e "${CYAN}$(t configuring_nginx "$DOMAIN")${RESET}"
@@ -2589,6 +2762,96 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# Action: diagnose and repair the services
+# عملیات: عیب‌یابی و تعمیر سرویس‌ها
+#
+# A service that never starts fails in one of four places, in this order:
+#   1. no venv / no .env            -> there is nothing to start
+#   2. a package the code imports but the venv lacks (the usual "prerequisites"
+#      failure)                     -> the process dies right after start-up
+#   3. a unit whose ExecStart binary does not exist (status=203/EXEC, e.g. the
+#      `infisical` wrapper written by release 4.12.0) -> repaired automatically
+#   4. a service that starts and then crashes -> its last log lines are shown
+# ---------------------------------------------------------------------------
+doctor() {
+    section_header "$(t doctor_header)"
+
+    if [ ! -f "$INSTALL_DIR/main.py" ]; then
+        echo -e "  ${RED}$(t env_dir_missing "$INSTALL_DIR")${RESET}"
+        return 1
+    fi
+    cd "$INSTALL_DIR" || return 1
+
+    local failed=0 py="$INSTALL_DIR/venv/bin/python3" out
+
+    if [ -x "$py" ]; then
+        echo -e "  ${GREEN}✓${RESET} $(t doctor_venv_ok "$py")"
+    else
+        echo -e "  ${RED}✗ $(t doctor_venv_missing "$py")${RESET}"
+        echo -e "    ${DIM}$(t doctor_install_hint)${RESET}"
+        failed=1
+    fi
+
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        echo -e "  ${GREEN}✓${RESET} $(t doctor_env_ok "$INSTALL_DIR/.env")"
+    else
+        echo -e "  ${RED}✗ $(t doctor_env_missing)${RESET}"
+        failed=1
+    fi
+
+    if [ -x "$py" ] && [ -f "$INSTALL_DIR/.env" ]; then
+        if out="$("$py" -c 'import config, database, bot_manager, handlers_user, userbot, leak_index' 2>&1)"; then
+            echo -e "  ${GREEN}✓${RESET} $(t doctor_import_ok)"
+        else
+            echo -e "  ${RED}✗ $(t doctor_import_failed)${RESET}"
+            printf '%s\n' "$out" | tail -4 | sed "s/^/    ${DIM}/" | sed "s/\$/${RESET}/"
+            failed=1
+        fi
+        if out="$("$py" -m pip check 2>&1)"; then
+            echo -e "  ${GREEN}✓${RESET} $(t doctor_pip_ok)"
+        else
+            echo -e "  ${YELLOW}! $(t doctor_pip_broken)${RESET}"
+            printf '%s\n' "$out" | head -4 | sed "s/^/    ${DIM}/" | sed "s/\$/${RESET}/"
+        fi
+    fi
+
+    echo ""
+    local -a units=("$SERVICE_NAME" "${SERVICE_NAME}-miniapp" "${SERVICE_NAME}-adminpanel" "${SERVICE_NAME}-api")
+    local unit unit_file result
+    for unit in "${units[@]}"; do
+        unit_file="/etc/systemd/system/${unit}.service"
+        if [ ! -f "$unit_file" ]; then
+            echo -e "  ${DIM}• $(t doctor_no_unit "$unit")${RESET}"
+            continue
+        fi
+        if ! result="$(repair_unit_execstart "$unit_file" "$(unit_default_execstart "$unit")")"; then
+            echo -e "  ${RED}✗ $(t doctor_unfixable "$unit" "$(unit_missing_binary "$unit_file")")${RESET}"
+            failed=1
+            continue
+        fi
+        if [ "$result" = "fixed" ]; then
+            echo -e "  ${GREEN}✓${RESET} $(t doctor_fixed "$unit")"
+            sudo systemctl daemon-reload
+            restart_service_and_wait "$unit" > /dev/null 2>&1 || true
+        elif systemctl is-active --quiet "$unit" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${RESET} $(t doctor_running "$unit")"
+        else
+            echo -e "  ${RED}✗ $(t doctor_not_running "$unit")${RESET}"
+            sudo journalctl -u "$unit" -n 5 --no-pager 2>&1 | sed "s/^/    ${DIM}/" | sed "s/\$/${RESET}/" || true
+            failed=1
+        fi
+        echo -e "    ${DIM}ExecStart=$(unit_execstart "$unit_file")${RESET}"
+    done
+
+    echo ""
+    if [ "$failed" -eq 0 ]; then
+        echo -e "  ${GREEN}${BOLD}$(t doctor_all_ok)${RESET}"
+    else
+        echo -e "  ${YELLOW}$(t doctor_warn)${RESET}"
+    fi
+    return "$failed"
+}
+# ---------------------------------------------------------------------------
 # Main menu / منوی اصلی
 # ---------------------------------------------------------------------------
 while true; do
@@ -2634,6 +2897,7 @@ while true; do
     menu_item 21 menu_21
     menu_item 22 menu_22
     menu_item 23 menu_23
+    menu_item 32 menu_32 "$YELLOW"
     draw_rule
     menu_item L menu_lang "$MAGENTA"
     menu_item 0 menu_0 "$DIM"
@@ -2675,6 +2939,7 @@ while true; do
         29) install_translation_langs; pause ;;
         30) remove_translation_languages; pause ;;
         31) factory_reset; pause ;;
+        32) doctor; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;

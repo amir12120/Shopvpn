@@ -47,8 +47,64 @@ GITHUB_BRANCH="main"
 
 TOTAL_STEPS=7
 
-echo "🚀 ShopVPN — V2Ray sales bot installer / updater"
-echo "──────────────────────────────────────────"
+# ---------------------------------------------------------------------------
+# How the services are started
+#
+# Secrets can be injected from Infisical, but the `infisical` CLI is a
+# third-party binary that a fresh server does not have. A unit whose ExecStart
+# begins with `infisical run ...` therefore dies immediately with status=203/EXEC
+# ("No such file or directory") and the bot never starts, even though the install
+# itself finished. Infisical is used only when it is really usable here: the CLI
+# on PATH *and* this checkout linked to a project (.infisical.json). Otherwise
+# the unit starts the virtualenv's Python directly, which reads the very same
+# settings from the on-disk .env.
+#
+#   SHOPVPN_USE_INFISICAL=1  force the wrapper (still only if the CLI exists)
+#   SHOPVPN_USE_INFISICAL=0  never wrap the services with Infisical
+#   SHOPVPN_INFISICAL_ENV    Infisical environment to inject (default: dev)
+# ---------------------------------------------------------------------------
+infisical_available() {
+    [ "${SHOPVPN_USE_INFISICAL:-auto}" = "0" ] && return 1
+    command -v infisical > /dev/null 2>&1 || return 1
+    [ -f "${INSTALL_DIR:-.}/.infisical.json" ] || return 1
+    return 0
+}
+
+# service_exec_start <interpreter> [args...] -> the value for ExecStart=
+service_exec_start() {
+    if infisical_available; then
+        printf 'infisical run --env=%s -- %s' "${SHOPVPN_INFISICAL_ENV:-dev}" "$*"
+    else
+        printf '%s' "$*"
+    fi
+}
+
+# command_exists <command line> -> its first word is an executable we can run
+command_exists() {
+    local first
+    first="$(printf '%s' "$1" | awk '{print $1}')"
+    [ -n "$first" ] || return 1
+    case "$first" in
+        /*) [ -x "$first" ] ;;
+        *)  command -v "$first" > /dev/null 2>&1 ;;
+    esac
+}
+
+# unit_execstart <unit-file> -> the ExecStart line without its key
+unit_execstart() {
+    sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -1
+}
+
+# unit_missing_binary <unit-file> -> the command systemd cannot run (empty when
+# the unit is fine). systemd refuses a unit whose ExecStart binary does not exist
+# with status=203/EXEC; before, that only showed up as a bot that never came up.
+unit_missing_binary() {
+    local line
+    line="$(unit_execstart "$1")"
+    [ -n "$line" ] || return 0
+    command_exists "$line" && return 0
+    printf '%s' "$(printf '%s' "$line" | awk '{print $1}')"
+}
 
 # ----------------------------------------------------------------------------
 # 1/7. System prerequisites (always first, so the Python/translation steps
@@ -255,7 +311,13 @@ echo "💾 Disk used -> venv: $(du -sh "$INSTALL_DIR/venv" 2>/dev/null | cut -f1
 # 6/7. Create the systemd service for permanent running and auto-start on boot.
 # ----------------------------------------------------------------------------
 echo "⚙️ Step 6/${TOTAL_STEPS} — configuring the systemd service..."
+if infisical_available; then
+    echo "🔐 Infisical CLI detected — the service will inject secrets from the '${SHOPVPN_INFISICAL_ENV:-dev}' environment."
+elif [ -f "$INSTALL_DIR/.infisical.json" ] && [ "${SHOPVPN_USE_INFISICAL:-auto}" != "0" ]; then
+    echo "ℹ️ This checkout is linked to Infisical but the CLI is not installed; using .env (install the CLI and re-run to switch)."
+fi
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+EXEC_START="$(service_exec_start "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/main.py")"
 sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
 Description=V2Ray Telegram Sales Bot
@@ -264,7 +326,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=infisical run --env=dev -- $INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 User=$(whoami)
@@ -272,6 +334,39 @@ User=$(whoami)
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# A unit systemd cannot execute is worse than a plain one: refuse to leave it
+# behind. If the first word of ExecStart does not exist (an old Infisical
+# wrapper, a missing interpreter), rewrite the unit to start the venv Python
+# directly and verify that instead.
+MISSING_BIN="$(unit_missing_binary "$SERVICE_FILE")"
+if [ -n "$MISSING_BIN" ]; then
+    echo "⚠️ systemd cannot execute '$MISSING_BIN'; rewriting the service to start Python directly..."
+    EXEC_START="$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py"
+    sudo bash -c "cat > $SERVICE_FILE" <<EOF
+[Unit]
+Description=V2Ray Telegram Sales Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$EXEC_START
+Restart=always
+RestartSec=5
+User=$(whoami)
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
+MISSING_BIN="$(unit_missing_binary "$SERVICE_FILE")"
+if [ -n "$MISSING_BIN" ]; then
+    echo "⛔️ The service cannot start: '$MISSING_BIN' does not exist on this server."
+    echo "   Re-run the prerequisites step (sudo bash $INSTALL_DIR/preflight.sh) and try again."
+    exit 1
+fi
+echo "🚀 Service start command: $EXEC_START"
 
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
@@ -315,6 +410,7 @@ else
     echo "⚠️ The bot did not come up. Last log lines:"
     sudo journalctl -u "$SERVICE_NAME" -n 25 --no-pager 2>&1 | sed 's/^/   /' || true
     echo "   Inspect more with: sudo journalctl -u $SERVICE_NAME -n 50 --no-pager"
+    echo "   Or run the built-in diagnosis: bash $INSTALL_DIR/manage.sh   (menu item 32)"
 fi
 
 # ----------------------------------------------------------------------------

@@ -459,7 +459,7 @@ OWNER_ID=آیدی_عددی_تو
 
 **۴. اجرا**
 ```bash
-infisical run --env=dev -- python main.py
+python main.py
 ```
 
 اگر همه‌چیز درست باشد، بات بلافاصله روشن می‌شود و آماده‌ی دریافت پیام است. دیتابیس به‌صورت خودکار در همان پوشه ساخته می‌شود (`bot_database.db`)؛ نیازی به نصب هیچ دیتابیس جداگانه‌ای نیست.
@@ -468,11 +468,11 @@ infisical run --env=dev -- python main.py
 ```bash
 # روش ساده با screen
 screen -S v2raybot
-infisical run --env=dev -- python main.py
+python main.py
 # سپس Ctrl+A و D برای خروج بدون بستن بات
 
 # یا با nohup
-nohup infisical run --env=dev -- python main.py > bot.log 2>&1 &
+nohup python main.py > bot.log 2>&1 &
 ```
 
 بهترین روش برای پروداکشن، ساخت یک سرویس `systemd` است (که [نصب خودکار](#auto-install) این کار را خودش انجام می‌دهد).
@@ -498,7 +498,7 @@ infisical init
 infisical run --env=dev -- python main.py
 ```
 
-`install.sh` و `manage.sh` هم یونیت‌های systemd ساخته‌شده (بات، مینی‌اپ، پنل وب و API) را با `infisical run --env=dev` می‌پیچند؛ یعنی نصب سروری هم اسرارش را از Infisical می‌گیرد و چیزی از فایل `.env` روی دیسک خوانده نمی‌شود.
+`install.sh` و `manage.sh` یونیت‌های systemd (بات، مینی‌اپ، پنل وب و API) را فقط وقتی با `infisical run --env=dev` اجرا می‌کنند که CLI روی سرور نصب باشد و این پوشه به یک پروژه وصل شده باشد (`.infisical.json`)؛ در غیر این صورت یونیت مستقیماً پایتون محیط venv را اجرا می‌کند و همان تنظیمات را از `.env` می‌خواند. یعنی Infisical یک گزینه است، نه پیش‌نیاز. اگر یونیت‌ها را با نسخهٔ قدیمی‌تر ساخته‌ای و سرویس بالا نمی‌آید، از منوی `shopvpn` گزینهٔ «عیب‌یابی و تعمیر سرویس‌ها» را بزن؛ یونیتِ خراب را پیدا و درست می‌کند.
 
 - برای انتقال `.env` فعلی، یک‌بار فایل را روی صفحهٔ **Secrets Overview** پروژه بکش و رها کن (محیط مقصد را انتخاب کن) و بعد فایل محلی را به `.env.backup` تغییر نام بده.
 - برای محیط‌های غیرلوکال (CI/CD، سرور، Kubernetes) از ورود تعاملی استفاده نکن — یک machine identity بساز و با Universal Auth احراز هویت کن، client ID/secret آن را در مخزن سکرت خودِ پلتفرم (مثلاً یک `EnvironmentFile` در systemd) نگه دار و فقط به همین پروژه و محیط محدودش کن.

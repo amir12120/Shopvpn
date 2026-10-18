@@ -477,10 +477,10 @@ OWNER_ID=your_numeric_telegram_id
 ### 4. Start
 
 ```bash
-infisical run --env=dev -- python main.py
+python main.py
 ```
 
-For production, use the automatic installer/systemd approach or another process manager.
+For production, use the automatic installer/systemd approach or another process manager. Settings can also be injected from [Infisical](#infisical) instead of the local `.env`.
 
 </details>
 
@@ -503,7 +503,7 @@ infisical init
 infisical run --env=dev -- python main.py
 ```
 
-`install.sh` and `manage.sh` already wrap the generated systemd units (bot, Mini App, web admin panel, Integration API) with `infisical run --env=dev`, so a server install pulls its secrets from Infisical as well — nothing is read from a `.env` file on disk.
+`install.sh` and `manage.sh` wrap the generated systemd units (bot, Mini App, web admin panel, Integration API) in `infisical run --env=dev` **only when the CLI is installed on the server and this checkout is linked to a project** (`.infisical.json`). Otherwise the units start the virtualenv's Python directly and read the same settings from the local `.env` — Infisical stays an option, never a requirement. Already have units written by an older release? Open the management menu (`shopvpn`) and choose *Diagnose & repair services*: it detects and fixes a unit whose start command cannot run.
 
 - Import an existing `.env` once: drag and drop it on the project’s **Secrets Overview** page (pick the target environment), then rename the local file to `.env.backup`.
 - Non-local (CI/CD, servers, Kubernetes): do **not** use interactive login — create a machine identity and authenticate with Universal Auth, keeping its client ID/secret in the platform’s own secret store (e.g. a systemd `EnvironmentFile`) scoped to just this project and environment.
