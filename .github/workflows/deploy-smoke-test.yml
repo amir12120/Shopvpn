@@ -81,6 +81,9 @@ jobs:
           test -f /etc/systemd/system/v2raybot.service
           test -x /usr/local/bin/shopvpn            # one-command install adds the CLI
           grep -q 'manage.sh' /usr/local/bin/shopvpn
+          test -x /usr/local/bin/sp                 # short one-command updater
+          sp version | grep -q '^ShopVPN v'         # it resolves the installed checkout
+          sp help | grep -q 'sp update'             # update runs without the menu
           # Disk-lean guarantees:
           test ! -d "$D/translation-venv"           # LibreTranslate off by default
           test ! -d "$HOME/.cache/pip"              # pip cache purged

@@ -400,6 +400,18 @@ Afterwards, typing `shopvpn` opens the same management menu at any time:
 shopvpn
 ```
 
+**Updating is one command too.** `sp update` runs the whole pipeline — fetch,
+packages, translation models, disk cleanup, restart, readiness check — without
+opening the menu or waiting for a key press. It exits non-zero if the bot does
+not come back up, so it is safe inside scripts and cron:
+
+```bash
+sp update
+```
+
+`sp status`, `sp restart` and `sp version` cover the rest; plain `sp` opens the
+interactive menu.
+
 > 🧪 All install steps are printed in English.
 >
 > If you prefer to install prerequisites on their own first (optional):

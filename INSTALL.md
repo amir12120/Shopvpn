@@ -124,6 +124,21 @@ The management menu handles install/update, backups, the web panel, the Mini
 App, the Integration API, VPN panels and translation languages. The default
 menu language is English; press `L` in the menu to switch to Persian.
 
+### One-command update
+
+`install.sh` installs the short `sp` command next to `shopvpn`. `sp update` runs
+exactly the same pipeline as menu item 2 — fetch, Python packages, translation
+models, disk cleanup, restart, readiness check — but without the menu and
+without waiting for a key press. The exit status is real: `0` only when every
+step passed and the bot stayed up, so it can be used in scripts and cron.
+
+```bash
+sp update
+```
+
+`sp status`, `sp restart`, `sp version` and `sp help` cover the rest; running
+`sp` with no arguments opens the interactive menu.
+
 ---
 
 <a id="disk"></a>

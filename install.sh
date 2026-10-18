@@ -420,13 +420,14 @@ fi
 # ----------------------------------------------------------------------------
 # 7/7. Install the `shopvpn` CLI command and open the management menu.
 # ----------------------------------------------------------------------------
-echo "🧰 Step 7/${TOTAL_STEPS} — installing the '${CLI_NAME}' CLI command..."
+echo "🧰 Step 7/${TOTAL_STEPS} — installing the '${CLI_NAME}' and 'sp' CLI commands..."
 CLI_TMP="$(mktemp)"
 cat > "$CLI_TMP" <<EOF
 #!/usr/bin/env bash
 # ${CLI_NAME} — ShopVPN management CLI (created automatically by install.sh).
 # Opens the interactive management menu; safe to run any time.
 INSTALL_DIR="${INSTALL_DIR}"
+export SHOPVPN_DIR="\$INSTALL_DIR"
 if [ ! -f "\$INSTALL_DIR/manage.sh" ]; then
     echo "ShopVPN is not installed at \$INSTALL_DIR." >&2
     echo "Install it first with:" >&2
@@ -435,11 +436,15 @@ if [ ! -f "\$INSTALL_DIR/manage.sh" ]; then
 fi
 exec bash "\$INSTALL_DIR/manage.sh" "\$@"
 EOF
-if sudo install -m 0755 "$CLI_TMP" "/usr/local/bin/${CLI_NAME}"; then
-    echo "✅ Installed: /usr/local/bin/${CLI_NAME}"
-else
-    echo "⚠️ Could not install /usr/local/bin/${CLI_NAME}; run manage.sh directly instead: bash $INSTALL_DIR/manage.sh"
-fi
+# Two names, one launcher: `shopvpn` for the full command and `sp` for the
+# short one (`sp update` is the one-command update).
+for cli in "$CLI_NAME" sp; do
+    if sudo install -m 0755 "$CLI_TMP" "/usr/local/bin/$cli"; then
+        echo "✅ Installed: /usr/local/bin/$cli"
+    else
+        echo "⚠️ Could not install /usr/local/bin/$cli; run manage.sh directly instead: bash $INSTALL_DIR/manage.sh"
+    fi
+done
 rm -f "$CLI_TMP"
 
 echo ""
@@ -448,6 +453,7 @@ echo "  Bot status:   sudo systemctl status $SERVICE_NAME"
 echo "  Live logs:    sudo journalctl -u $SERVICE_NAME -f"
 echo "  Restart:      sudo systemctl restart $SERVICE_NAME"
 echo "  Stop:         sudo systemctl stop $SERVICE_NAME"
+echo "  Update:       sp update"
 echo "  Manage menu:  ${CLI_NAME}"
 echo "──────────────────────────────────────────"
 

@@ -14,7 +14,9 @@
 # Customizable settings / تنظیمات قابل شخصی‌سازی
 # ---------------------------------------------------------------------------
 REPO_URL="https://github.com/amir12120/Shopvpn.git"
-INSTALL_DIR="$HOME/v2ray_bot"
+# SHOPVPN_DIR lets `sp` (and any deploy script) point the menu at a checkout
+# that is not in the default location. install.sh uses the same default.
+INSTALL_DIR="${SHOPVPN_DIR:-$HOME/v2ray_bot}"
 SERVICE_NAME="v2raybot"
 GITHUB_OWNER="amir12120"
 GITHUB_REPO="Shopvpn"
@@ -368,6 +370,26 @@ MSG_EN[bot_restarted]="✅ Bot restarted."
 MSG_FA[bot_restarted]="✅ بات ری‌استارت شد."
 MSG_EN[bot_stopped]="⛔️ Bot stopped."
 MSG_FA[bot_stopped]="⛔️ بات متوقف شد."
+
+# non-interactive CLI (`sp ...`)
+MSG_EN[cli_usage_heading]="Commands:"
+MSG_FA[cli_usage_heading]="دستورها:"
+MSG_EN[cli_cmd_update]="Fetch the latest code, refresh packages/translation, reclaim disk, restart and wait until the bot is up"
+MSG_FA[cli_cmd_update]="دریافت آخرین کد، آپدیت پکیج‌ها/ترجمه، آزادسازی دیسک، ری‌استارت و صبر تا بالا آمدن بات"
+MSG_EN[cli_cmd_status]="Show the state of the installed services"
+MSG_FA[cli_cmd_status]="نمایش وضعیت سرویس‌های نصب‌شده"
+MSG_EN[cli_cmd_restart]="Restart the bot and wait until it is ready"
+MSG_FA[cli_cmd_restart]="ری‌استارت بات و صبر تا آماده شدن"
+MSG_EN[cli_cmd_version]="Print the installed version"
+MSG_FA[cli_cmd_version]="نمایش نسخهٔ نصب‌شده"
+MSG_EN[cli_cmd_help]="Show this help"
+MSG_FA[cli_cmd_help]="نمایش همین راهنما"
+MSG_EN[cli_cmd_menu]="Open the interactive management menu"
+MSG_FA[cli_cmd_menu]="باز کردن منوی مدیریت تعاملی"
+MSG_EN[cli_installed_version]="Installed:"
+MSG_FA[cli_installed_version]="نسخهٔ نصب‌شده:"
+MSG_EN[cli_unknown]="Unknown command: %s"
+MSG_FA[cli_unknown]="دستور ناشناخته: %s"
 
 # show_stats
 MSG_EN[no_database]="No database found."
@@ -1102,8 +1124,8 @@ restart_service_and_wait() {
 # ---------------------------------------------------------------------------
 update_bot() {
     if [ ! -f "$INSTALL_DIR/main.py" ]; then
-        echo -e "${RED}$(t bot_not_installed)${RESET}"
-        return
+        echo -e "${RED}$(t bot_not_installed)${RESET}" >&2
+        return 1
     fi
     cd "$INSTALL_DIR"
 
@@ -1158,9 +1180,10 @@ update_bot() {
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$SERVICE_NAME"; then
         echo -e "  ${GREEN}${BOLD}$(t update_done)${RESET}"
-    else
-        echo -e "  ${RED}$(t install_failed "$SERVICE_NAME")${RESET}"
+        return 0
     fi
+    echo -e "  ${RED}$(t install_failed "$SERVICE_NAME")${RESET}" >&2
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1324,9 +1347,10 @@ view_logs() {
 restart_bot() {
     if restart_service_and_wait "$SERVICE_NAME"; then
         echo -e "${GREEN}$(t bot_restarted)${RESET}"
-    else
-        echo -e "${RED}$(t install_failed "$SERVICE_NAME")${RESET}"
+        return 0
     fi
+    echo -e "${RED}$(t install_failed "$SERVICE_NAME")${RESET}" >&2
+    return 1
 }
 
 stop_bot() {
@@ -2851,6 +2875,79 @@ doctor() {
     fi
     return "$failed"
 }
+# ---------------------------------------------------------------------------
+# Non-interactive commands / دستورهای غیرتعاملی
+#
+# `sp update` (the shortcut installed by install.sh) and `shopvpn update` run
+# the exact same pipeline as menu item 2, without drawing the menu or waiting
+# for a key press, so an update can be started over SSH, from cron or from a
+# deploy script. The exit status is meaningful: 0 only when every step and the
+# readiness check passed, so `sp update && echo ok` never lies.
+# ---------------------------------------------------------------------------
+cli_usage() {
+    echo "$(t cli_usage_heading)"
+    echo "  sp update     $(t cli_cmd_update)"
+    echo "  sp status     $(t cli_cmd_status)"
+    echo "  sp restart    $(t cli_cmd_restart)"
+    echo "  sp version    $(t cli_cmd_version)"
+    echo "  sp help       $(t cli_cmd_help)"
+    echo "  sp            $(t cli_cmd_menu)"
+}
+
+cli_status() {
+    if [ ! -f "$INSTALL_DIR/main.py" ]; then
+        echo -e "${RED}$(t bot_not_installed)${RESET}" >&2
+        return 1
+    fi
+    local unit state found=0
+    for unit in "$SERVICE_NAME" "${SERVICE_NAME}-miniapp" "${SERVICE_NAME}-adminpanel" "${SERVICE_NAME}-api"; do
+        systemctl list-units --full -all 2>/dev/null | grep -q "${unit}.service" || continue
+        found=1
+        if systemctl is-active --quiet "$unit" 2>/dev/null; then
+            state="${GREEN}$(t service_running)${RESET}"
+        else
+            state="${RED}$(t service_stopped)${RESET}"
+        fi
+        printf '  %-28s %b\n' "$unit" "$state"
+    done
+    [ "$found" = "1" ] || echo -e "  ${YELLOW}$(t not_installed)${RESET}"
+    printf '  %-28s %s\n' "$(t cli_installed_version)" "$(get_version)"
+    return 0
+}
+
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        update|up)
+            shift
+            update_bot
+            exit $?
+            ;;
+        status)
+            shift
+            cli_status
+            exit $?
+            ;;
+        restart)
+            shift
+            restart_bot
+            exit $?
+            ;;
+        version|-v|--version)
+            echo "ShopVPN $(get_version)"
+            exit 0
+            ;;
+        help|-h|--help)
+            cli_usage
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}$(t cli_unknown "$1")${RESET}" >&2
+            cli_usage >&2
+            exit 2
+            ;;
+    esac
+fi
+
 # ---------------------------------------------------------------------------
 # Main menu / منوی اصلی
 # ---------------------------------------------------------------------------
