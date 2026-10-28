@@ -608,6 +608,13 @@ def test_rejected_upstream_paths_stay_out():
 
     manage = (ROOT / "manage.sh").read_text(encoding="utf-8")
     assert "telegram_accounts_menu()" not in manage, "upstream's manage.sh menu came back"
+    extra = (ROOT / "manage_extra_cli.sh").read_text(encoding="utf-8")
+    assert "setup_web_store()" in extra
+    assert "setup_dedicated_sub()" in extra
+    assert "telegram_accounts_menu()" not in extra
+    assert "menu_item 33 menu_33" in manage
+    assert "manage_extra_cli.sh" in manage
+    assert "32) doctor; pause ;;" in manage
     # …while the fork's own service helpers are still there.
     assert "wait_for_service_ready()" in manage
     assert "restart_service_and_wait()" in manage

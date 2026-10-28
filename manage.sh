@@ -128,6 +128,8 @@ unit_default_execstart() {
         *-miniapp)       echo "$INSTALL_DIR/venv/bin/uvicorn miniapp.server:app --host 127.0.0.1 --port 8001" ;;
         *-adminpanel)    echo "$INSTALL_DIR/venv/bin/uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002" ;;
         *-api)           echo "$INSTALL_DIR/venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8003 --workers 1" ;;
+        *-sub)           echo "$INSTALL_DIR/venv/bin/uvicorn sub_server.server:app --host 127.0.0.1 --port 8004 --workers 1 --no-proxy-headers" ;;
+        *-store)         echo "$INSTALL_DIR/venv/bin/uvicorn web_store.server:app --host 127.0.0.1 --port 8005" ;;
     esac
 }
 
@@ -799,6 +801,168 @@ MSG_EN[unit_unfixable]="⛔️ Service '%s' cannot start: '%s' is missing."
 MSG_FA[unit_unfixable]="⛔️ سرویس «%s» اجرا نمی‌شود: «%s» وجود ندارد."
 MSG_EN[menu_32]="Diagnose & repair services (bot/panel/Mini App/API won't start)"
 MSG_FA[menu_32]="عیب‌یابی و تعمیر سرویس‌ها (بات/پنل/مینی‌اپ/API بالا نمی‌آید)"
+MSG_EN[sec_webshop]="WEB SHOP"
+MSG_FA[sec_webshop]="فروشگاه وب"
+MSG_EN[sec_dsub]="DEDICATED SUBSCRIPTION SERVER"
+MSG_FA[sec_dsub]="سرور ساب اختصاصی"
+MSG_EN[menu_33]="Setup web shop (domain + SSL)"
+MSG_FA[menu_33]="راه‌اندازی فروشگاه وب (دامنه + SSL)"
+MSG_EN[menu_34]="Web shop status"
+MSG_FA[menu_34]="وضعیت فروشگاه وب"
+MSG_EN[menu_35]="Remove web shop (service + nginx, SSL kept)"
+MSG_FA[menu_35]="حذف فروشگاه وب (سرویس + nginx، SSL نگه داشته می‌شود)"
+MSG_EN[menu_36]="Update web shop"
+MSG_FA[menu_36]="آپدیت فروشگاه وب"
+MSG_EN[menu_37]="Configure email service (SMTP verification codes)"
+MSG_FA[menu_37]="تنظیم سرویس ایمیل (SMTP برای کد ورود)"
+MSG_EN[menu_38]="Configure Cloudflare Turnstile (web shop protection)"
+MSG_FA[menu_38]="تنظیم Cloudflare Turnstile (امنیت فروشگاه وب)"
+MSG_EN[menu_39]="Setup dedicated sub server (domain + SSL + service)"
+MSG_FA[menu_39]="نصب/تنظیم سرور ساب اختصاصی (دامنه + SSL + سرویس)"
+MSG_EN[menu_40]="Turn dedicated sub ON / OFF"
+MSG_FA[menu_40]="روشن/خاموش کردن ساب اختصاصی"
+MSG_EN[menu_41]="Update dedicated sub server"
+MSG_FA[menu_41]="آپدیت سرور ساب اختصاصی"
+MSG_EN[menu_42]="Remove dedicated sub server"
+MSG_FA[menu_42]="حذف سرور ساب اختصاصی"
+MSG_EN[menu_43]="Dedicated sub status"
+MSG_FA[menu_43]="وضعیت ساب اختصاصی"
+MSG_EN[dsub_dir_missing]="⛔️ sub_server folder not found. Update the project code first (option 2)."
+MSG_FA[dsub_dir_missing]="⛔️ پوشه sub_server پیدا نشد. اول باید کد پروژه را آپدیت کنی (گزینه ۲)."
+MSG_EN[prompt_domain_dsub]="Enter a dedicated domain pointing to this server's IP for the sub links (e.g. sub.example.com): "
+MSG_FA[prompt_domain_dsub]="یک دامنه‌ی جدا که به IP همین سرور اشاره می‌کند برای لینک‌های ساب را وارد کن (مثلاً sub.example.com): "
+MSG_EN[creating_dsub_service]="⚙️ Creating the systemd service for the dedicated sub server..."
+MSG_FA[creating_dsub_service]="⚙️ ساخت سرویس systemd برای سرور ساب اختصاصی..."
+MSG_EN[dsub_env_saved]="✅ Saved DEDICATED_SUB_URL in .env."
+MSG_FA[dsub_env_saved]="✅ آدرس DEDICATED_SUB_URL در .env ذخیره شد."
+MSG_EN[dsub_ready]="✅ Dedicated sub server is ready: %s"
+MSG_FA[dsub_ready]="✅ سرور ساب اختصاصی آماده است: %s"
+MSG_EN[dsub_health_ok]="✅ Health check passed (the server answers over HTTPS)."
+MSG_FA[dsub_health_ok]="✅ تست سلامت موفق بود (سرور روی HTTPS پاسخ می‌دهد)."
+MSG_EN[dsub_health_fail]="⚠️ Health check failed. Look at: sudo journalctl -u %s -n 50 --no-pager"
+MSG_FA[dsub_health_fail]="⚠️ تست سلامت ناموفق بود. بررسی کن: sudo journalctl -u %s -n 50 --no-pager"
+MSG_EN[dsub_enable_ask]="Turn the dedicated sub ON now? (Y/n): "
+MSG_FA[dsub_enable_ask]="ساب اختصاصی همین الان روشن شود؟ (Y/n): "
+MSG_EN[dsub_hint]="All other settings (page design, texts, apps, headers) are in the Telegram bot: Admin panel → Dedicated Sub."
+MSG_FA[dsub_hint]="بقیه‌ی تنظیمات (طراحی صفحه، متن‌ها، برنامه‌ها، هدرها) داخل بات تلگرام است: پنل مدیریت ← ساب اختصاصی."
+MSG_EN[dsub_not_installed]="⛔️ Dedicated sub server not installed yet. Run option 39 first."
+MSG_FA[dsub_not_installed]="⛔️ سرور ساب اختصاصی هنوز نصب نشده. اول گزینه ۳۹ را بزن."
+MSG_EN[dsub_state]="Dedicated sub is currently: %s"
+MSG_FA[dsub_state]="وضعیت فعلی ساب اختصاصی: %s"
+MSG_EN[dsub_toggle_prompt]="1) Turn ON   2) Turn OFF   (Enter = cancel): "
+MSG_FA[dsub_toggle_prompt]="۱) روشن   ۲) خاموش   (Enter = انصراف): "
+MSG_EN[dsub_toggle_off_note]="OFF keeps links that were already sent to users working (plain pass-through); new links use the panel address again."
+MSG_FA[dsub_toggle_off_note]="حالت خاموش لینک‌هایی که قبلاً به کاربران داده شده را سالم نگه می‌دارد (عبور ساده)؛ لینک‌های جدید دوباره آدرس خود پنل می‌شوند."
+MSG_EN[restarting_dsub_service]="♻️ Restarting dedicated sub server"
+MSG_FA[restarting_dsub_service]="♻️ ری‌استارت سرور ساب اختصاصی"
+MSG_EN[update_dsub_header]="Updating Dedicated Sub Server"
+MSG_FA[update_dsub_header]="آپدیت سرور ساب اختصاصی"
+MSG_EN[dsub_update_done]="✅ Dedicated sub server updated."
+MSG_FA[dsub_update_done]="✅ آپدیت سرور ساب اختصاصی انجام شد."
+MSG_EN[remove_dsub_warn]="⚠️ This removes the sub server and its nginx config. Sub links already given to users will STOP working (turn it OFF instead if you only want to disable the feature). The SSL certificate is kept."
+MSG_FA[remove_dsub_warn]="⚠️ این کار سرور ساب و کانفیگ nginx آن را حذف می‌کند. لینک‌های ساب که قبلاً به کاربران داده شده از کار می‌افتند (اگر فقط می‌خواهی قابلیت را غیرفعال کنی «خاموش کردن» را بزن). گواهی SSL نگه داشته می‌شود."
+MSG_EN[prompt_domain_used_dsub]="What domain did you use for the dedicated sub server? (to remove its nginx config): "
+MSG_FA[prompt_domain_used_dsub]="دامنه‌ای که برای سرور ساب اختصاصی استفاده کرده بودی چه بود؟ (برای حذف کانفیگ nginx): "
+MSG_EN[dsub_status_title]="Dedicated sub status"
+MSG_FA[dsub_status_title]="وضعیت ساب اختصاصی"
+MSG_EN[dsub_status_none]="No dedicated sub domain is configured."
+MSG_FA[dsub_status_none]="هیچ دامنه‌ی ساب اختصاصی تنظیم نشده است."
+MSG_EN[dsub_status_service]="Service active"
+MSG_FA[dsub_status_service]="سرویس فعال"
+MSG_EN[dsub_status_state]="Feature state (ON/OFF)"
+MSG_FA[dsub_status_state]="وضعیت قابلیت (روشن/خاموش)"
+MSG_EN[dsub_removed]="✅ Dedicated sub server removed."
+MSG_FA[dsub_removed]="✅ سرور ساب اختصاصی حذف شد."
+MSG_EN[ws_need_miniapp]="The web shop service files or venv are missing. Update the project and reinstall packages first."
+MSG_FA[ws_need_miniapp]="فایل‌های سرویس فروشگاه وب یا venv پیدا نشد. ابتدا پروژه را به‌روزرسانی و پکیج‌ها را نصب کن."
+MSG_EN[ws_domain_prompt]="Web shop domain (e.g. shop.example.com; its A record must point to this server's IP): "
+MSG_FA[ws_domain_prompt]="دامنه فروشگاه (مثلاً shop.example.com؛ رکورد A باید به IP همین سرور اشاره کند): "
+MSG_EN[ws_domain_invalid]="Invalid domain."
+MSG_FA[ws_domain_invalid]="دامنه معتبر نیست."
+MSG_EN[ws_check_dns]="Checking DNS..."
+MSG_FA[ws_check_dns]="بررسی DNS..."
+MSG_EN[ws_dns_unresolved]="The domain does not resolve to an IP; fix your DNS."
+MSG_FA[ws_dns_unresolved]="دامنه به IP قابل‌حل نیست؛ DNS را تنظیم کن."
+MSG_EN[ws_ip_mismatch]="Warning: the domain IP (%s) does not match the server IP (%s)."
+MSG_FA[ws_ip_mismatch]="هشدار: IP دامنه (%s) با IP سرور (%s) یکی نیست."
+MSG_EN[ws_continue_anyway]="Continue anyway? (yes/no): "
+MSG_FA[ws_continue_anyway]="با این حال ادامه بدهم؟ (yes/no): "
+MSG_EN[ws_conf_exists]="A config file for this domain already exists: %s"
+MSG_FA[ws_conf_exists]="فایل پیکربندی این دامنه از قبل وجود دارد: %s"
+MSG_EN[ws_replace_prompt]="Replace it? (yes/no): "
+MSG_FA[ws_replace_prompt]="جایگزین شود؟ (yes/no): "
+MSG_EN[ws_nginx_invalid]="Invalid Nginx configuration; check the file: %s"
+MSG_FA[ws_nginx_invalid]="پیکربندی Nginx نامعتبر است؛ فایل را بررسی کن: %s"
+MSG_EN[ws_cert_email_prompt]="Contact email for SSL renewal notices (empty = no email): "
+MSG_FA[ws_cert_email_prompt]="ایمیل تماس برای تمدید گواهی SSL (خالی = بدون ایمیل): "
+MSG_EN[ws_ready]="Web shop is ready: https://%s/"
+MSG_FA[ws_ready]="فروشگاه وب آماده است: https://%s/"
+MSG_EN[ws_ports_hint]="Make sure ports 80 and 443 are open in your firewall / provider panel."
+MSG_FA[ws_ports_hint]="مطمئن شو پورت‌های 80 و 443 در فایروال/پنل ارائه‌دهنده باز هستند."
+MSG_EN[store_not_installed]="⛔️ Web shop not installed yet. Run option 33 first."
+MSG_FA[store_not_installed]="⛔️ فروشگاه وب هنوز نصب نشده. اول گزینه ۳۳ را بزن."
+MSG_EN[restarting_store_service]="♻️ Restarting web shop service"
+MSG_FA[restarting_store_service]="♻️ ری‌استارت سرویس فروشگاه وب"
+MSG_EN[update_store_header]="Updating Web Shop"
+MSG_FA[update_store_header]="آپدیت فروشگاه وب"
+MSG_EN[store_update_done]="✅ Web shop updated."
+MSG_FA[store_update_done]="✅ آپدیت فروشگاه وب انجام شد."
+MSG_EN[ws_status_none]="No web shop domain is configured."
+MSG_FA[ws_status_none]="هیچ دامنه‌ی فروشگاه وبی تنظیم نشده است."
+MSG_EN[ws_status_title]="Web shop status"
+MSG_FA[ws_status_title]="وضعیت فروشگاه وب"
+MSG_EN[ws_status_enabled]="nginx config enabled"
+MSG_FA[ws_status_enabled]="کانفیگ nginx فعال"
+MSG_EN[ws_status_cert]="SSL certificate"
+MSG_FA[ws_status_cert]="گواهی SSL"
+MSG_EN[ws_status_store]="/healthz HTTP code"
+MSG_FA[ws_status_store]="کد HTTP مسیر /healthz"
+MSG_EN[ws_status_root]="/ HTTP code"
+MSG_FA[ws_status_root]="کد HTTP ریشه /"
+MSG_EN[ws_status_miniapp_svc]="Web shop service"
+MSG_FA[ws_status_miniapp_svc]="سرویس فروشگاه وب"
+MSG_EN[ws_yes]="yes"
+MSG_FA[ws_yes]="بله"
+MSG_EN[ws_no]="no"
+MSG_FA[ws_no]="خیر"
+MSG_EN[ws_pick_domain]="Which domain? (number): "
+MSG_FA[ws_pick_domain]="کدام دامنه؟ (شماره): "
+MSG_EN[ws_remove_warn]="This removes the web shop nginx config for %s. SSL is kept."
+MSG_FA[ws_remove_warn]="کانفیگ nginx فروشگاه وب برای %s حذف می‌شود. گواهی SSL نگه داشته می‌شود."
+MSG_EN[ws_removed]="Web shop domain %s removed."
+MSG_FA[ws_removed]="دامنه‌ی فروشگاه وب %s حذف شد."
+MSG_EN[env_missing_install_first]="The .env file was not found; install the bot first."
+MSG_FA[env_missing_install_first]="فایل .env پیدا نشد؛ ابتدا بات را نصب کن."
+MSG_EN[smtp_intro]="Enter your email provider's SMTP details. This option does not install a mail server; it uses your provider's SMTP."
+MSG_FA[smtp_intro]="اطلاعات SMTP سرویس ایمیلی را وارد کن. این گزینه سرور ایمیل نصب نمی‌کند؛ از SMTP سرویس‌دهنده ایمیل استفاده می‌کند."
+MSG_EN[smtp_host_prompt]="SMTP Host (e.g. smtp.gmail.com): "
+MSG_FA[smtp_host_prompt]="SMTP Host (مثلاً smtp.gmail.com): "
+MSG_EN[smtp_port_prompt]="SMTP Port (587 or 465): "
+MSG_FA[smtp_port_prompt]="SMTP Port (587 یا 465): "
+MSG_EN[smtp_user_prompt]="SMTP username / email address: "
+MSG_FA[smtp_user_prompt]="نام کاربری SMTP / آدرس ایمیل: "
+MSG_EN[smtp_pass_prompt]="SMTP password or App Password: "
+MSG_FA[smtp_pass_prompt]="رمز SMTP یا App Password: "
+MSG_EN[smtp_from_prompt]="Sender address (empty = same as username): "
+MSG_FA[smtp_from_prompt]="آدرس فرستنده (خالی = همان نام کاربری): "
+MSG_EN[smtp_ssl_prompt]="Direct SSL connection on port 465? (y/N): "
+MSG_FA[smtp_ssl_prompt]="اتصال SSL مستقیم روی پورت 465؟ (y/N): "
+MSG_EN[smtp_invalid]="Incomplete information or invalid port."
+MSG_FA[smtp_invalid]="اطلاعات ناقص یا پورت نامعتبر است."
+MSG_EN[smtp_saved]="SMTP settings saved. To test, request an email login code in the shop."
+MSG_FA[smtp_saved]="تنظیمات SMTP ذخیره شد. برای تست، در فروشگاه یک کد ورود ایمیلی درخواست کن."
+MSG_EN[smtp_fail_hint]="If sending failed: sudo journalctl -u %s-miniapp -n 100 --no-pager"
+MSG_FA[smtp_fail_hint]="اگر ارسال ناموفق بود: sudo journalctl -u %s-miniapp -n 100 --no-pager"
+MSG_EN[ts_intro]="Create a widget for your shop domain in Cloudflare Turnstile and enter the Site Key and Secret Key."
+MSG_FA[ts_intro]="در Cloudflare Turnstile یک widget برای دامنه فروشگاه بساز و Site Key و Secret Key را وارد کن."
+MSG_EN[ts_disable_hint]="To disable it, leave both values empty."
+MSG_FA[ts_disable_hint]="برای غیرفعال‌کردن، هر دو مقدار را خالی بگذار."
+MSG_EN[ts_secret_required]="Secret Key is required too."
+MSG_FA[ts_secret_required]="Secret Key هم الزامی است."
+MSG_EN[ts_site_required]="Site Key is required too."
+MSG_FA[ts_site_required]="Site Key هم الزامی است."
+MSG_EN[ts_saved]="Turnstile settings saved. Check a test purchase and an email-code request."
+MSG_FA[ts_saved]="تنظیمات Turnstile ذخیره شد. یک خرید آزمایشی و درخواست کد ایمیل را بررسی کن."
 MSG_EN[doctor_header]="SERVICE DIAGNOSIS"
 MSG_FA[doctor_header]="عیب‌یابی سرویس‌ها"
 MSG_EN[doctor_venv_ok]="Python environment: %s"
@@ -2948,6 +3112,12 @@ if [ "$#" -gt 0 ]; then
     esac
 fi
 
+CLI_EXTRA="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/manage_extra_cli.sh"
+if [ -f "$CLI_EXTRA" ]; then
+    # shellcheck source=manage_extra_cli.sh
+    . "$CLI_EXTRA"
+fi
+
 # ---------------------------------------------------------------------------
 # Main menu / منوی اصلی
 # ---------------------------------------------------------------------------
@@ -2995,6 +3165,19 @@ while true; do
     menu_item 22 menu_22
     menu_item 23 menu_23
     menu_item 32 menu_32 "$YELLOW"
+    menu_section sec_webshop
+    menu_item 33 menu_33
+    menu_item 34 menu_34
+    menu_item 35 menu_35 "$RED"
+    menu_item 36 menu_36
+    menu_item 37 menu_37
+    menu_item 38 menu_38
+    menu_section sec_dsub
+    menu_item 39 menu_39
+    menu_item 40 menu_40
+    menu_item 41 menu_41
+    menu_item 42 menu_42 "$RED"
+    menu_item 43 menu_43
     draw_rule
     menu_item L menu_lang "$MAGENTA"
     menu_item 0 menu_0 "$DIM"
@@ -3037,6 +3220,17 @@ while true; do
         30) remove_translation_languages; pause ;;
         31) factory_reset; pause ;;
         32) doctor; pause ;;
+        33) setup_web_store; pause ;;
+        34) web_store_status; pause ;;
+        35) remove_web_store; pause ;;
+        36) update_web_store; pause ;;
+        37) setup_email_service; pause ;;
+        38) setup_web_turnstile; pause ;;
+        39) setup_dedicated_sub; pause ;;
+        40) toggle_dedicated_sub; pause ;;
+        41) update_dedicated_sub; pause ;;
+        42) remove_dedicated_sub; pause ;;
+        43) dedicated_sub_status; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;
