@@ -2601,3 +2601,17 @@ EXTRA_PHRASES.update({
     'پنل VPN یا نود SSH یافت نشد.': 'VPN panel or SSH node not found.',
     'اتصال مستقیم فقط برای بات اصلی مجاز است.': 'Direct provisioning is only allowed for the main bot.',
 })
+
+
+# --- کلید خاموش/روشن کردن کل بخش نمایندگی (پنل مدیریت تلگرام) ---
+EXTRA_PHRASES.update({
+    '🔴 خاموش کردن بخش نمایندگی\u200cها': '🔴 Turn off the reseller section',
+    '🟢 روشن کردن بخش نمایندگی\u200cها': '🟢 Turn on the reseller section',
+    'وضعیت بخش نمایندگی: 🟢 روشن': 'Reseller section status: 🟢 On',
+    'وضعیت بخش نمایندگی: 🔴 خاموش': 'Reseller section status: 🔴 Off',
+    'با این کلید بخش نمایندگی (درخواست نمایندگی و پنل نماینده) را برای کاربران خاموش یا روشن کنید؛ مدیریت نماینده\u200cهای فعلی همیشه در دسترس است.': 'Use this switch to turn the reseller section (applications and the reseller panel) on or off for users; managing existing resellers always stays available.',
+    'بخش نمایندگی برای کاربران مخفی است. با کلید زیر دوباره روشنش کنید.': 'The reseller section is hidden from users. Turn it back on with the button below.',
+    'بخش نمایندگی خاموش شد؛ دکمه\u200cهای آن از منوی کاربران حذف می\u200cشود.': 'The reseller section is now off; its buttons are removed from the user menu.',
+    'بخش نمایندگی روشن شد؛ دکمه\u200cهای آن به منوی کاربران برگشت.': 'The reseller section is back on; its buttons have returned to the user menu.',
+    'بخش نمایندگی در حال حاضر خاموش است.': 'The reseller section is currently turned off.',
+})

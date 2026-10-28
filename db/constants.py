@@ -346,6 +346,10 @@ DEFAULT_SETTINGS = {
     # چیدمان دکمه‌های منوی اصلی (ترتیب و نمایش) - آرایه JSON از کلیدها
     "menu_order": '["miniapp","btn_buy","btn_test","btn_my_orders","btn_referral","btn_wheel","btn_contact","btn_admin_panel"]',
     "miniapp_enabled": "1",
+    # کلید اصلی بخش نمایندگی؛ "0" یعنی همه‌ی مسیرهای نمایندگی برای کاربران
+    # (منوی سطوح، درخواست و پنل نماینده) مخفی و بسته می‌شود. مدیریت نماینده‌های
+    # فعلی در پنل مدیریت همیشه در دسترس است.
+    "reseller_section_enabled": "1",
     "reseller_request_enabled": "1",
     # منوی یکپارچه انتخاب سطح نمایندگی برای کاربران عادی
     "reseller_tiers_menu_enabled": "1",

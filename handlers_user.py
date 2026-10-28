@@ -3419,6 +3419,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def reseller_panel_open(message: Message, state: FSMContext):
         if not (await asyncio.to_thread(db.is_reseller, message.from_user.id)):
             return
+        if not kb.reseller_section_enabled(db):
+            await message.answer(tr("بخش نمایندگی در حال حاضر خاموش است."))
+            return
         await state.clear()
         credit = (await asyncio.to_thread(reseller_backend.get_reseller_credit, message.from_user.id))
         supply = await asyncio.to_thread(reseller_backend.get_reseller_supply, message.from_user.id)
@@ -3444,6 +3447,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not (await asyncio.to_thread(db.is_reseller, call.from_user.id)):
             await call.answer(tr("دسترسی نداری."), show_alert=True)
             return
+        if not kb.reseller_section_enabled(db):
+            await call.answer(tr("بخش نمایندگی در حال حاضر خاموش است."), show_alert=True)
+            return
         stats = await asyncio.to_thread(db.get_reseller_overview_stats)
         await call.message.answer(
             tr("📊 آمار کلی نمایندگی\n\n"
@@ -3459,6 +3465,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_reseller_fixed_product(call: CallbackQuery, state: FSMContext):
         if not (await asyncio.to_thread(db.is_reseller, call.from_user.id)):
             await call.answer(db.get_text('handlers_user.auto_c5ac93f4', 'دسترسی نداری.'), show_alert=True); return
+        if not kb.reseller_section_enabled(db):
+            await call.answer(tr("بخش نمایندگی در حال حاضر خاموش است."), show_alert=True); return
         try:
             product_id = int(call.data.split(":", 1)[1])
         except Exception:
@@ -3575,6 +3583,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_reseller_new_config(call: CallbackQuery, state: FSMContext):
         if not (await asyncio.to_thread(db.is_reseller, call.from_user.id)):
             await call.answer(db.get_text('handlers_user.auto_c5ac93f4', 'دسترسی نداری.'), show_alert=True)
+            return
+        if not kb.reseller_section_enabled(db):
+            await call.answer(tr("بخش نمایندگی در حال حاضر خاموش است."), show_alert=True)
             return
         credit = (await asyncio.to_thread(reseller_backend.get_reseller_credit, call.from_user.id))
         if credit <= 0:
@@ -6692,6 +6703,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def reseller_tiers_menu(message: Message):
         if not is_main_bot:
             return
+        if not kb.reseller_section_enabled(db):
+            await message.answer(tr("بخش نمایندگی در حال حاضر خاموش است."))
+            return
         if (await asyncio.to_thread(db.get_setting, "reseller_request_enabled", "1")) != "1":
             await message.answer(db.get_text('handlers_user.auto_8f789b56', 'در حال حاضر امکان درخواست نمایندگی غیرفعال است.'))
             return
@@ -6701,6 +6715,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_reseller_tiers(call: CallbackQuery, state: FSMContext):
         await call.answer()
         if not is_main_bot:
+            return
+        if not kb.reseller_section_enabled(db):
             return
         if (await asyncio.to_thread(db.get_setting, "reseller_request_enabled", "1")) != "1":
             return
@@ -6781,6 +6797,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     async def reseller_request_start(message: Message, state: FSMContext, tier=None):
         if not is_main_bot:
+            return
+        if not kb.reseller_section_enabled(db):
+            await message.answer(tr("بخش نمایندگی در حال حاضر خاموش است."))
             return
         if (await asyncio.to_thread(db.get_setting, "reseller_request_enabled", "1")) != "1":
             await message.answer(db.get_text('handlers_user.auto_8f789b56', 'در حال حاضر امکان درخواست نمایندگی غیرفعال است.'))

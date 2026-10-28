@@ -30,6 +30,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from force_join import is_channel_member
 
 import keyboards as kb
+import reseller_section
 from database import Database, MENU_BUTTON_META
 from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL, BOT_TOKEN, DB_PATH as MAIN_DB_PATH
 from config_delivery import (
@@ -506,9 +507,27 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer()
         await state.clear()
         cat_key = call.data.split(":", 1)[1]
-        title = kb.admin_category_label(cat_key)
-        await replace_admin_view(call, f"{title}:", reply_markup=kb.admin_category_kb(db, is_main_bot, cat_key))
+        await replace_admin_view(call, kb.admin_category_intro(db, cat_key),
+                                 reply_markup=kb.admin_category_kb(db, is_main_bot, cat_key))
         await call.answer()
+
+    @router.callback_query(F.data == reseller_section.TOGGLE_CALLBACK)
+    async def cb_admin_reseller_section_toggle(call: CallbackQuery):
+        """خاموش/روشن کردن کل بخش نمایندگی از داخل زیرمنوی «نمایندگی‌ها»."""
+        if not is_main_bot or not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = await asyncio.to_thread(
+            db.get_setting, kb.RESELLER_SECTION_SETTING, "1")
+        turning_off = str(current).strip() != "0"
+        new_value = "0" if turning_off else "1"
+        await asyncio.to_thread(db.set_setting, kb.RESELLER_SECTION_SETTING, new_value)
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "reseller_section_toggle",
+            f"{kb.RESELLER_SECTION_SETTING}={new_value}")
+        await replace_admin_view(
+            call, kb.admin_category_intro(db, "resellers"),
+            reply_markup=kb.admin_category_kb(db, is_main_bot, "resellers"))
+        await call.answer(reseller_section.toggle_message(turning_off))
 
     # -------------------------------------------------------------------
     # مدیریت دسته‌بندی‌ها

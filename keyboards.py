@@ -18,6 +18,7 @@ from aiogram.types import (
 )
 
 import extra_gateway_registry
+import reseller_section
 import tutorial_hub
 from config import MINIAPP_URL
 from panel_providers import PANEL_TYPE_LABELS, INBOUND_SELECT_PANEL_TYPES
@@ -87,6 +88,14 @@ def miniapp_inline_kb(miniapp_url: str) -> InlineKeyboardMarkup:
     ])
 
 
+RESELLER_SECTION_SETTING = reseller_section.SETTING_KEY
+
+
+def reseller_section_enabled(db) -> bool:
+    """آیا بخش نمایندگی برای کاربران باز است؟ (منطق در reseller_section.py)"""
+    return reseller_section.is_enabled(db)
+
+
 def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_reseller_request: bool,
                  show_commission_reseller_request: bool = False):
     """لیست مشترک آیتم‌های منوی اصلی را برمی‌گرداند: (key, text, style).
@@ -144,27 +153,29 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
             return None
         return (settings.get("btn_admin_panel", "⚙️ پنل مدیریت"), settings.get("btn_admin_panel_style", ""))
 
+    section_on = reseller_section_enabled(db)
+
     def item_reseller_panel():
-        if not is_reseller:
+        if not is_reseller or not section_on:
             return None
         return (settings.get("btn_reseller_panel", "🧑‍💼 پنل نمایندگی"), settings.get("btn_reseller_panel_style", "primary"))
 
     tiers_menu_on = settings.get("reseller_tiers_menu_enabled", "1") == "1"
 
     def item_reseller_tiers():
-        if not tiers_menu_on or not (show_reseller_request or show_commission_reseller_request):
+        if not section_on or not tiers_menu_on or not (show_reseller_request or show_commission_reseller_request):
             return None
         return (settings.get("btn_reseller_tiers", "🤝 نمایندگی"), settings.get("btn_reseller_tiers_style", "primary"))
 
     def item_reseller_request():
-        if tiers_menu_on or not show_reseller_request:
+        if not section_on or tiers_menu_on or not show_reseller_request:
             return None
         if settings.get("reseller_request_enabled", "1") != "1":
             return None
         return (settings.get("btn_reseller_request", "🏪 درخواست نمایندگی سطح ۲"), settings.get("btn_reseller_request_style", "primary"))
 
     def item_commission_reseller_request():
-        if tiers_menu_on or not show_commission_reseller_request:
+        if not section_on or tiers_menu_on or not show_commission_reseller_request:
             return None
         if settings.get("commission_reseller_request_enabled", "1") != "1":
             return None
@@ -2065,7 +2076,9 @@ def admin_panel_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
     for cat_key, cat_label, _item_keys in _ordered_admin_categories(db):
         item_keys = admin_category_item_keys(db, cat_key)
         visible_items = [k for k in item_keys if _is_item_visible(db, k, is_main_bot)]
-        if not visible_items:
+        # دستهٔ نمایندگی حتی اگر همهٔ آیتم‌هایش جابه‌جا/مخفی شده باشند باز
+        # می‌ماند، چون کلید خاموش/روشن کردن کل بخش داخل همان دسته است.
+        if not visible_items and not (cat_key == "resellers" and is_main_bot):
             continue
         custom_label = db.get_setting(f"catlbl_{cat_key}", "")
         label = custom_label if custom_label else tr(cat_label)
@@ -2096,8 +2109,28 @@ def admin_category_kb(db, is_main_bot: bool, cat_key: str) -> InlineKeyboardMark
             button = _styled_inline(db, label, callback_data, f"{key}_style")
         entries.append((key, label, button))
     rows = _layout_group_rows(db, f"admin_items__{cat_key}", entries, wide_pack=True)
+    if cat_key == "resellers" and is_main_bot:
+        # کلید خاموش/روشن کردن کل بخش نمایندگی، بالای همان زیرمنو (نه داخل
+        # فهرست آیتم‌ها) تا همیشه و مستقل از چیدمان سفارشی دیده شود.
+        toggle = _styled_inline(
+            db, tr(reseller_section_toggle_label(db)),
+            "adm_reseller_section_toggle", "adm_reseller_section_toggle_style")
+        rows.insert(0, [toggle])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به پنل مدیریت"), callback_data="adm_back_panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reseller_section_toggle_label(db) -> str:
+    """برچسب دکمه‌ی سوئیچ بخش نمایندگی بر اساس وضعیت فعلی."""
+    return reseller_section.toggle_label(db)
+
+
+def admin_category_intro(db, cat_key: str) -> str:
+    """سرصفحهٔ هر دستهٔ پنل مدیریت؛ دستهٔ نمایندگی وضعیت سوئیچ را هم نشان می‌دهد."""
+    title = admin_category_label(cat_key)
+    if cat_key != "resellers":
+        return f"{title}:"
+    return f"{title}:\n\n{reseller_section.status_text(db)}"
 
 
 def admin_category_label(cat_key: str) -> str:
