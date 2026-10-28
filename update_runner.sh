@@ -93,23 +93,26 @@ healthy() {
     return 0
 }
 
-restore_snapshot() { # $1 = مسیر فایل tar.gz
-    log "restoring code from $1"
+restore_snapshot() { # $1 = فایل tar.gz، $2 = کامیت متناظر (اختیاری)
+    log "restoring code from $1 (head=${2:-?})"
     tar -xzf "$1" -C "$INSTALL_DIR" || return 1
-    if [ -n "$OLD_HEAD" ] && [ -d .git ]; then
-        git reset -q --mixed "$OLD_HEAD" 2>/dev/null || true
+    if [ -n "${2:-}" ] && [ -d .git ]; then
+        # HEAD باید دقیقاً همان کامیت بکاپ باشد، وگرنه آپدیت بعدی دوباره کد
+        # خراب را از origin می‌آورد و «برگشت» عملاً بی‌اثر می‌شود.
+        git reset -q --mixed "$2" 2>/dev/null || true
     fi
     return 0
 }
 
 prune_backups() {
     ls -1t backups/code_before_update_*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+    ls -1t backups/code_before_update_*.tar.gz.head 2>/dev/null | tail -n +4 | xargs -r rm -f
     ls -1t backups/db_before_update_*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
 do_rollback_after_failure() { # $1 reason
     log "ROLLBACK: $1"
-    if ! restore_snapshot "$SNAP"; then
+    if ! restore_snapshot "$SNAP" "$OLD_HEAD"; then
         write_result failed "$1 (و برگشت خودکار هم ناموفق بود؛ بکاپ: $SNAP)"
         exit 1
     fi
@@ -128,7 +131,9 @@ do_rollback_after_failure() { # $1 reason
 if [ "$MODE" = "rollback" ]; then
     LAST="$(ls -1t backups/code_before_update_*.tar.gz 2>/dev/null | head -n 1)"
     [ -n "$LAST" ] || { write_result failed "نسخه‌ی پشتیبان پیدا نشد"; exit 1; }
-    restore_snapshot "$LAST" || { write_result failed "بازیابی بکاپ ناموفق بود"; exit 1; }
+    LAST_HEAD="$(cat "$LAST.head" 2>/dev/null || true)"
+    restore_snapshot "$LAST" "$LAST_HEAD" \
+        || { write_result failed "بازیابی بکاپ ناموفق بود"; exit 1; }
     "$PY" -m pip install -r requirements.txt --quiet 2>&1 | tail -n 3 \
         || log "WARN: pip install during rollback failed"
     restart_all
@@ -148,6 +153,9 @@ tar -czf "$SNAP" --exclude=./venv --exclude=./.git --exclude=./backups --exclude
     --exclude=./reseller_dbs --exclude='./*.db' --exclude='./*.db-*' --exclude=./.env \
     --exclude='__pycache__' -C "$INSTALL_DIR" . \
     || { write_result failed "گرفتن بکاپ کد ناموفق بود"; exit 1; }
+# کامیت متناظر با همین بکاپ را کنار آن نگه می‌داریم تا «برگشت» HEAD را هم
+# به همان نسخه برگرداند، نه به کامیت خراب فعلی.
+printf '%s\n' "$OLD_HEAD" > "$SNAP.head"
 
 log "backup: database"
 "$PY" - "$INSTALL_DIR" "$TS" <<'PYEOF' || log "WARN: db backup failed"

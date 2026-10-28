@@ -766,6 +766,8 @@ def test_project_update_runner_stays_next_to_the_bot():
         "REPO_OWNER",                 # archive fallback target
         "git fetch",                  # normal fast-forward path
         "code_before_update_",        # code snapshot for rollback
+        '"$SNAP.head"',               # commit that matches the code snapshot
+        "LAST_HEAD",                  # manual rollback pins that commit
         "db_before_update_",          # database snapshot for rollback
         "NR_BEFORE",                  # auto-restart baseline (no false rollback)
         "restart_all",                # restarts the bot service last
