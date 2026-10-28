@@ -2293,7 +2293,7 @@ async def api_create_order(body: OrderCreate, request: Request, auth=Depends(req
         if order["final_price"] <= 0:
             if product["is_auto_provision"]:
                 try:
-                    if product["provision_server_id"]:
+                    if product["provision_server_id"] or product["provision_ssh_node_id"]:
                         prov_results = await provision_direct(db, product, quantity, user_id=tg_id, order_id=order_id)
                     else:
                         prov_results = await provision_auto_config(db, product, quantity, user_id=tg_id, order_id=order_id)
@@ -2636,7 +2636,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
             return {"status": "ok"}
         quantity = order["quantity"] or 1
         try:
-            if product["provision_server_id"]:
+            if product["provision_server_id"] or product["provision_ssh_node_id"]:
                 prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             else:
                 prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
@@ -2914,7 +2914,7 @@ async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tena
             return {"status": "ok"}
         quantity = order["quantity"] or 1
         try:
-            if product["provision_server_id"]:
+            if product["provision_server_id"] or product["provision_ssh_node_id"]:
                 prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             else:
                 prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
@@ -3657,7 +3657,7 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
         if not db.claim_order(order_id):
             return
         try:
-            if product["provision_server_id"]:
+            if product["provision_server_id"] or product["provision_ssh_node_id"]:
                 prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             else:
                 prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
@@ -4153,7 +4153,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                     return {"status": "ok"}
                 quantity = order["quantity"] or 1
                 try:
-                    if product["provision_server_id"]:
+                    if product["provision_server_id"] or product["provision_ssh_node_id"]:
                         prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
                     else:
                         prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
@@ -5297,10 +5297,11 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
             raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
         provision_server_id = body.provision_server_id
         source_kwargs["is_auto_provision"] = True
+        source_kwargs["provision_ssh_node_id"] = None
     elif body.source == "bank":
         if body.duration_days is None and old_product["duration_days"] == 0:
             raise HTTPException(status_code=400, detail=tr("برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید."))
-        source_kwargs.update(is_auto_provision=False, provision_server_id=None, auto_provision_volume_gb=None)
+        source_kwargs.update(is_auto_provision=False, provision_server_id=None, provision_ssh_node_id=None, auto_provision_volume_gb=None)
     elif body.provision_server_id is not None:
         if not old_product["is_auto_provision"]:
             raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
@@ -5309,6 +5310,7 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
         if not db.get_panel_server(body.provision_server_id):
             raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
         provision_server_id = body.provision_server_id
+        source_kwargs["provision_ssh_node_id"] = None
 
     if body.source == "bank":
         effective_server_id = None

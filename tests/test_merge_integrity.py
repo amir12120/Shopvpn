@@ -99,6 +99,14 @@ UPSTREAM_FEATURE_MODULES = (
     "web_store/server.py",
     "updater.py",
     "admin_update.py",
+    # --- upstream batch: SSH nodes + unified VPN/SSH quota pools ---
+    "quota_reconciler.py",
+    "ssh_admin.py",
+    "ssh_auto_install.py",
+    "ssh_credentials.py",
+    "ssh_node_agent.py",
+    "ssh_providers.py",
+    "db/usage.py",
 )
 
 # Upstream keeps re-uploading these with a module-level `from i18n import tr`
@@ -595,11 +603,78 @@ def test_leak_discovery_stays_wired():
     assert '"adm_user_configs:",' in report_router
 
 
+def test_ssh_nodes_and_shared_quota_stay_wired():
+    """The merged SSH-node / shared-quota feature must stay reachable end to end.
+
+    A node-agent module on disk does nothing unless an admin route can install
+    or register a node, a paid product can provision against it, the quota
+    worker runs at start-up, and the buyer can fetch the credentials.
+    """
+    # Start-up: one reconciler per database (main bot + every reseller tenant).
+    main_py = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "from quota_reconciler import QuotaReconciler" in main_py
+    assert "QuotaReconciler(main_db).run_forever()" in main_py
+    assert "QuotaReconciler(reseller_db).run_forever()" in main_py
+
+    # DB layer: the mixin is part of Database and owns the tables/columns.
+    db_init = (ROOT / "db/__init__.py").read_text(encoding="utf-8")
+    assert "from .usage import UsageMixin" in db_init
+    assert "UsageMixin," in db_init
+    base = (ROOT / "db/_base.py").read_text(encoding="utf-8")
+    for table in ("quota_pools", "quota_pool_members", "quota_pool_adjustments",
+                  "quota_enforcement_state", "usage_snapshots", "ssh_nodes", "ssh_accounts"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in base, f"{table} schema disappeared"
+    assert '"products", "provision_ssh_node_id"' in base
+    assert "provision_ssh_node_id=?" in (ROOT / "db/catalog.py").read_text(encoding="utf-8")
+
+    # Provisioning: SSH-only and combined VPN+SSH products must reach a provider.
+    provision = (ROOT / "direct_panel_provision.py").read_text(encoding="utf-8")
+    assert "provision_ssh_direct(db, product" in provision
+    assert "await _provision_combined(db, product" in provision
+    assert "db.attach_custom_config_to_quota_pool(pool_id, cc_id)" in provision
+    for module in ("handlers_admin.py", "handlers_user.py", "payment_delivery.py",
+                   "miniapp/server.py", "admin_panel/server.py"):
+        assert "provision_ssh_node_id" in (ROOT / module).read_text(encoding="utf-8"), (
+            f"{module} no longer routes SSH products to provisioning"
+        )
+
+    # Buyer-facing delivery: /myssh reads the account row and the shared usage.
+    handlers_user = (ROOT / "handlers_user.py").read_text(encoding="utf-8")
+    assert 'Command("myssh")' in handlers_user
+    assert "db.list_ssh_accounts" in handlers_user
+    assert "db.get_quota_usage" in handlers_user
+
+    # Admin panel: routes the UI calls, plus the two SSH screens themselves.
+    server = (ROOT / "admin_panel/server.py").read_text(encoding="utf-8")
+    for route in ("/api/ssh/nodes-lite", "/api/ssh/install-package", "/api/ssh/overview",
+                  "/api/ssh/nodes/auto-install", "/api/ssh/pools", "/api/ssh/accounts",
+                  "/api/ssh/reconcile-once"):
+        assert f'"{route}"' in server, f"{route} route disappeared"
+    app_js = (ROOT / "admin_panel/static/app.js").read_text(encoding="utf-8")
+    assert "renderSSHManagement" in app_js and "renderSSHInstall" in app_js
+    assert "provision_ssh_node_id" in app_js
+
+    # The agent ships with the installer that uploads it, or auto-install dies.
+    installer = (ROOT / "ssh_auto_install.py").read_text(encoding="utf-8")
+    for asset in ("ssh_node_agent.py", "deploy/install-shopvpn-ssh-agent.sh",
+                  "deploy/shopvpn-ssh-agent.service", "deploy/shopvpn-sshd@.service"):
+        assert asset in installer, f"{asset} is no longer uploaded by the installer"
+        path = ROOT / asset
+        assert path.is_file() and path.stat().st_size > 0, f"{asset} is missing"
+
+    # ssh:// configs must stay recognisable as subscriptions.
+    assert '"ssh://"' in (ROOT / "sub_info.py").read_text(encoding="utf-8")
+
+    # The SSH password key is generated next to the project at runtime.
+    assert ".ssh_credential_key" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
 def test_rejected_upstream_paths_stay_out():
     """Upstream re-uploads its own install scripts, docs and a root-level test on
     every push. Those were rejected on purpose, so they must not creep back in."""
     assert not (ROOT / "test_leak_discovery.py").exists(), "upstream's root test came back"
     assert not (ROOT / "_.gitignore.txt").exists(), "upstream's gitignore dump came back"
+    assert not (ROOT / "deploy/Test").exists(), "upstream's empty deploy/Test file came back"
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "Config Leak Detection & Smart Discovery" not in readme, (

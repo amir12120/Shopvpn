@@ -1130,6 +1130,107 @@ class DatabaseBase:
                 CREATE INDEX IF NOT EXISTS idx_custom_configs_user_id ON custom_configs(user_id);
                 CREATE INDEX IF NOT EXISTS idx_custom_configs_order_id ON custom_configs(order_id);
 
+                -- استخر سهمیه‌ی مشترک VPN و SSH؛ limit_bytes=0 یعنی نامحدود.
+                CREATE TABLE IF NOT EXISTS quota_pools (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    limit_bytes INTEGER NOT NULL DEFAULT 0,
+                    expires_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_quota_pools_user ON quota_pools(user_id,status);
+
+                CREATE TABLE IF NOT EXISTS quota_pool_members (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pool_id INTEGER NOT NULL REFERENCES quota_pools(id) ON DELETE CASCADE,
+                    service_kind TEXT NOT NULL CHECK(service_kind IN ('vpn','ssh')),
+                    service_id TEXT NOT NULL,
+                    node_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(service_kind,service_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_quota_members_pool ON quota_pool_members(pool_id);
+
+                -- مصرف نهایی سرویس‌های جداشده از pool؛ از حذف سرویس، مصرف تاریخی پاک نمی‌شود.
+                CREATE TABLE IF NOT EXISTS quota_pool_adjustments (
+                    pool_id INTEGER NOT NULL REFERENCES quota_pools(id) ON DELETE CASCADE,
+                    service_kind TEXT NOT NULL CHECK(service_kind IN ('vpn','ssh')),
+                    service_id TEXT NOT NULL,
+                    used_bytes INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(pool_id,service_kind,service_id)
+                );
+
+                -- وضعیت اعمال سهمیه؛ مشخص می‌کند کدام سرویس را خود reconciler غیرفعال کرده است.
+                CREATE TABLE IF NOT EXISTS quota_enforcement_state (
+                    pool_id INTEGER NOT NULL REFERENCES quota_pools(id) ON DELETE CASCADE,
+                    service_kind TEXT NOT NULL CHECK(service_kind IN ('vpn','ssh')),
+                    service_id TEXT NOT NULL,
+                    is_disabled INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    last_error TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(pool_id,service_kind,service_id)
+                );
+
+                -- آخرین شمارنده‌ی تجمعی هر سرویس؛ UPSERT مانع دوباره‌شماری poll می‌شود.
+                CREATE TABLE IF NOT EXISTS usage_snapshots (
+                    service_kind TEXT NOT NULL CHECK(service_kind IN ('vpn','ssh')),
+                    service_id TEXT NOT NULL,
+                    used_bytes INTEGER NOT NULL DEFAULT 0,
+                    source_used_bytes INTEGER NOT NULL DEFAULT 0,
+                    counter_offset_bytes INTEGER NOT NULL DEFAULT 0,
+                    uploaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT 'unknown',
+                    reported_at TEXT,
+                    event_id TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(service_kind,service_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS ssh_nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    node_type TEXT NOT NULL CHECK(node_type IN ('linux','ssh_panel')),
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL DEFAULT 22,
+                    auth_type TEXT NOT NULL DEFAULT 'ssh_key',
+                    username TEXT NOT NULL DEFAULT 'root',
+                    panel_type TEXT,
+                    panel_url TEXT,
+                    secret_ref TEXT,
+                    config_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_ssh_nodes_status ON ssh_nodes(status,node_type);
+
+                CREATE TABLE IF NOT EXISTS ssh_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id INTEGER NOT NULL REFERENCES ssh_nodes(id),
+                    user_id INTEGER NOT NULL,
+                    quota_pool_id INTEGER REFERENCES quota_pools(id),
+                    account_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL DEFAULT 22,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    expires_at TEXT,
+                    credential_enc TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(node_id,account_id),
+                    UNIQUE(node_id,username)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ssh_accounts_user ON ssh_accounts(user_id,status);
+
                 CREATE TABLE IF NOT EXISTS custom_config_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     custom_config_id INTEGER NOT NULL,
@@ -1581,7 +1682,9 @@ class DatabaseBase:
         "crypto_invoices", "support_messages", "support_conversations",
         "admin_presence", "tickets", "ticket_messages", "ticket_departments", "ticket_department_admins", "admin_logs",
         "abangateway_invoices", "blupal_invoices", "noapay_invoices", "extra_gateway_invoices", "custom_gateways", "custom_gateway_invoices",
-        "card_to_card_cards", "card_to_card_invoices", "panel_servers", "panel_health", "panel_health_events", "report_topics", "report_topic_stats",
+        "card_to_card_cards", "card_to_card_invoices", "quota_enforcement_state", "quota_pool_members", "quota_pool_adjustments",
+        "usage_snapshots", "ssh_accounts", "ssh_nodes", "quota_pools",
+        "panel_servers", "panel_health", "panel_health_events", "report_topics", "report_topic_stats",
         "custom_config_pricing_tiers", "custom_config_products",
         "custom_config_product_pricing_tiers", "custom_configs",
         "custom_config_history", "location_change_log", "bulk_gift_jobs", "bulk_gift_items", "price_change_log", "lottery_log", "reseller_credit_log", "wallet_transactions", "wallet_tx_label", "coin_batches", "coin_wallet_credits", "reseller_requests",
@@ -1638,6 +1741,17 @@ class DatabaseBase:
 
 
     def _migrate_columns(self, conn):
+        if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "credential_enc"):
+            conn.execute("ALTER TABLE ssh_accounts ADD COLUMN credential_enc TEXT")
+
+        # Additive migration for unified quota counter epochs. Older DBs stored
+        # only the provider's raw used_bytes, which could move backwards after a panel reset.
+        if not self._column_exists(conn, "usage_snapshots", "source_used_bytes"):
+            conn.execute("ALTER TABLE usage_snapshots ADD COLUMN source_used_bytes INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE usage_snapshots SET source_used_bytes=used_bytes")
+        if not self._column_exists(conn, "usage_snapshots", "counter_offset_bytes"):
+            conn.execute("ALTER TABLE usage_snapshots ADD COLUMN counter_offset_bytes INTEGER NOT NULL DEFAULT 0")
+
         conn.execute("""CREATE TABLE IF NOT EXISTS translation_manifests (
             language_code TEXT PRIMARY KEY, catalog_version TEXT NOT NULL DEFAULT '',
             source_count INTEGER NOT NULL DEFAULT 0, translated_count INTEGER NOT NULL DEFAULT 0,
@@ -1803,6 +1917,7 @@ class DatabaseBase:
             ("products", "is_auto_provision", "INTEGER DEFAULT 0"),
             ("products", "auto_provision_volume_gb", "INTEGER"),
             ("products", "provision_server_id", "INTEGER"),
+            ("products", "provision_ssh_node_id", "INTEGER"),
             ("products", "extra_user_price", "INTEGER DEFAULT 0"),
             ("products", "max_users", "INTEGER DEFAULT 0"),
             ("products", "base_users", "INTEGER DEFAULT 0"),

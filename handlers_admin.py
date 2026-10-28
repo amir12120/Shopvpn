@@ -1297,7 +1297,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer(db.get_text('handlers_admin.auto_d0d88ea3', '⚠️ این محصول خودکار نیست.'), show_alert=True)
         await state.update_data(editing_product_id=product_id)
         await state.set_state(AdminEditProduct.waiting_volume)
-        hint = " (یا 0 برای نامحدود)" if product["provision_server_id"] else ""
+        hint = " (یا 0 برای نامحدود)" if (product["provision_server_id"] or product["provision_ssh_node_id"]) else ""
         back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
         await safe_edit(call, f"حجم جدید «{product['name']}» چند گیگابایت باشد؟ فقط عدد صحیح{hint}:",
                          reply_markup=kb.admin_back_kb(back_cb))
@@ -1309,7 +1309,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         data = await state.get_data()
         product_id = data.get("editing_product_id")
         product = (await asyncio.to_thread(db.get_product, product_id))
-        is_unlimited_ok = bool(product and product["provision_server_id"])
+        is_unlimited_ok = bool(product and (product["provision_server_id"] or product["provision_ssh_node_id"]))
         if not text.isdigit() or (int(text) <= 0 and not is_unlimited_ok):
             hint = " (یا 0 برای نامحدود)" if is_unlimited_ok else ""
             await message.answer(tr(f"لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید{hint}. مثال: 30"))
@@ -1335,7 +1335,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def _prod_src_apply_bank(actor_id: int, product, duration_days=None):
         await asyncio.to_thread(
             db.edit_product, product["id"], duration_days=duration_days,
-            is_auto_provision=False, provision_server_id=None, auto_provision_volume_gb=None,
+            is_auto_provision=False, provision_server_id=None, provision_ssh_node_id=None, auto_provision_volume_gb=None,
         )
         await asyncio.to_thread(db.log_admin_action, actor_id, "product_source_edit",
                                 f"محصول «{product['name']}» → بانک کانفیگ")
@@ -1363,7 +1363,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if (await asyncio.to_thread(_volume_credit_info)) is not None:
             return await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد."), show_alert=True)
         await state.clear()
-        if product["provision_server_id"]:
+        if product["provision_server_id"] or product["provision_ssh_node_id"]:
             stock = await asyncio.to_thread(db.count_available_configs, product_id)
             await safe_edit(
                 call,
@@ -1396,7 +1396,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_access_bot:
             return await call.answer(db.get_text('handlers_admin.auto_27d04dd7', '⛔️ این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است.'), show_alert=True)
         product = await asyncio.to_thread(db.get_product, product_id)
-        if not product or not product["provision_server_id"]:
+        if not product or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
             return await call.answer(tr("⚠️ این محصول دیگر اتصال مستقیم به پنل ندارد."), show_alert=True)
         if (await asyncio.to_thread(_volume_credit_info)) is not None:
             return await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد."), show_alert=True)
@@ -1423,7 +1423,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         data = await state.get_data()
         product = await asyncio.to_thread(db.get_product, data.get("editing_product_id"))
         await state.clear()
-        if not product or not product["provision_server_id"]:
+        if not product or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
             return await message.answer(tr("⚠️ این محصول دیگر اتصال مستقیم به پنل ندارد."))
         await _prod_src_apply_bank(message.from_user.id, product, duration_days=int(text))
         await _prod_src_back(message, product, tr("✅ محصول به بانک کانفیگ تبدیل شد."))
@@ -1726,6 +1726,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product = (await asyncio.to_thread(db.get_product, product_id))
         if not product or not product["is_auto_provision"]:
             return await call.answer(db.get_text('handlers_admin.auto_d0d88ea3', '⚠️ این محصول خودکار نیست.'), show_alert=True)
+        if product["provision_ssh_node_id"]:
+            return await call.answer(tr("⚠️ محدودیت کاربر همزمان برای محصولات SSH پشتیبانی نمی‌شود."), show_alert=True)
         if product["provision_server_id"]:
             from user_limit import server_supports
             server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
@@ -2527,7 +2529,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
             return
         product = (await asyncio.to_thread(db.get_product, product_id))
-        if product and product["provision_server_id"]:
+        if product and (product["provision_server_id"] or product["provision_ssh_node_id"]):
             try:
                 built = await provision_direct(db, product, quantity=1, user_id=call.from_user.id)
             except DirectProvisionError as e:
@@ -3440,7 +3442,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if product and product["is_auto_provision"]:
             quantity = order["quantity"] or 1
             try:
-                if product["provision_server_id"]:
+                if product["provision_server_id"] or product["provision_ssh_node_id"]:
                     prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
                 else:
                     prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
@@ -5677,7 +5679,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not product:
             await call.answer(db.get_text('handlers_admin.auto_2c51bb96', 'این محصول یافت نشد.'), show_alert=True)
             return
-        if not product["is_auto_provision"] or not product["provision_server_id"]:
+        if not product["is_auto_provision"] or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
             await call.answer(
                 db.get_text('handlers_admin.auto_f93b0f1d', 'این محصول تحویل خودکار ندارد؛ فقط محصولاتی که به یک پنل وصل و «تحویل خودکار» هستند قابل انتخاب\u200cاند.'),
                 show_alert=True,

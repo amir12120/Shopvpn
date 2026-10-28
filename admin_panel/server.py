@@ -12,7 +12,9 @@ import asyncio
 import base64
 import contextvars
 import hmac
+import io
 import json
+import zipfile
 import logging
 import os
 import re
@@ -27,7 +29,7 @@ from typing import Optional, List, Dict, Any
 from i18n import tr, set_language, reset_language, normalize_language, is_language_enabled, LANGUAGE_CATALOG
 from notification_i18n import localized_payload
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form, Query
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -626,6 +628,49 @@ async def _notifier_supervisor():
 
 
 # ------------------------------------------------------------------ auth --
+
+
+class SSHNodeAutoInstallBody(BaseModel):
+    name: str
+    host: str
+    ssh_port: int = 22
+    username: str = "root"
+    password: Optional[str] = None
+    private_key: Optional[str] = None
+
+
+class SSHNodeCreateBody(BaseModel):
+    name: str
+    host: str
+    port: int = 22
+    agent_url: str
+    secret_env: str
+    allow_insecure_http: bool = False
+
+
+class SSHPoolCreateBody(BaseModel):
+    user_id: int
+    limit_gb: float = 0
+    expires_at: Optional[str] = None
+    label: str = "Shared VPN+SSH"
+
+
+class SSHAccountCreateBody(BaseModel):
+    node_id: int
+    user_id: int
+    username: str
+    limit_gb: float = 0
+    days: int = 30
+    expires_at: Optional[str] = None
+    quota_pool_id: Optional[int] = None
+
+
+class SSHAttachVPNBody(BaseModel):
+    custom_config_id: int
+
+
+class SSHAccountActionBody(BaseModel):
+    action: str
 
 
 class LoginBody(BaseModel):
@@ -2846,8 +2891,8 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
 
     if product and product["is_auto_provision"]:
         try:
-            if product["provision_server_id"]:
-                results = await provision_direct(db, product, quantity)
+            if product["provision_server_id"] or product["provision_ssh_node_id"]:
+                results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             else:
                 results = await provision_auto_config(db, product, quantity)
         except (ProvisionError, DirectProvisionError) as e:
@@ -3779,6 +3824,7 @@ class ProductBody(BaseModel):
     is_auto_provision: bool = False
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
+    provision_ssh_node_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
     compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
     discount_days: Optional[int] = None  # مدت اعتبار تخفیف (روز)؛ 0 = بدون محدودیت زمانی
@@ -3797,6 +3843,12 @@ def api_products(admin=Depends(require_permission("catalog"))):
 def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
     """لیست سبک پنل‌ها (فقط id/name) برای انتخاب پنل موقع ساخت محصول اتصال مستقیم."""
     return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
+
+@app.get("/api/ssh/nodes-lite")
+def api_ssh_nodes_lite(admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+    """Only active Linux Agent nodes can currently be attached to paid SSH products."""
+    return [{"id": int(n["id"]), "name": n["name"], "host": n["host"]}
+            for n in db.list_ssh_nodes(active_only=True) if n.get("node_type") == "linux"]
 
 
 class ProductReorderBody(BaseModel):
@@ -3818,25 +3870,37 @@ def api_reorder_products(body: ProductReorderBody, admin=Depends(require_permiss
 def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog"))):
     if body.duration_days < 0:
         raise HTTPException(400, tr("مدت اعتبار نامعتبر است."))
-    if body.duration_days == 0 and not body.provision_server_id:
-        raise HTTPException(400, tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
+    # هر دو مقصد همزمان مجاز است: محصول ترکیبی VPN+SSH با سهمیه مشترک.
     if body.provision_server_id:
+        vpn_server = db.get_panel_server(body.provision_server_id)
+        if not vpn_server or not vpn_server["is_active"]:
+            raise HTTPException(400, "پنل VPN فعال پیدا نشد.")
+    ssh_node = None
+    if body.provision_ssh_node_id:
+        ssh_node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.provision_ssh_node_id)), None)
+        if not ssh_node or ssh_node.get("node_type") != "linux":
+            raise HTTPException(400, "فقط نود Linux Agent فعال برای محصول SSH پشتیبانی می‌شود.")
+    direct_target = bool(body.provision_server_id or body.provision_ssh_node_id)
+    if body.duration_days == 0 and not direct_target:
+        raise HTTPException(400, tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم ممکن است."))
+    if direct_target:
         if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
-            raise HTTPException(400, tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
+            raise HTTPException(400, tr("برای محصول مستقیم باید حجم (گیگابایت) را مشخص کنید."))
     if admin["tenant"]:
         # نمایندگی (بند ۳.۲ اسپک): نه پنل شخصی دارد، نه بانک کانفیگ دستی؛ فقط
         # محصول خودکار از اعتبار حجمی/موجودی خودش مجاز است (مطابق منطق طرف بات).
-        if body.provision_server_id:
-            raise HTTPException(403, tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
+        if direct_target:
+            raise HTTPException(403, tr("اتصال مستقیم به پنل یا نود SSH فقط برای بات اصلی مجاز است."))
         if not body.is_auto_provision:
             raise HTTPException(403, tr("این نمایندگی فقط می‌تواند محصول خودکار (از اعتبار حجمی) بسازد؛ نه بانک کانفیگ دستی."))
-    if not (body.is_auto_provision or body.provision_server_id) and _tenant_is_vip_credit():
+    if not (body.is_auto_provision or direct_target) and _tenant_is_vip_credit():
         raise HTTPException(403, tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
     pid = db.add_product(
         body.category_id, body.name, body.price, body.description, body.duration_days,
-        body.is_auto_provision or bool(body.provision_server_id), body.auto_provision_volume_gb,
+        body.is_auto_provision or direct_target, body.auto_provision_volume_gb,
         body.provision_server_id, payment_methods=body.payment_methods,
         compare_price=max(int(body.compare_price or 0), 0),
+        provision_ssh_node_id=body.provision_ssh_node_id,
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
@@ -3857,6 +3921,7 @@ class ProductEditBody(BaseModel):
     # قبلاً فقط موقع «ساخت» محصول بود و بعد از آن دیگر قابل تغییر نبود).
     source: Optional[str] = None
     provision_server_id: Optional[int] = None
+    provision_ssh_node_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
     compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
     discount_days: Optional[int] = None
@@ -3880,35 +3945,65 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
     # سنتینل Ellipsis یعنی «بدون تغییر» (به db.edit_product پاس داده می‌شود).
     is_auto_provision = ...
     provision_server_id = ...
+    provision_ssh_node_id = ...
     auto_provision_volume_gb = ...
 
     if body.source == "direct":
         if admin["tenant"]:
             raise HTTPException(status_code=403, detail=tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
-        if not body.provision_server_id or not db.get_panel_server(body.provision_server_id):
-            raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
+        if body.provision_server_id and body.provision_ssh_node_id:
+            # محصول ترکیبی VPN+SSH (سهمیه مشترک)
+            if not db.get_panel_server(body.provision_server_id):
+                raise HTTPException(status_code=404, detail=tr("پنل VPN یافت نشد."))
+            node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.provision_ssh_node_id)), None)
+            if not node or node.get("node_type") != "linux":
+                raise HTTPException(status_code=404, detail="نود Linux Agent فعال پیدا نشد.")
+            provision_server_id = body.provision_server_id
+            provision_ssh_node_id = int(body.provision_ssh_node_id)
+        elif body.provision_ssh_node_id:
+            node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.provision_ssh_node_id)), None)
+            if not node or node.get("node_type") != "linux":
+                raise HTTPException(status_code=404, detail="نود Linux Agent فعال پیدا نشد.")
+            provision_ssh_node_id = int(body.provision_ssh_node_id)
+            provision_server_id = None
+        elif body.provision_server_id and db.get_panel_server(body.provision_server_id):
+            provision_server_id = body.provision_server_id
+            provision_ssh_node_id = None
+        else:
+            raise HTTPException(status_code=404, detail=tr("پنل VPN یا نود SSH یافت نشد."))
         if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
-            raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
+            raise HTTPException(status_code=400, detail=tr("برای محصول مستقیم باید حجم (گیگابایت) را مشخص کنید."))
+        if admin["tenant"]:
+            raise HTTPException(status_code=403, detail=tr("محصول مستقیم فقط برای بات اصلی مجاز است."))
         is_auto_provision = True
-        provision_server_id = body.provision_server_id
         auto_provision_volume_gb = body.auto_provision_volume_gb
     elif body.source == "bank":
         if body.duration_days is None and old_product["duration_days"] == 0:
             raise HTTPException(status_code=400, detail=tr("برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید."))
         is_auto_provision = False
         provision_server_id = None
+        provision_ssh_node_id = None
         auto_provision_volume_gb = None
-    elif body.provision_server_id is not None or body.auto_provision_volume_gb is not None:
+    elif body.provision_server_id is not None or body.provision_ssh_node_id is not None or body.auto_provision_volume_gb is not None:
         # سازگاری با نسخه‌ی قبلی: ویرایش تک‌فیلدیِ سرور/حجم روی محصولی که از قبل
         # «اتصال مستقیم به پنل» بوده (بدون تغییر صریح source).
         if not old_product["is_auto_provision"]:
             raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
         if body.provision_server_id is not None:
             if admin["tenant"]:
-                raise HTTPException(status_code=403, detail=tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
+                raise HTTPException(status_code=403, detail=tr("اتصال مستقیم فقط برای بات اصلی مجاز است."))
             if not db.get_panel_server(body.provision_server_id):
                 raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
             provision_server_id = body.provision_server_id
+            provision_ssh_node_id = None
+        if body.provision_ssh_node_id is not None:
+            if admin["tenant"]:
+                raise HTTPException(status_code=403, detail="اتصال مستقیم SSH فقط برای بات اصلی مجاز است.")
+            node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.provision_ssh_node_id)), None)
+            if not node or node.get("node_type") != "linux":
+                raise HTTPException(status_code=404, detail="نود Linux Agent فعال پیدا نشد.")
+            provision_ssh_node_id = int(body.provision_ssh_node_id)
+            provision_server_id = None
         if body.auto_provision_volume_gb is not None:
             if body.auto_provision_volume_gb < 0:
                 raise HTTPException(status_code=400, detail=tr("حجم نامعتبر است."))
@@ -3917,16 +4012,20 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
     effective_server_id = (
         provision_server_id if provision_server_id is not ... else old_product["provision_server_id"]
     )
+    effective_ssh_node_id = (
+        provision_ssh_node_id if provision_ssh_node_id is not ... else old_product["provision_ssh_node_id"]
+    )
 
     if body.duration_days is not None:
         if body.duration_days < 0:
             raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
-        if body.duration_days == 0 and not effective_server_id:
-            raise HTTPException(status_code=400, detail=tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
+        if body.duration_days == 0 and not (effective_server_id or effective_ssh_node_id):
+            raise HTTPException(status_code=400, detail=tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم ممکن است."))
 
     db.edit_product(
         product_id, body.name, body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, provision_server_id=provision_server_id,
+        provision_ssh_node_id=provision_ssh_node_id,
         auto_provision_volume_gb=auto_provision_volume_gb, category_id=body.category_id,
         compare_price=(max(int(body.compare_price), 0) if body.compare_price is not None else ...),
         discount_days=(max(int(body.discount_days), 0) if body.discount_days is not None else ...),
@@ -5709,6 +5808,289 @@ def _panel_server_public(s, health=None) -> dict:
         "health_error": (h["last_error"] or None) if h else None,
         "sort_order": int(s["sort_order"] or 0),
     }
+
+
+# ------------------------------------------------------------ SSH / shared quota
+@app.get("/api/ssh/install-package")
+def api_ssh_install_package(admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    """Download only the files needed to turn a separate Debian/Ubuntu host into a ShopVPN SSH node."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rel_files = (
+        "ssh_node_agent.py",
+        "deploy/install-shopvpn-ssh-agent.sh",
+        "deploy/shopvpn-ssh-agent.service",
+        "deploy/shopvpn-sshd@.service",
+    )
+    archive = io.BytesIO()
+    try:
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for rel in rel_files:
+                full = os.path.join(project_root, rel)
+                if not os.path.isfile(full):
+                    raise HTTPException(500, f"فایل بسته نصب پیدا نشد: {rel}")
+                zf.write(full, arcname=rel)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Could not build SSH node installation package")
+        raise HTTPException(500, "ساخت بسته نصب نود SSH ناموفق بود.") from exc
+    archive.seek(0)
+    db.log_admin_action(admin["id"], "ssh_node_install_package", "Downloaded SSH node installer package", "ssh")
+    return StreamingResponse(archive, media_type="application/zip", headers={
+        "Content-Disposition": 'attachment; filename="ShopVPN-SSH-Node.zip"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.get("/api/ssh/overview")
+def api_ssh_overview(admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    pools = db.list_quota_pools(active_only=False)
+    pool_items = []
+    for pool in pools:
+        item = dict(pool)
+        item["usage"] = db.get_quota_usage(int(pool["id"]))
+        item["members"] = db.get_quota_members(int(pool["id"]))
+        pool_items.append(item)
+    nodes = []
+    for node in db.list_ssh_nodes():
+        item = dict(node)
+        # Only non-secret configuration needed by the UI is exposed.
+        try:
+            cfg = json.loads(item.get("config_json") or "{}")
+        except (TypeError, ValueError):
+            cfg = {}
+        item["agent_url"] = cfg.get("agent_url", "")
+        item.pop("config_json", None)
+        nodes.append(item)
+    return {"nodes": nodes, "pools": pool_items,
+            "accounts": db.list_ssh_accounts()}
+
+
+@app.post("/api/ssh/nodes/auto-install")
+async def api_ssh_auto_install(body: SSHNodeAutoInstallBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    """نصب خودکار نود: فقط IP و رمز root (یا کلید) لازم است."""
+    name, host = body.name.strip(), body.host.strip()
+    if not name or not re.fullmatch(r"[A-Za-z0-9.\-:]{3,255}", host):
+        raise HTTPException(400, "نام و آدرس (IP یا دامنه) نود معتبر نیست.")
+    if not 1 <= int(body.ssh_port) <= 65535:
+        raise HTTPException(400, "پورت SSH نامعتبر است.")
+    if not (body.password or body.private_key):
+        raise HTTPException(400, "رمز root یا کلید خصوصی را وارد کنید.")
+    import ssh_auto_install
+    job_id = ssh_auto_install.start_install(db, name=name, host=host, ssh_port=body.ssh_port,
+        username=(body.username or "root").strip(), password=body.password, private_key=body.private_key)
+    db.log_admin_action(admin["id"], "ssh_node_auto_install", f"SSH node auto-install started: {name} ({host})", "ssh")
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/ssh/nodes/install-jobs/{job_id}")
+def api_ssh_install_job(job_id: str, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    import ssh_auto_install
+    job = ssh_auto_install.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "کار نصب پیدا نشد.")
+    return job
+
+
+@app.delete("/api/ssh/nodes/{node_id}")
+def api_ssh_delete_node(node_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    try:
+        removed = db.delete_ssh_node(node_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not removed:
+        raise HTTPException(404, "نود پیدا نشد.")
+    db.log_admin_action(admin["id"], "ssh_node_delete", f"SSH node #{node_id}", "ssh")
+    return {"ok": True}
+
+
+@app.post("/api/ssh/nodes")
+def api_ssh_create_node(body: SSHNodeCreateBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    name, host, url, env_name = body.name.strip(), body.host.strip(), body.agent_url.strip().rstrip("/"), body.secret_env.strip()
+    if not name or not host or not env_name or not env_name.replace("_", "A").isalnum():
+        raise HTTPException(400, "نام، آدرس نود و نام متغیر محیطی معتبر الزامی هستند.")
+    if not (url.startswith("https://") or (body.allow_insecure_http and url.startswith("http://"))):
+        raise HTTPException(400, "آدرس Agent باید HTTPS باشد؛ HTTP فقط برای شبکه خصوصی و با تأیید صریح مجاز است.")
+    if not 1 <= int(body.port) <= 65535:
+        raise HTTPException(400, "پورت نامعتبر است.")
+    node_id = db.create_ssh_node(name, "linux", host, body.port, auth_type="api_token",
+        username="root", secret_ref=f"env:{env_name}",
+        config_json={"agent_url": url, "allow_insecure_http": bool(body.allow_insecure_http)})
+    db.log_admin_action(admin["id"], "ssh_node_add", f"SSH Linux node #{node_id}: {name}", "ssh")
+    return {"ok": True, "node_id": node_id, "status": "pending", "secret_ref": f"env:{env_name}"}
+
+
+@app.post("/api/ssh/nodes/{node_id}/test")
+async def api_ssh_test_node(node_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    from ssh_providers import get_ssh_provider, SSHProviderError
+    from quota_reconciler import _env_secret_resolver
+    node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(node_id)), None)
+    if not node:
+        raise HTTPException(404, "نود پیدا نشد.")
+    try:
+        ok = await get_ssh_provider(node, secret_resolver=_env_secret_resolver).test_connection()
+        db.update_ssh_node_status(node_id, "active" if ok else "error", None if ok else "Agent response invalid")
+    except Exception as exc:
+        db.update_ssh_node_status(node_id, "error", str(exc)[:500])
+        raise HTTPException(400, str(exc)[:300])
+    db.log_admin_action(admin["id"], "ssh_node_test", f"SSH node #{node_id}: {'ok' if ok else 'failed'}", "ssh")
+    return {"ok": bool(ok), "status": "active" if ok else "error"}
+
+
+@app.post("/api/ssh/pools")
+def api_ssh_create_pool(body: SSHPoolCreateBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    if body.user_id <= 0 or body.limit_gb < 0:
+        raise HTTPException(400, "شناسه کاربر یا سقف حجم نامعتبر است.")
+    if not db.get_user(body.user_id):
+        raise HTTPException(404, "کاربر در دیتابیس این ربات پیدا نشد.")
+    try:
+        pool_id = db.create_quota_pool(body.user_id, body.limit_gb, body.expires_at, body.label.strip() or "Shared VPN+SSH")
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(400, str(exc))
+    db.log_admin_action(admin["id"], "ssh_pool_create", f"Shared quota pool #{pool_id} for user {body.user_id}", "ssh")
+    return {"ok": True, "pool_id": pool_id}
+
+
+@app.post("/api/ssh/pools/{pool_id}/attach-vpn")
+def api_ssh_attach_vpn(pool_id: int, body: SSHAttachVPNBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    try:
+        db.attach_custom_config_to_quota_pool(pool_id, body.custom_config_id)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc))
+    db.log_admin_action(admin["id"], "ssh_pool_attach_vpn", f"Pool #{pool_id} <- custom_config:{body.custom_config_id}", "ssh")
+    return {"ok": True, "service_id": f"custom_config:{body.custom_config_id}"}
+
+
+@app.post("/api/ssh/accounts")
+async def api_ssh_create_account(body: SSHAccountCreateBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    from ssh_providers import get_ssh_provider, SSHProviderError
+    from quota_reconciler import _env_secret_resolver
+    from datetime import datetime, timedelta, timezone
+    if body.user_id <= 0 or not body.username.strip() or body.limit_gb < 0 or body.days < 0:
+        raise HTTPException(400, "مشخصات حساب SSH نامعتبر است.")
+    if not db.get_user(body.user_id):
+        raise HTTPException(404, "کاربر در دیتابیس این ربات پیدا نشد.")
+    node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.node_id)), None)
+    if not node:
+        raise HTTPException(400, "نود فعال پیدا نشد؛ ابتدا اتصال نود را تست کنید.")
+    pool = None
+    if body.quota_pool_id is not None:
+        pool = db.get_quota_pool(body.quota_pool_id)
+        if not pool or int(pool["user_id"]) != int(body.user_id) or pool["status"] != "active":
+            raise HTTPException(400, "استخر سهمیه فعال نیست یا متعلق به این کاربر نیست.")
+    expires_at = body.expires_at
+    if pool:
+        # Shared pool owns the authoritative expiry; local per-account expiry must match it.
+        expires_at = pool.get("expires_at") or expires_at
+        limit_bytes = 0
+    else:
+        if not expires_at and body.days:
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=body.days)).isoformat()
+        limit_bytes = int(float(body.limit_gb) * (1024 ** 3))
+    if expires_at:
+        from db.usage import _normalize_timestamp
+        try:
+            expires_at = _normalize_timestamp(expires_at)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
+    from ssh_credentials import encrypt_credential
+    # Fail before making a remote account if secure credential storage is not configured.
+    try:
+        encrypt_credential("preflight-check")
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc))
+    try:
+        result = await provider.create_account(body.username.strip(), limit_bytes, expires_at)
+        row_id = None
+        try:
+            usage = await provider.get_usage(result.account_id)
+            reliable_sources = {"nftables_port_counters", "external-counter", "ssh-traffic-accountant"}
+            volume_limited = limit_bytes > 0 or bool(pool and int(pool.get("limit_bytes") or 0) > 0)
+            if volume_limited and (not usage.get("accounting_ready") or usage.get("source") not in reliable_sources):
+                raise HTTPException(409, "حساب ساخته نشد: برای سهمیه حجمی باید شمارنده‌ی دوطرفه‌ی معتبر SSH فعال باشد.")
+            credential_enc = encrypt_credential(result.metadata.get("password", ""))
+            row_id = db.register_ssh_account(body.node_id, body.user_id, result.account_id,
+                result.username, result.host, result.port, body.quota_pool_id, expires_at, credential_enc)
+            if usage.get("accounting_ready"):
+                db.record_usage_snapshot("ssh", result.account_id, int(usage["used_bytes"]),
+                    uploaded_bytes=usage.get("uploaded_bytes", 0), downloaded_bytes=usage.get("downloaded_bytes", 0),
+                    source=str(usage.get("source") or "ssh-agent"), reported_at=usage.get("reported_at"))
+        except Exception:
+            if row_id is not None:
+                db.delete_ssh_account_record(row_id)
+            try:
+                await provider.delete_account(result.account_id)
+            except Exception:
+                logger.exception("Failed to roll back SSH account on node %s", body.node_id)
+            raise
+    except (ValueError, SSHProviderError) as exc:
+        raise HTTPException(400, str(exc)[:300])
+    db.log_admin_action(admin["id"], "ssh_account_create", f"SSH account #{row_id} for user {body.user_id}", "ssh")
+    return {"ok": True, "id": row_id, "account_id": result.account_id, "username": result.username,
+            "host": result.host, "port": result.port, "password": result.metadata.get("password"),
+            "expires_at": expires_at, "quota_pool_id": body.quota_pool_id,
+            "accounting_ready": bool(usage.get("accounting_ready")),
+            "warning": (None if usage.get("source") in {"nftables_port_counters", "external-counter", "ssh-traffic-accountant"}
+                        else "شمارنده‌ی مصرف معتبر فعال نیست؛ سهمیه حجمی روی این حساب قابل تضمین نیست")}
+
+
+@app.post("/api/ssh/accounts/{account_id}/action")
+async def api_ssh_account_action(account_id: str, body: SSHAccountActionBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    from ssh_providers import get_ssh_provider, SSHProviderError
+    from quota_reconciler import _env_secret_resolver
+    action = body.action.strip().lower()
+    if action not in {"enable", "disable", "delete"}:
+        raise HTTPException(400, "عملیات نامعتبر است.")
+    account = next((a for a in db.list_ssh_accounts() if str(a["account_id"]) == str(account_id)), None)
+    if not account:
+        raise HTTPException(404, "حساب SSH پیدا نشد.")
+    node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(account["node_id"])), None)
+    if not node:
+        raise HTTPException(404, "نود حساب پیدا نشد.")
+    try:
+        provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
+        if action == "enable":
+            await provider.set_account_enabled(account_id, True)
+            db.set_ssh_account_status(account["id"], "active")
+            if account.get("quota_pool_id"):
+                db.set_quota_enforcement_state(int(account["quota_pool_id"]), "ssh", account_id,
+                    is_disabled=False, reason="manual_enabled", last_error=None)
+        elif action == "disable":
+            await provider.set_account_enabled(account_id, False)
+            db.set_ssh_account_status(account["id"], "disabled")
+            if account.get("quota_pool_id"):
+                db.set_quota_enforcement_state(int(account["quota_pool_id"]), "ssh", account_id,
+                    is_disabled=False, reason="manual_disabled", last_error=None)
+        else:
+            pool_id = account.get("quota_pool_id")
+            if pool_id:
+                usage = await provider.get_usage(account_id)
+                pool = db.get_quota_pool(int(pool_id))
+                if pool and int(pool.get("limit_bytes") or 0) > 0 and not usage.get("accounting_ready"):
+                    raise HTTPException(409, "برای حذف از استخر حجمی مشترک، اول حسابداری مصرف SSH را معتبر کنید؛ در غیر این صورت مصرف تاریخی از دست می‌رود.")
+                if usage.get("accounting_ready"):
+                    db.record_usage_snapshot("ssh", account_id, int(usage["used_bytes"]),
+                        uploaded_bytes=usage.get("uploaded_bytes", 0), downloaded_bytes=usage.get("downloaded_bytes", 0),
+                        source=str(usage.get("source") or "ssh-agent"), reported_at=usage.get("reported_at"))
+            await provider.delete_account(account_id)
+            if pool_id:
+                db.detach_quota_service(int(pool_id), "ssh", account_id)
+            db.set_ssh_account_status(account["id"], "deleted")
+    except HTTPException:
+        raise
+    except SSHProviderError as exc:
+        raise HTTPException(400, str(exc)[:300])
+    db.log_admin_action(admin["id"], f"ssh_account_{action}", f"SSH account {account_id}", "ssh")
+    return {"ok": True, "account_id": account_id, "status": "deleted" if action == "delete" else ("active" if action == "enable" else "disabled")}
+
+
+@app.post("/api/ssh/reconcile-once")
+async def api_ssh_reconcile_once(admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    from quota_reconciler import QuotaReconciler
+    results = await QuotaReconciler(db).poll_once()
+    db.log_admin_action(admin["id"], "ssh_quota_reconcile", f"Manual reconcile ({len(results)} pools)", "ssh")
+    return {"ok": True, "results": results}
 
 
 @app.get("/api/panel-servers")

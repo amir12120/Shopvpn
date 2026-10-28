@@ -2589,3 +2589,15 @@ EXTRA_DYNAMIC_PHRASES += [
     ('🔐 درخواست ورود به سایت\nزمان درخواست: {x}\nآی\u200cپی تقریبی: {x}\nفقط اگر خودتان همین حالا از سایت وارد شدن را خواسته\u200cاید تأیید کنید؛ در غیر این صورت نادیده بگیرید.', '🔐 Website sign-in request\nRequested at: {x}\nApproximate IP: {x}\nOnly confirm if you asked to sign in from the website just now; otherwise ignore this message.'),
 ]
 
+
+# --- merged from upstream: SSH nodes + shared VPN/SSH quota products ---
+EXTRA_PHRASES.update({
+    '⚠️ محدودیت کاربر همزمان برای محصولات SSH پشتیبانی نمی‌شود.': '⚠️ Concurrent-user limits are not supported for SSH products.',
+    'مدت نامحدود فقط برای محصولات با اتصال مستقیم ممکن است.': 'Unlimited duration is only available for direct-provisioning products.',
+    'برای محصول مستقیم باید حجم (گیگابایت) را مشخص کنید.': 'A direct product needs a volume (GB).',
+    'اتصال مستقیم به پنل یا نود SSH فقط برای بات اصلی مجاز است.': 'Direct provisioning to a panel or SSH node is only allowed for the main bot.',
+    'محصول مستقیم فقط برای بات اصلی مجاز است.': 'Direct products are only allowed for the main bot.',
+    'پنل VPN یافت نشد.': 'VPN panel not found.',
+    'پنل VPN یا نود SSH یافت نشد.': 'VPN panel or SSH node not found.',
+    'اتصال مستقیم فقط برای بات اصلی مجاز است.': 'Direct provisioning is only allowed for the main bot.',
+})

@@ -109,7 +109,7 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
         quantity = order["quantity"] or 1
         if product and product["is_auto_provision"]:
             try:
-                if product["provision_server_id"]:
+                if product["provision_server_id"] or product["provision_ssh_node_id"]:
                     prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
                 else:
                     prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)

@@ -618,6 +618,56 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _notify_admins_wallet_transfer(message.bot, message.from_user.id, receiver, amount)
         await message.answer("✅ انتقال کیف پول انجام شد." if ok else "⛔️ انتقال ناموفق بود؛ موجودی یا کاربر مقصد را بررسی کنید.")
 
+    @router.message(Command("myssh"))
+    async def my_ssh_accounts_cmd(message: Message):
+        """Securely deliver SSH credentials only to the owning user's private chat."""
+        if message.chat.type != "private":
+            await message.answer("برای حفظ امنیت، اطلاعات اتصال SSH فقط در گفت‌وگوی خصوصی ارسال می‌شود.")
+            return
+        rows = await asyncio.to_thread(db.list_ssh_accounts, message.from_user.id)
+        rows = [row for row in rows if row.get("status") != "deleted"]
+        if not rows:
+            await message.answer("برای حساب شما سرویس SSH ثبت نشده است.")
+            return
+        from ssh_credentials import decrypt_credential
+        blocks = []
+        for row in rows:
+            status = str(row.get("status") or "unknown")
+            status_label = {"active": "فعال", "disabled": "غیرفعال", "expired": "منقضی", "deleted": "حذف‌شده", "error": "خطا"}.get(status, status)
+            block = [
+                f"<b>{escape_html(row.get('node_name') or 'SSH')} — {escape_html(row.get('username') or '')}</b>",
+                f"وضعیت: {escape_html(status_label)}",
+                f"سرور: <code>{escape_html(row.get('host') or '')}:{int(row.get('port') or 22)}</code>",
+                f"پروکسی SOCKS5 محلی: <code>127.0.0.1:1080</code>",
+                f"دستور تونل: <code>ssh -p {int(row.get('port') or 22)} -N -D 127.0.0.1:1080 {escape_html(row.get('username') or '')}@{escape_html(row.get('host') or '')}</code>",
+            ]
+            try:
+                password = await asyncio.to_thread(db.get_ssh_account_credential, row["account_id"], message.from_user.id)
+                password = decrypt_credential(password)
+                block.append(f"رمز عبور: <code>{escape_html(password)}</code>")
+            except Exception:
+                block.append("رمز ذخیره‌شده قابل بازیابی نیست؛ لطفاً با پشتیبانی تماس بگیرید.")
+            if row.get("expires_at"):
+                block.append(f"انقضا: {escape_html(row['expires_at'])}")
+            pool_id = row.get("quota_pool_id")
+            if pool_id:
+                try:
+                    pool = await asyncio.to_thread(db.get_quota_pool, int(pool_id))
+                    if pool and int(pool.get("user_id") or 0) == int(message.from_user.id):
+                        usage = await asyncio.to_thread(db.get_quota_usage, int(pool_id))
+                        used_gb = float(usage.get("used_bytes") or 0) / (1024 ** 3)
+                        limit_bytes = int(usage.get("limit_bytes") or 0)
+                        limit_label = f"{limit_bytes / (1024 ** 3):.2f} GB" if limit_bytes else "نامحدود"
+                        block.append(f"مصرف سهمیه مشترک: {used_gb:.2f} GB از {limit_label}")
+                        if usage.get("status") == "stale":
+                            block.append("⚠️ آخرین گزارش مصرف قدیمی است؛ عدد مصرف ممکن است به‌روز نباشد.")
+                except Exception:
+                    pass
+            blocks.append("\n".join(block))
+        # Send per account to avoid splitting HTML tags across Telegram messages.
+        for block in blocks:
+            await message.answer(block, parse_mode="HTML", disable_web_page_preview=True)
+
     @router.message(Command("buy"))
     async def buy_cmd(message: Message, state: FSMContext):
         await show_categories(message, state)
@@ -1137,7 +1187,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         free_product_id = reward_info.get("free_config_product_id")
         if free_product_id:
             product = (await asyncio.to_thread(db.get_product, free_product_id))
-            if not product or not product["is_auto_provision"] or not product["provision_server_id"]:
+            if not product or not product["is_auto_provision"] or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
                 try:
                     await bot.send_message(
                         referrer_id,
@@ -2149,7 +2199,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
                 if product["is_auto_provision"]:
                     try:
-                        if product["provision_server_id"]:
+                        if product["provision_server_id"] or product["provision_ssh_node_id"]:
                             prov_results = await provision_direct(db, product, quantity, user_id=call.from_user.id, order_id=order_id)
                         else:
                             prov_results = await provision_auto_config(db, product, quantity, user_id=call.from_user.id, order_id=order_id)
@@ -8062,7 +8112,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         try:
             if product["is_auto_provision"]:
                 try:
-                    if product["provision_server_id"]:
+                    if product["provision_server_id"] or product["provision_ssh_node_id"]:
                         prov_results = await provision_direct(db, product, quantity, user_id=user_id, order_id=order_id)
                     else:
                         prov_results = await provision_auto_config(db, product, quantity, user_id=user_id, order_id=order_id)

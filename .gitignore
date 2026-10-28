@@ -42,3 +42,6 @@ qr_background.png
 .idea/
 .DS_Store
 Thumbs.db
+
+# SSH node credentials key (auto-generated at runtime, never commit)
+.ssh_credential_key

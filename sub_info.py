@@ -29,7 +29,7 @@ _log = logging.getLogger("sub_info")
 
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
 
-_CONFIG_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "tuic://")
+_CONFIG_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "tuic://", "ssh://")
 
 # بعضی پنل‌ها به‌جای متن خامِ base64، یک صفحه‌ی HTML («Subscription Information»)
 # برمی‌گردانند که لینک‌های کانفیگ وسط تگ‌ها هستند نه ابتدای خط؛ این regex (عیناً

@@ -67,6 +67,10 @@ async def main():
 
     # ۲. تمام بات‌های نمایندگیِ فعال (ثبت‌شده از پنل مدیریت بات اصلی)
     main_db = Database(DB_PATH)
+    # سهمیه‌ی مشترک VPN/SSH برای دیتابیس اصلی و هر tenant جداگانه reconcile می‌شود.
+    # اگر pool ای وجود نداشته باشد، worker هیچ تغییری روی سرویس‌ها اعمال نمی‌کند.
+    from quota_reconciler import QuotaReconciler
+    quota_tasks = [asyncio.create_task(QuotaReconciler(main_db).run_forever())]
     translation_health_tasks = []
     translation_health_tasks.append(asyncio.create_task(_translation_health_loop(main_translation_db)))
     reseller_bots = main_db.list_reseller_bots(active_only=True)
@@ -87,6 +91,7 @@ async def main():
             # همیشه دقیقاً همان لینکی باشد که پنل مدیریت نشان می‌دهد/کپی می‌کند.
             reseller_db.set_setting("miniapp_tenant_id", rb["link_slug"] or str(rb["id"]))
             translation_health_tasks.append(asyncio.create_task(_translation_health_loop(reseller_db)))
+            quota_tasks.append(asyncio.create_task(QuotaReconciler(reseller_db).run_forever()))
         except Exception:
             logger.exception("همگام‌سازی miniapp_tenant_id برای @%s ناموفق بود.", rb["bot_username"])
 
@@ -114,6 +119,15 @@ async def main():
     try:
         await manager.wait_all()
     finally:
+        for _task in quota_tasks:
+            _task.cancel()
+        for _task in quota_tasks:
+            try:
+                await _task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Quota reconciler shutdown failed.")
         for _task in translation_health_tasks:
             _task.cancel()
         for _task in translation_health_tasks:
