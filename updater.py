@@ -28,7 +28,24 @@ from config import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
-REPO_OWNER = os.getenv("SHOPVPN_UPDATE_OWNER", "mehdirafatpanah")
+# This fork must never advertise upstream (mehdirafatpanah) releases such as 6.x.
+FORK_GITHUB_OWNER = "amir12120"
+UPSTREAM_GITHUB_OWNER = "mehdirafatpanah"
+
+
+def resolve_update_owner(value=None) -> str:
+    """GitHub owner used for VERSION checks. Upstream owner is never allowed."""
+    if value is None:
+        raw = os.getenv("SHOPVPN_UPDATE_OWNER", FORK_GITHUB_OWNER)
+    else:
+        raw = value
+    raw = str(raw or "").strip() or FORK_GITHUB_OWNER
+    if raw.lower() == UPSTREAM_GITHUB_OWNER.lower():
+        return FORK_GITHUB_OWNER
+    return raw
+
+
+REPO_OWNER = resolve_update_owner()
 REPO_NAME = os.getenv("SHOPVPN_UPDATE_REPO", "Shopvpn")
 REPO_BRANCH = os.getenv("SHOPVPN_UPDATE_BRANCH", "main")
 
@@ -136,6 +153,10 @@ async def check(db, force: bool = False) -> dict:
     cur = current_version()
     cached = await asyncio.to_thread(_load_cached, db)
     checked = False
+    # Drop a cached upstream VERSION (e.g. 6.1.0) that is not this fork's series.
+    if cached and parse_version(cached.get("version", ""))[0] != parse_version(cur)[0]:
+        cached = {}
+        force = True
     if force or not cached:
         fetched = await fetch_latest()
         if fetched:

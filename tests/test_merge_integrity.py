@@ -656,3 +656,9 @@ def test_dedicated_sub_web_store_and_updater_stay_wired():
     assert "import dedicated_sub as ds" in sub_server
     web_store = (ROOT / "web_store/server.py").read_text(encoding="utf-8")
     assert "from web_store.routes import router as web_router" in web_store
+
+    updater_src = (ROOT / "updater.py").read_text(encoding="utf-8")
+    assert 'FORK_GITHUB_OWNER = "amir12120"' in updater_src
+    assert 'UPSTREAM_GITHUB_OWNER = "mehdirafatpanah"' in updater_src
+    assert 'os.getenv("SHOPVPN_UPDATE_OWNER", "mehdirafatpanah")' not in updater_src
+    assert 'raw.githubusercontent.com/{REPO_OWNER}' in updater_src
