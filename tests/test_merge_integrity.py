@@ -744,3 +744,39 @@ def test_dedicated_sub_web_store_and_updater_stay_wired():
     assert 'UPSTREAM_GITHUB_OWNER = "mehdirafatpanah"' in updater_src
     assert 'os.getenv("SHOPVPN_UPDATE_OWNER", "mehdirafatpanah")' not in updater_src
     assert 'raw.githubusercontent.com/{REPO_OWNER}' in updater_src
+
+
+def test_project_update_runner_stays_next_to_the_bot():
+    """The in-bot project updater shells out to ``update_runner.sh``.
+
+    An upstream merge once dropped that file while ``updater.py`` kept calling
+    it, so the admin panel's "update project" button always answered
+    "فایل update_runner.sh کنار پروژه پیدا نشد" (installer not found). The file
+    must exist, must deploy this fork's repo, and must keep its safety net.
+    """
+    runner = ROOT / "update_runner.sh"
+    assert runner.is_file(), (
+        "update_runner.sh is missing; the in-bot update button will fail with "
+        "'installer not found'"
+    )
+    src = runner.read_text(encoding="utf-8")
+    assert src.strip(), "update_runner.sh is empty"
+    for needle in (
+        'MODE="${1:-update}"',       # updater.py passes update/rollback as $1
+        "REPO_OWNER",                 # archive fallback target
+        "git fetch",                  # normal fast-forward path
+        "code_before_update_",        # code snapshot for rollback
+        "db_before_update_",          # database snapshot for rollback
+        "NR_BEFORE",                  # auto-restart baseline (no false rollback)
+        "restart_all",                # restarts the bot service last
+        "write_result ok",            # updater.py reads update_result.txt
+    ):
+        assert needle in src, f"update_runner.sh lost its {needle!r} step"
+
+    # The runner must never fall back to the upstream owner by default.
+    assert "mehdirafatpanah" not in src
+    assert '"${REPO_OWNER:-amir12120}"' in src
+
+    updater_src = (ROOT / "updater.py").read_text(encoding="utf-8")
+    assert 'RUNNER = os.path.join(BASE_DIR, "update_runner.sh")' in updater_src
+    assert "os.path.isfile(RUNNER)" in updater_src
