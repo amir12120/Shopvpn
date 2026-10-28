@@ -4,6 +4,7 @@
 The active language is kept in a ContextVar so every Telegram update can use
 its own language safely, including calls executed through asyncio.to_thread().
 """
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Optional
 
@@ -615,6 +616,26 @@ def reset_language(token):
 def get_language() -> str:
     return _current_language.get()
 
+
+@contextmanager
+def language_scope(language: str, catalog: Optional[dict] = None, track_missing: bool = False):
+    """Temporarily render text in *another* user's language.
+
+    Used when the bot sends a message to a user other than the one whose update
+    is being handled (e.g. notifying a referrer while handling the invitee's
+    /start). Restores language, catalog and missing-tracking afterwards.
+    """
+    prev_catalog = _current_catalog.get()
+    token = set_language(language, catalog)
+    missing_token = start_missing_tracking() if track_missing else None
+    try:
+        yield
+    finally:
+        if missing_token is not None:
+            stop_missing_tracking(missing_token)
+        reset_language(token)
+        _current_catalog.set(prev_catalog)
+
 def _english_source_text(text: str) -> Optional[str]:
     """Return the canonical English source key for a UI string.
 
@@ -956,6 +977,7 @@ _PHRASE_TRANSLATIONS.update({
     "🎁 هدیه‌ی گروهی": "🎁 Bulk gift",
     "🛡 ضداسپم کاربران": "🛡 Anti-spam for users",
     "🔌 سوئیچ سراسری ربات (خاموش/روشن)": "🔌 Bot global switch (on/off)",
+    "🔗 ساب اختصاصی (دامنه، صفحه‌ی وب، اپ‌ها)": "🔗 Dedicated sub (domain, web page, apps)",
     "⏳ پیام موقت (خودحذف‌شونده)": "⏳ Temporary (self-deleting) message",
     "📞 روش‌های ارتباط با پشتیبانی": "📞 Support contact methods",
     "🤖 دستیار هوشمند (سوالات متداول)": "🤖 AI assistant (FAQ)",

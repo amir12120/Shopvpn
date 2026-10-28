@@ -2483,3 +2483,127 @@ body.bs-dragging{ user-select:none; -webkit-user-select:none; cursor:grabbing; }
 @media (min-width:1000px){ .bs-close{ display:none; } }
 @media (max-width:999px){ .tg-btn.sel{ scroll-margin-bottom:56vh; scroll-margin-top:80px; } }
 .bs-insp-save{ width:100%; }
+
+/* live web-store preview */
+.settings-live-preview{margin-top:16px;border:1px solid var(--line,#e5e7eb);border-radius:16px;overflow:hidden;background:var(--card,#fff)}
+.settings-live-preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line,#e5e7eb)}
+.settings-live-preview iframe{display:block;width:100%;height:620px;border:0;background:#fff}
+
+
+/* ================================================================
+   ShopVPN Enterprise — default product design system
+   هدف: ظاهر رسمی و منسجم شبیه SaaSهای سازمانی؛ فضای سفید، سایدبار
+   سرمه‌ای، تایپوگرافی واضح، مرزهای ظریف و رنگ اصلی ایندیگو.
+================================================================ */
+html[data-theme="enterprise"]{
+  --bg:#F5F7FB;
+  --bg-2:#0F1B33;
+  --surface:#FFFFFF;
+  --surface-2:#F8FAFD;
+  --surface-hi:rgba(79,99,216,.055);
+  --border:#E5E9F2;
+  --border-soft:#EDF0F5;
+  --text:#172033;
+  --text-muted:#6D778A;
+  --text-dim:#A5ADBC;
+  --primary:#4F63D8;
+  --primary-ink:#FFFFFF;
+  --cyan:#2E9BCB;
+  --amber:#D89024;
+  --emerald:#1D9B67;
+  --rose:#D84A57;
+  --violet:#7159D9;
+  --fuchsia:#C94F8C;
+  --radius:14px;
+  --radius-sm:10px;
+  --radius-xs:8px;
+  --shadow-card:0 1px 2px rgba(23,32,51,.03),0 8px 28px rgba(23,32,51,.045);
+  --shadow-pop:0 18px 50px rgba(23,32,51,.14);
+  --shadow-btn:0 3px 10px rgba(79,99,216,.18);
+  --focus-ring:0 0 0 3px rgba(79,99,216,.16);
+}
+html[data-theme="enterprise"] body{background:var(--bg);}
+html[data-theme="enterprise"] .app{background:var(--bg);}
+html[data-theme="enterprise"] .sidebar{
+  width:238px; background:#0F1B33; color:#F4F7FF; border:0;
+  padding:18px 12px; box-shadow:8px 0 24px rgba(15,27,51,.05);
+}
+html[data-theme="enterprise"] .sidebar-brand{padding:5px 9px 22px;}
+html[data-theme="enterprise"] .brand-mark{
+  width:40px;height:40px;border-radius:10px;background:#4F63D8;
+  box-shadow:0 5px 14px rgba(79,99,216,.28);
+}
+html[data-theme="enterprise"] .brand-text strong{color:#fff;font-size:15px;}
+html[data-theme="enterprise"] .brand-text span{color:#9EABC2;}
+html[data-theme="enterprise"] .nav-section{
+  color:#73809A; font-size:10px; font-weight:800; letter-spacing:.04em;
+  margin:18px 10px 7px;
+}
+html[data-theme="enterprise"] .nav-item{
+  color:#AAB5C9; border-radius:9px; margin-bottom:3px; padding:9px 10px;
+}
+html[data-theme="enterprise"] .nav-item:hover{background:rgba(255,255,255,.055);color:#fff;}
+html[data-theme="enterprise"] .nav-item.active{
+  color:#fff; background:#4F63D8; box-shadow:0 6px 16px rgba(79,99,216,.25);
+}
+html[data-theme="enterprise"] .nav-icon{color:currentColor;background:transparent;}
+html[data-theme="enterprise"] .nav-item.active .nav-icon{background:transparent;}
+html[data-theme="enterprise"] .sidebar-footer{border-color:rgba(255,255,255,.08);}
+html[data-theme="enterprise"] .me-card{color:#fff;}
+html[data-theme="enterprise"] .me-info strong{color:#fff;}
+html[data-theme="enterprise"] .me-info span{color:#8F9BB1;}
+html[data-theme="enterprise"] .logout-btn{color:#AAB5C9;}
+html[data-theme="enterprise"] .logout-btn:hover{color:#fff;background:rgba(255,255,255,.055);}
+html[data-theme="enterprise"] .main{background:var(--bg);}
+html[data-theme="enterprise"] .topbar{
+  min-height:64px; background:#fff; border-bottom:1px solid var(--border);
+  padding:0 26px; box-shadow:0 1px 0 rgba(23,32,51,.02); top:0;
+}
+html[data-theme="enterprise"] .topbar h2{color:var(--text);font-size:16px;}
+html[data-theme="enterprise"] .topbar-actions{color:var(--text-muted);}
+html[data-theme="enterprise"] .topbar-clock{background:var(--surface-2);border:1px solid var(--border);}
+html[data-theme="enterprise"] .content{padding:26px 28px 40px;max-width:1700px;width:100%;margin:0 auto;}
+html[data-theme="enterprise"] .card,
+html[data-theme="enterprise"] .login-card,
+html[data-theme="enterprise"] .modal{
+  background:#fff;border:1px solid var(--border);box-shadow:var(--shadow-card);
+}
+html[data-theme="enterprise"] .card{padding:18px 20px;}
+html[data-theme="enterprise"] .card-head h3{color:#1B2538;font-size:14px;}
+html[data-theme="enterprise"] .card-sub{color:#7B8597;}
+html[data-theme="enterprise"] .stat-card{min-height:132px;}
+html[data-theme="enterprise"] .stat-card .value{font-size:25px;color:#172033;}
+html[data-theme="enterprise"] .stat-card .label{color:#6D778A;}
+html[data-theme="enterprise"] table thead th{color:#7A8497;border-color:var(--border-soft);}
+html[data-theme="enterprise"] table tbody td{border-color:var(--border-soft);color:#303A4D;}
+html[data-theme="enterprise"] table tbody tr:hover{background:#F7F9FD;}
+html[data-theme="enterprise"] .input,
+html[data-theme="enterprise"] select.input,
+html[data-theme="enterprise"] .field input{
+  background:#fff;border:1px solid #DDE3ED;color:#273247;border-radius:9px;
+}
+html[data-theme="enterprise"] .input:focus,
+html[data-theme="enterprise"] select.input:focus,
+html[data-theme="enterprise"] .field input:focus{border-color:#4F63D8;box-shadow:0 0 0 3px rgba(79,99,216,.11);}
+html[data-theme="enterprise"] .btn{border-color:#DDE3ED;background:#fff;color:#344056;border-radius:9px;box-shadow:none;}
+html[data-theme="enterprise"] .btn:hover{background:#F7F9FD;border-color:#C8D1E0;}
+html[data-theme="enterprise"] .btn-primary{background:#4F63D8;color:#fff;border-color:#4F63D8;box-shadow:0 4px 10px rgba(79,99,216,.18);}
+html[data-theme="enterprise"] .btn-primary:hover{background:#4659C8;filter:none;}
+html[data-theme="enterprise"] .btn-danger{background:#FFF3F4;color:#C93D4A;border-color:#F3C8CD;}
+html[data-theme="enterprise"] .tab-btn{background:#fff;border-color:#DDE3ED;color:#6D778A;}
+html[data-theme="enterprise"] .tab-btn.active{background:#EEF1FF;border-color:#C8D0FF;color:#4053C5;}
+html[data-theme="enterprise"] .badge{font-weight:700;}
+html[data-theme="enterprise"] .modal{border-radius:16px;}
+html[data-theme="enterprise"] .toolbar{margin-bottom:18px;}
+html[data-theme="enterprise"] .page-title{color:#172033;}
+html[data-theme="enterprise"] .page-subtitle{color:#778296;}
+html[data-theme="enterprise"] .section-title{color:#172033;}
+html[data-theme="enterprise"] .res-card{background:#fff;border:1px solid var(--border);box-shadow:var(--shadow-card);}
+html[data-theme="enterprise"] .theme-card{background:#fff;border-color:var(--border);}
+html[data-theme="enterprise"] .theme-card.active{border-color:#4F63D8;box-shadow:0 0 0 1px #4F63D8 inset;}
+html[data-theme="enterprise"] .sidebar-overlay{background:rgba(7,14,28,.5);}
+@media(max-width:900px){
+  html[data-theme="enterprise"] .sidebar{width:238px;}
+  html[data-theme="enterprise"] .topbar{padding:0 16px;}
+  html[data-theme="enterprise"] .content{padding:20px 16px 32px;}
+}

@@ -27,6 +27,8 @@ from io import BytesIO
 from typing import TYPE_CHECKING
 
 import qrcode
+
+import dedicated_sub
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
@@ -416,7 +418,12 @@ async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
         L = lambda t: t
     svc = await collect_service_info(link, product_name)
     alternates = []
-    if db is not None and sub_link_on and svc["is_sub"]:
+    if db is not None and svc["is_sub"]:
+        # ساب اختصاصی: به‌جای آدرس پنل، لینک روی دامنه‌ی خودِ فروشگاه نمایش داده می‌شود
+        dedicated = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
+        if dedicated != link:
+            svc["sub_url"] = dedicated
+    if db is not None and sub_link_on and svc["is_sub"] and svc["sub_url"] == link:
         try:
             alternates = await asyncio.to_thread(db.get_alternate_sub_urls, link)
         except Exception:
@@ -469,7 +476,8 @@ async def deliver_config_to_user(
         caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, header_text=header_text)
 
         try:
-            qr_photo = _build_qr_photo(link, db=db)
+            qr_link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link) if db is not None else link
+            qr_photo = _build_qr_photo(qr_link, db=db)
             await bot.send_photo(user_tg_id, qr_photo, caption=caption, parse_mode="HTML")
         except Exception:
             # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود

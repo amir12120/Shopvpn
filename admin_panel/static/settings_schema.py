@@ -34,6 +34,32 @@ SETTINGS_FORM_SECTIONS = [
                     {"key": "after_buy_text", "label": "متن راهنمای پرداخت (بعد از انتخاب محصول)", "type": "textarea"},
                 ],
             },
+            {
+                "title": "🛍️ برندینگ و ظاهر فروشگاه وب",
+                "fields": [
+                    {"key": "web_store_logo", "label": "لوگوی فروشگاه وب", "type": "image"},
+                    {"key": "web_store_tagline", "label": "شعار کوتاه فروشگاه وب", "type": "text"},
+                    {"key": "web_store_primary_color", "label": "رنگ اصلی فروشگاه وب (HEX)", "type": "text"},
+                    {"key": "web_store_support_url", "label": "لینک پشتیبانی فروشگاه وب", "type": "text"},
+                    {"key": "web_store_preview_theme", "label": "تم پیش‌فرض پیش‌نمایش", "type": "select", "options": [["light", "روشن"], ["dark", "تیره"], ["auto", "خودکار"]]},
+                ],
+            },
+            {
+                "title": "🔗 برندینگ صفحه لینک ساب",
+                "fields": [
+                    {"key": "dsub_brand", "label": "نام برند صفحه لینک ساب", "type": "text"},
+                    {"key": "dsub_logo_url", "label": "لوگوی صفحه لینک ساب", "type": "text"},
+                    {"key": "dsub_notice", "label": "اعلان بالای صفحه", "type": "textarea"},
+                    {"key": "dsub_support_url", "label": "لینک پشتیبانی صفحه ساب", "type": "text"},
+                    {"key": "dsub_footer_text", "label": "متن پایین صفحه", "type": "text"},
+                    {"key": "dsub_theme", "label": "تم صفحه ساب", "type": "select", "options": [["auto", "خودکار"], ["light", "روشن"], ["dark", "تیره"]]},
+                    {"key": "dsub_show_configs", "label": "نمایش کانفیگ‌ها", "type": "bool"},
+                    {"key": "dsub_show_chart", "label": "نمایش نمودار مصرف", "type": "bool"},
+                    {"key": "dsub_show_qr", "label": "نمایش QR", "type": "bool"},
+                    {"key": "dsub_show_apps", "label": "نمایش برنامه‌ها", "type": "bool"},
+                    {"key": "dsub_show_faq", "label": "نمایش بخش عیب‌یابی", "type": "bool"},
+                ],
+            },
         ],
     },
     {

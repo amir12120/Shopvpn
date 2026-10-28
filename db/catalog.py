@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from .constants import *
+from .constants import _wallet_tag
 
 class CatalogMixin:
     def _seed_default_custom_config_product(self, conn):

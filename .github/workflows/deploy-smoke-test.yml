@@ -163,6 +163,10 @@ jobs:
               "post_image", "admin_post_brand", "price_display", "product_waitlist",
               "jarvis_guide", "audit_forwarder",
               "db.gift_cards", "db.leak_store", "db.userbot_store",
+              "dedicated_sub", "admin_dedicated_sub", "db.dedicated_sub",
+              "sub_server", "sub_server.server",
+              "web_auth", "web_store", "web_store.routes", "web_store.server",
+              "updater", "admin_update",
               # New third-party dependencies from requirements.txt: prove the
               # lean install can actually import them on the target box.
               "telethon", "arabic_reshaper", "bidi",

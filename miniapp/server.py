@@ -52,11 +52,12 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 from fastapi.responses import HTMLResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import logging
 from types import SimpleNamespace
 import sqlite3
+import ipaddress
 
 logging.basicConfig(level=logging.INFO)
 
@@ -75,9 +76,11 @@ import extra_gateway_clients
 import extra_gateway_payment
 import extra_gateway_registry
 import payment_engine
+import web_auth
 import ai_support
 import receipt_ai_check
 import report_router
+import dedicated_sub
 import card_to_card_payment
 from asset_versioning import static_version, ApiNoStoreMiddleware
 from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER, PAYMENT_METHOD_META
@@ -111,6 +114,18 @@ app = FastAPI(title="V2Ray Shop Mini App API")
 
 # Backend i18n: every API request gets a language context from the frontend header.
 # The frontend sends X-Language based on its persisted sv-lang setting.
+@app.middleware("http")
+async def _web_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    # Defense-in-depth headers.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 @app.middleware("http")
 async def _i18n_request_language(request: Request, call_next):
     language = normalize_language(request.headers.get("x-language") or request.headers.get("accept-language"))
@@ -231,7 +246,11 @@ def get_reseller_backend(tg_id: int, db: Database, tenant: Tenant):
         row = None
     return main_db, (row["owner_telegram_id"] if row else None)
 
-def get_verified_user(x_init_data: str = Header(...), tenant: Tenant = Depends(get_tenant)):
+def get_verified_user(
+    x_init_data: Optional[str] = Header(None),
+    tenant: Tenant = Depends(get_tenant),
+    x_web_token: Optional[str] = Header(None),
+):
     """initData را با توکن همان مستأجر تایید می‌کند. خروجی: (tg_id, db, tenant)
 
     نکته: کاربر را همین‌جا هم در جدول users ثبت/به‌روز می‌کنیم (نه فقط داخل
@@ -239,6 +258,14 @@ def get_verified_user(x_init_data: str = Header(...), tenant: Tenant = Depends(g
     قبلاً /start را در بات زده باشد. بدون این کار، پیام‌های چت زنده/تیکت چنین
     کاربری در دیتابیس ثبت می‌شد ولی چون ردیفی در users نداشت، سمت ادمین
     (هم مینی‌اپ و هم پنل وب) با خطای «کاربر یافت نشد» مواجه می‌شد."""
+    # ورود از سایت وب (فقط بات اصلی): نشست ساخته‌شده با تأیید در تلگرام، به‌جای initData.
+    if not x_init_data and x_web_token:
+        if tenant.tenant_id:
+            raise HTTPException(status_code=403, detail=tr("ورود از طریق سایت فقط برای بات اصلی فعال است."))
+        web_tg_id = web_auth.session_user(tenant.db, x_web_token)
+        if not web_tg_id:
+            raise HTTPException(status_code=401, detail=tr("نشست ورود منقضی شده است. دوباره وارد شوید."))
+        return web_tg_id, tenant.db, tenant
     result = validate_init_data(x_init_data, tenant.bot_token)
     if not result or "user" not in result:
         raise HTTPException(status_code=401, detail=tr("initData نامعتبر است."))
@@ -370,9 +397,14 @@ async def _force_join_check(tg_id: int, db: Database, tenant: "Tenant"):
 
 
 async def require_joined(auth=Depends(get_verified_user)):
-    """چک عضویت اجباری + قوانین قبل از اکشن‌های حساس مینی‌اپ."""
+    """چک عضویت اجباری + قوانین قبل از اکشن‌های حساس مینی‌اپ.
+
+    خریدار وب که ایمیلش را تأیید کرده، حساب تلگرام/عضویت کانال ندارد؛ برای او
+    فقط بررسی قوانین اعمال می‌شود. کاربران تلگرام و مینی‌اپ همچنان چک کامل دارند.
+    """
     tg_id, db, tenant = auth
-    await _force_join_check(tg_id, db, tenant)
+    if not (not tenant.tenant_id and web_auth.is_email_account(db, tg_id)):
+        await _force_join_check(tg_id, db, tenant)
     if not db.is_admin(tg_id):
         terms = db.get_terms_settings()
         if terms["enabled"] and not db.is_terms_accepted(tg_id):
@@ -761,7 +793,7 @@ def api_custom_configs(auth=Depends(get_verified_user)):
             "display_name": c["display_name"] or c["username"],
             "volume_gb": c["volume_gb"],
             "duration_days": c["duration_days"],
-            "subscription_url": c["subscription_url"],
+            "subscription_url": dedicated_sub.display_link(db, c["id"], c["subscription_url"]),
             "created_at": c["created_at"],
             "expires_at": c["expires_at"],
             "start_on_first_use": (c["start_on_first_use"] if "start_on_first_use" in c.keys() else 0) == 1,
@@ -977,7 +1009,7 @@ async def api_custom_config_cut_access(custom_config_id: int, auth=Depends(get_v
         db.update_custom_config_subscription_url(cc["id"], result.subscription_url)
     leak_index.schedule_refresh(db, cc["id"])
     db.add_custom_config_history(cc["id"], "cut_access", "دسترسی قطع و لینک جدید صادر شد")
-    return {"status": "ok", "subscription_url": result.subscription_url}
+    return {"status": "ok", "subscription_url": dedicated_sub.display_link(db, cc["id"], result.subscription_url)}
 
 
 # «تمدید کامل سرویس» - معادل svc_renew:full / svc_renew_pick در ربات اصلی؛ فقط
@@ -1232,7 +1264,7 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
                 detail=tr("خطایی در ثبت کانفیگ رخ داد؛ اعتبار شما بازگردانده شد. دوباره تلاش کن."),
             )
         return {
-            "status": "approved", "link": result.subscription_url,
+            "status": "approved", "link": dedicated_sub.dedicated_link_for_upstream(db, result.subscription_url),
             "reseller_credit_left": reseller_db.get_reseller_credit(tg_id),
         }
 
@@ -1295,7 +1327,7 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
                 db.reward_referrer_if_first_purchase(tg_id, price)
             except Exception:
                 pass
-            return {"status": "approved", "order_id": order_id, "link": result.subscription_url}
+            return {"status": "approved", "order_id": order_id, "link": dedicated_sub.dedicated_link_for_upstream(db, result.subscription_url)}
 
         if not db.has_any_payable_method(order["final_price"], allowed_methods):
             db.reject_order(order_id)
@@ -1366,7 +1398,7 @@ def api_test_config_status(auth=Depends(get_verified_user)):
     if used:
         row = db.get_test_custom_config_for_user(tg_id)
         if row:
-            link = row["subscription_url"]
+            link = dedicated_sub.display_link(db, row["id"], row["subscription_url"])
         else:
             legacy = db.get_assigned_test_config(tg_id)
             link = legacy["link"] if legacy else None
@@ -1467,7 +1499,7 @@ async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_j
             f"📦 {html_lib.escape(plan['name'])} - {html_lib.escape(format_plan_amount(plan))}\n"
             f"🔑 <code>{html_lib.escape(result.get('username') or '')}</code>",
         )
-        return {"link": result["subscription_url"]}
+        return {"link": dedicated_sub.dedicated_link_for_upstream(db, result["subscription_url"])}
 
     if not is_full_access:
         raise HTTPException(status_code=400, detail=tr("در حال حاضر هیچ پلن کانفیگ تستی تعریف نشده است."))
@@ -1598,6 +1630,7 @@ def _compute_connect_status(settings: dict, info: dict, assigned_at_raw) -> Opti
 @app.get("/api/sub-info")
 async def api_sub_info(link: str = Query(...), auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
+    link = dedicated_sub.upstream_for_link(db, link)
     orders = db.get_user_orders(tg_id)
     owns_link = False
     assigned_at_raw = None
@@ -2201,8 +2234,13 @@ def api_tier_quote(product_id: int, quantity: int = 1, auth=Depends(get_verified
 
 
 @app.post("/api/orders")
-async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
+async def api_create_order(body: OrderCreate, request: Request, auth=Depends(require_joined)):
     tg_id, db, tenant = auth
+    web_token = request.headers.get("x-web-token")
+    if web_token and not tenant.tenant_id:
+        await asyncio.to_thread(_verify_web_turnstile, request)
+        if not await asyncio.to_thread(web_auth.enforce_rate_limit, db, "web-order-ip:" + _client_ip(request), 20, 3600):
+            raise HTTPException(status_code=429, detail=tr("تعداد تلاش‌های خرید از این شبکه زیاد است؛ بعداً دوباره تلاش کنید."))
     user_row = db.get_user(tg_id)
     if user_row and user_row["is_blocked"]:
         raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
@@ -2265,7 +2303,7 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
                 db.approve_order_auto(order_id)
                 await report_order_completed(tenant, db, order_id, "wallet")
                 db.reward_referrer_if_first_purchase(tg_id, order["final_price"] or total_price)
-                links = [r["subscription_url"] for r in prov_results]
+                links = [dedicated_sub.dedicated_link_for_upstream(db, r["subscription_url"]) for r in prov_results]
                 return {
                     "status": "approved", "order_id": order_id,
                     "link": links[0], "links": links,
@@ -4250,7 +4288,7 @@ async def api_wheel_spin(auth=Depends(require_joined)):
         )
         return {
             "won": True, "kind": "config", "title": prize["title"],
-            "amount_label": amount, "link": result["subscription_url"],
+            "amount_label": amount, "link": dedicated_sub.dedicated_link_for_upstream(db, result["subscription_url"]),
         }
     if prize is not None and prize["discount_percent"]:
         percent = int(prize["discount_percent"])
@@ -4298,10 +4336,11 @@ def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
 async def api_topup_receipt(
     topup_id: int = Form(...),
     photo: UploadFile = File(...),
-    x_init_data: str = Header(...),
+    x_init_data: Optional[str] = Header(None),
+    x_web_token: Optional[str] = Header(None),
     tenant: Tenant = Depends(get_tenant),
 ):
-    tg_id, db, tenant = get_verified_user(x_init_data, tenant)
+    tg_id, db, tenant = get_verified_user(x_init_data, tenant, x_web_token)
     topup = db.get_topup(topup_id)
     if not topup or topup["user_id"] != tg_id:
         raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
@@ -4372,10 +4411,11 @@ async def api_topup_receipt(
 async def api_order_receipt(
     order_id: int,
     photo: UploadFile = File(...),
-    x_init_data: str = Header(...),
+    x_init_data: Optional[str] = Header(None),
+    x_web_token: Optional[str] = Header(None),
     tenant: Tenant = Depends(get_tenant),
 ):
-    tg_id, db, tenant = get_verified_user(x_init_data, tenant)
+    tg_id, db, tenant = get_verified_user(x_init_data, tenant, x_web_token)
     order = db.get_order(order_id)
     if not order or order["user_id"] != tg_id:
         raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
@@ -6895,6 +6935,50 @@ def api_admin_get_user(telegram_id: int, auth=Depends(require_full_admin)):
     }
 
 
+def _admin_referrals_payload(db, telegram_id: int) -> dict:
+    items = db.list_referrals_for_admin(telegram_id)
+    return {
+        "items": items,
+        "total": len(items),
+        "pending_bonus_count": sum(1 for r in items if not r["bonus_given"]),
+        "bonus_amount": int(db.get_setting("referral_invite_bonus_amount", "0") or 0),
+        "bonus_enabled": db.get_setting("referral_invite_bonus_enabled", "0") == "1",
+        "suspended": db.is_referral_fraud_suspended(telegram_id),
+    }
+
+
+@app.get("/api/admin/users/{telegram_id}/referrals")
+def api_admin_user_referrals(telegram_id: int, auth=Depends(require_full_admin)):
+    _, db, _ = auth
+    if not db.get_user(telegram_id):
+        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
+    return _admin_referrals_payload(db, telegram_id)
+
+
+@app.post("/api/admin/users/{telegram_id}/referrals/pay-pending")
+async def api_admin_pay_pending_referral_bonus(telegram_id: int, tenant: Tenant = Depends(get_tenant), auth=Depends(require_full_admin)):
+    admin_id, db, _ = auth
+    if not db.get_user(telegram_id):
+        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
+    res = await asyncio.to_thread(db.pay_pending_invite_bonuses, telegram_id)
+    if res["paid_count"] <= 0:
+        raise HTTPException(status_code=400, detail=tr("پاداشی برای پرداخت وجود ندارد (مبلغ پاداش صفر است، سقف پر شده یا همه پرداخت شده‌اند)."))
+    db.log_admin_action(
+        admin_id, "referral_bonus_manual",
+        f"پاداش دعوت {res['paid_count']} زیرمجموعه ({res['total']:,} تومان) برای کاربر {telegram_id} پرداخت شد (مینی‌اپ)",
+        "user", telegram_id,
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                json={"chat_id": telegram_id, "text": f"🤝 پاداش دعوت {res['paid_count']} زیرمجموعه‌ی شما پرداخت شد.\n💰 {res['total']:,} تومان به کیف پول شما اضافه شد."},
+            )
+    except Exception:
+        pass
+    return {"status": "ok", **res, **_admin_referrals_payload(db, telegram_id)}
+
+
 class UserBlockUpdate(BaseModel):
     blocked: bool
 
@@ -7351,6 +7435,56 @@ async def api_admin_factory_reset(confirm_phrase: str = Form(""), auth=Depends(r
         f"بازگشت کامل به حالت کارخانه از طریق میان‌اپ؛ بکاپ ایمنی: "
         f"{os.path.basename(safety_backup) if safety_backup else 'ناموفق'}")
     return {"status": "ok", "safety_backup": os.path.basename(safety_backup) if safety_backup else None}
+
+
+# ---------------------------------------------------------------------------
+# ابزارهای مشترک ورود/خرید از وب (فروشگاه وب سرویس جداست: web_store/server.py)
+# ---------------------------------------------------------------------------
+def _client_ip(request: Request) -> str:
+    """Use X-Forwarded-For only when request came from a local/private reverse proxy."""
+    peer = request.client.host if request.client else ""
+    try:
+        addr = ipaddress.ip_address(peer)
+        trusted_proxy = addr.is_loopback or addr.is_private or addr.is_link_local
+    except ValueError:
+        trusted_proxy = False
+    forwarded = request.headers.get("x-forwarded-for", "") if trusted_proxy else ""
+    return forwarded.split(",")[0].strip() or peer
+
+
+def _verify_web_turnstile(request: Request) -> None:
+    """Verify Cloudflare Turnstile when configured; no-op for existing installs without keys."""
+    secret = os.getenv("SHOPVPN_TURNSTILE_SECRET_KEY", "").strip()
+    site_key = os.getenv("SHOPVPN_TURNSTILE_SITE_KEY", "").strip()
+    # Keep older deployments working when Turnstile is entirely disabled, but fail
+    # closed if only one half of the configuration is present.
+    if not secret and not site_key:
+        if os.getenv("SHOPVPN_WEB_ALLOW_NO_TURNSTILE", "").strip() == "1":
+            return
+        raise HTTPException(status_code=503, detail=tr("سرویس ورود و خرید از وب موقتاً فعال نیست."))
+    if not secret or not site_key:
+        raise HTTPException(status_code=503, detail=tr("تنظیمات بررسی امنیتی ناقص است؛ کلید عمومی و محرمانه را تنظیم کنید."))
+    token = request.headers.get("x-turnstile-token", "").strip()
+    if not token:
+        raise HTTPException(status_code=403, detail=tr("برای ادامه، بررسی امنیتی را کامل کنید."))
+    import urllib.parse
+    import urllib.request
+    payload = urllib.parse.urlencode({
+        "secret": secret,
+        "response": token,
+        "remoteip": _client_ip(request),
+    }).encode()
+    req = urllib.request.Request("https://challenges.cloudflare.com/turnstile/v0/siteverify", data=payload, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        if not result.get("success"):
+            raise HTTPException(status_code=403, detail=tr("بررسی امنیتی ناموفق بود؛ دوباره تلاش کنید."))
+    except HTTPException:
+        raise
+    except Exception:
+        logging.getLogger("web_auth").warning("Turnstile verification unavailable", exc_info=True)
+        raise HTTPException(status_code=503, detail=tr("سرویس بررسی امنیتی موقتاً در دسترس نیست."))
 
 
 app.mount("/", NoCacheStaticFiles(directory=STATIC_DIR, html=True), name="static")

@@ -12,6 +12,15 @@ function stopSupportPoll() { if (SUPPORT_POLL_TIMER) { clearInterval(SUPPORT_POL
 // و بلوک CSS مربوطه با سلکتور html[data-theme="..."] در style.css اضافه بشه.
 const THEMES = [
   {
+    id: 'enterprise',
+    name: 'ShopVPN Enterprise',
+    desc: 'رسمی، منسجم و مناسب پنل مدیریتی حرفه‌ای',
+    ready: true,
+    supportsMode: true,
+    defaultMode: 'light',
+    swatch: ['#0F1B33', '#4F63D8', '#F7F9FC'],
+  },
+  {
     id: 'bento',
     name: 'Bento Grid',
     desc: 'کارت‌های نامنظم چندسایز مثل ویجت‌های اپل',
@@ -57,7 +66,7 @@ const THEMES = [
     swatch: ['#6750A4', '#EADDFF', '#1D1B20'],
   },
 ];
-const DEFAULT_THEME = 'android';
+const DEFAULT_THEME = 'enterprise';
 
 function loadTheme() {
   const fallbackMode = (THEMES.find(t => t.id === DEFAULT_THEME) || {}).defaultMode || 'dark';
@@ -2936,6 +2945,7 @@ async function showUserDetail(tgId) {
   const d = await apiGet(`/users/${tgId}`);
   const services = await apiGet(`/users/${tgId}/custom-configs`).catch(() => []);
   const bankConfigs = await apiGet(`/users/${tgId}/configs`).catch(() => []);
+  const refs = await apiGet(`/users/${tgId}/referrals`).catch(() => ({ items: [], total: 0, pending_bonus_count: 0, bonus_amount: 0 }));
   const isSenior = hasPerm('users');
   const u = d.user;
   const displayName = u.username ? '@' + u.username : (u.first_name || tgId);
@@ -3001,6 +3011,12 @@ async function showUserDetail(tgId) {
     <div class="table-wrap"><table><thead><tr><th>#</th><th>محصول</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
     <tbody>${d.orders.slice(0, 10).map(o => `<tr><td class="mono">#${o.id}</td><td>${esc(o.product_name || '-')}</td><td class="mono">${fmt(o.final_price)}${tierDiscountNote(o)}</td><td>${esc(o.status)}</td><td class="mono">${fmtDate(o.created_at)}</td></tr>`).join('') || `<tr><td colspan="5" class="empty-state"><div class="icon">${svg('empty')}</div>سفارشی نیست</td></tr>`}</tbody></table></div>
 
+    <h4 class="ud-section-title">زیرمجموعه‌ها (${fmt(refs.total)})</h4>
+    ${refs.suspended ? '<div class="hint-text" style="color:var(--danger,#c0392b)">⛔️ پاداش رفرال این کاربر به‌خاطر تشخیص تقلب متوقف شده است.</div>' : ''}
+    ${isSenior && refs.pending_bonus_count > 0 && refs.bonus_amount > 0 ? `<div class="form-row" style="margin:8px 0"><span class="hint-text">${fmt(refs.pending_bonus_count)} زیرمجموعه پاداش دعوت دریافت نکرده‌اند (هرکدام ${fmt(refs.bonus_amount)} تومان)</span><button class="btn btn-primary btn-sm" id="ud-pay-pending-refs">💰 پرداخت پاداش‌های پرداخت‌نشده</button></div>` : ''}
+    <div class="table-wrap"><table><thead><tr><th>کاربر</th><th>آیدی</th><th>عضویت</th><th>خرید تاییدشده</th><th>پاداش دعوت</th></tr></thead>
+    <tbody>${(refs.items || []).map(r => `<tr><td>${esc(r.username ? '@' + r.username : (r.first_name || '-'))}</td><td class="mono">${r.telegram_id}</td><td class="mono">${fmtDate(r.joined_at)}</td><td class="mono">${fmt(r.approved_orders)}</td><td>${r.bonus_given ? '✅ پرداخت شده' : '⏳ پرداخت نشده'}</td></tr>`).join('') || `<tr><td colspan="5" class="empty-state"><div class="icon">${svg('empty')}</div>زیرمجموعه‌ای نیست</td></tr>`}</tbody></table></div>
+
     <h4 class="ud-section-title">شارژهای کیف پول</h4>
     <div class="table-wrap"><table><thead><tr><th>#</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
     <tbody>${(d.topups || []).slice(0, 10).map(t => `<tr><td class="mono">#${t.id}</td><td class="mono">${fmt(t.amount)}</td><td>${esc(t.status)}</td><td class="mono">${fmtDate(t.created_at)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty-state"><div class="icon">${svg('empty')}</div>شارژی ثبت نشده</td></tr>`}</tbody></table></div>
@@ -3014,6 +3030,11 @@ async function showUserDetail(tgId) {
       const delta = Number($('#wallet-delta', body).value);
       if (!delta) return;
       try { await apiPost(`/users/${tgId}/wallet`, { delta }); toast('کیف پول به‌روزرسانی شد.'); close(); }
+      catch (e) { handleErr(e); }
+    });
+    const payRefsBtn = $('#ud-pay-pending-refs', body);
+    if (payRefsBtn) payRefsBtn.addEventListener('click', async () => {
+      try { const r = await apiPost(`/users/${tgId}/referrals/pay-pending`); toast(`${fmt(r.total)} تومان پاداش دعوت پرداخت شد.`); close(); await showUserDetail(tgId); }
       catch (e) { handleErr(e); }
     });
     const creditLimitBtn = $('#credit-limit-submit', body);
@@ -6930,6 +6951,26 @@ const SETTINGS_GROUPS = [
   // دکمه‌های مسیر خرید (انتخاب دسته/محصول/ادامه/کد تخفیف/بازگشت) دیگر اینجا
   // نیست؛ برای یکپارچه‌سازی، همه‌شان به تب «دکمه‌های ربات» منتقل شدند.
 
+  { tab: 'content', title: '🛍️ برندینگ و ظاهر فروشگاه وب', fields: [
+    { key: 'web_store_logo', label: 'لوگوی فروشگاه وب', type: 'image' },
+    { key: 'web_store_tagline', label: 'شعار کوتاه فروشگاه وب', type: 'text' },
+    { key: 'web_store_primary_color', label: 'رنگ اصلی فروشگاه وب (HEX)', type: 'text' },
+    { key: 'web_store_support_url', label: 'لینک پشتیبانی فروشگاه وب', type: 'text' },
+    { key: 'web_store_preview_theme', label: 'تم پیش‌فرض پیش‌نمایش', type: 'select', options: [['light','روشن'],['dark','تیره'],['auto','خودکار']] },
+  ]},
+  { tab: 'content', title: '🔗 برندینگ و پیش‌نمایش صفحه لینک ساب', fields: [
+    { key: 'dsub_brand', label: 'نام برند صفحه لینک ساب', type: 'text' },
+    { key: 'dsub_logo_url', label: 'لوگوی صفحه لینک ساب', type: 'text' },
+    { key: 'dsub_notice', label: 'اعلان بالای صفحه', type: 'textarea' },
+    { key: 'dsub_support_url', label: 'لینک پشتیبانی صفحه ساب', type: 'text' },
+    { key: 'dsub_footer_text', label: 'متن پایین صفحه', type: 'text' },
+    { key: 'dsub_theme', label: 'تم صفحه ساب', type: 'select', options: [['auto','خودکار'],['light','روشن'],['dark','تیره']] },
+    { key: 'dsub_show_configs', label: 'نمایش کانفیگ‌ها', type: 'bool' },
+    { key: 'dsub_show_chart', label: 'نمایش نمودار مصرف', type: 'bool' },
+    { key: 'dsub_show_qr', label: 'نمایش QR', type: 'bool' },
+    { key: 'dsub_show_apps', label: 'نمایش برنامه‌ها', type: 'bool' },
+    { key: 'dsub_show_faq', label: 'نمایش بخش عیب‌یابی', type: 'bool' },
+  ]},
 
   // ------------------------------------------------------------ پرداخت و مالی
   { tab: 'payment', title: 'کارت بانکی', fields: [
@@ -7035,6 +7076,7 @@ const SETTINGS_GROUPS = [
     { key: 'acct_show_referral', label: 'نمایش «زیرمجموعه‌گیری من»', type: 'bool' },
     { key: 'acct_show_wallet', label: 'نمایش «کیف پول من»', type: 'bool' },
     { key: 'acct_show_add_service', label: 'نمایش «افزودن حساب (اتصال کانفیگ قبلی)»', type: 'bool' },
+    { key: 'acct_show_merge', label: 'نمایش «ادغام با حساب ایمیلی»', type: 'bool' },
     { key: 'acct_add_service_by_username', label: 'افزودن حساب با نام کاربری کانفیگ (علاوه بر لینک ساب)', type: 'bool' },
   ]},
   { tab: 'services', title: '🛠 نمایش دکمه‌های سرویس', fields: [
@@ -7181,6 +7223,20 @@ function renderSettingsGroups(settings) {
         </div></div>
       </div>`;
     }).join('')}
+  </div>
+  <div class="settings-live-preview" data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
+    <div class="settings-live-preview-head">
+      <div><strong>👁️ پیش‌نمایش زنده فروشگاه وب</strong><div class="card-sub">تغییرات برندینگ را قبل از ذخیره هم می‌توانی ببینی.</div></div>
+      <button type="button" class="btn btn-sm" id="web-store-preview-open">باز کردن در تب جدید</button>
+    </div>
+    <iframe id="web-store-preview-frame" title="پیش‌نمایش فروشگاه وب" loading="lazy"></iframe>
+  </div>
+  <div class="settings-live-preview" data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
+    <div class="settings-live-preview-head">
+      <div><strong>🔗 پیش‌نمایش زنده صفحه لینک ساب</strong><div class="card-sub">برندینگ و بخش‌های صفحه ساب را قبل از ذخیره به‌صورت زنده ببین.</div></div>
+      <button type="button" class="btn btn-sm" id="sub-page-preview-open">باز کردن در تب جدید</button>
+    </div>
+    <iframe id="sub-page-preview-frame" title="پیش‌نمایش صفحه لینک ساب" src="/api/settings/sub-page-preview?preview=1" loading="lazy"></iframe>
   </div>`;
 }
 
@@ -9073,6 +9129,48 @@ document.addEventListener('click', async e => {
   } catch (err) { handleErr(err); (en || dis).disabled = false; }
 });
 
+function bindWebStoreLivePreview(root) {
+  const frame = $('#web-store-preview-frame', root);
+  if (!frame) return;
+  const send = () => {
+    const get = (k) => { const el = $(`[data-key="${k}"]`, root); return el ? el.value : ''; };
+    const sw = $('.switch[data-key="web_store_preview_enabled"]', root);
+    const payload = {
+      store_name: get('store_name'),
+      logo: get('web_store_logo'),
+      tagline: get('web_store_tagline'),
+      primary_color: get('web_store_primary_color'),
+      support_url: get('web_store_support_url'),
+      theme: get('web_store_preview_theme') || 'light'
+    };
+    try { frame.contentWindow.postMessage({ type: 'shopvpn-web-store-preview', payload }, '*'); } catch(e) {}
+  };
+  const openBtn = $('#web-store-preview-open', root);
+  frame.addEventListener('load', send);
+  apiGet('/settings/web-store-preview-url').then(r => {
+    const base = (r && r.url) || '';
+    if (!base) {
+      frame.style.display = 'none';
+      if (openBtn) openBtn.style.display = 'none';
+      const note = document.createElement('div');
+      note.className = 'card-sub';
+      note.style.padding = '12px';
+      note.textContent = 'دامنه‌ی فروشگاه وب تنظیم نشده است (SHOPVPN_SEO_SITE_URL در فایل .env).';
+      frame.parentNode.insertBefore(note, frame);
+      return;
+    }
+    const target = base + '/?preview=1';
+    if (openBtn) openBtn.onclick = () => window.open(target, '_blank', 'noopener');
+    frame.src = target;
+  }).catch(() => {});
+  $$('[data-key]', root).forEach(el => {
+    if (el.dataset.key.startsWith('web_store_') || el.dataset.key === 'store_name') {
+      el.addEventListener('input', send); el.addEventListener('change', send);
+    }
+  });
+  setTimeout(send, 200);
+}
+
 async function renderSettings() {
   const [settings, rate, mainMenuDisplay, gateways, methods, c2cCards, c2cWebhook, c2cInvoices, mobileTokens] = await Promise.all([
     apiGet('/settings'),
@@ -9114,6 +9212,8 @@ async function renderSettings() {
   `);
   $$('#settings-tabs-nav .tab-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  bindWebStoreLivePreview(content());
+  bindSubscriptionLivePreview(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -9136,6 +9236,41 @@ async function renderSettings() {
 /* ----------------------------------------------------- settings: bento -- */
 // تب افقی به سگمنت کپسولی اپلی تبدیل می‌شه؛ بدنه‌ی فرم همون منطق قبلیه،
 // فقط با آکاردئون/سوییچ/سواچ گردتر (از طریق CSS اسکوپ‌شده به تم bento).
+
+function bindSubscriptionLivePreview(root) {
+  const frame = $('#sub-page-preview-frame', root);
+  if (!frame) return;
+  const get = key => {
+    const el = $(`[data-key="${key}"]`, root);
+    if (!el) return '';
+    if (el.type === 'checkbox') return el.checked ? '1' : '0';
+    return el.value ?? '';
+  };
+  const payload = () => ({
+    brand: get('dsub_brand') || get('store_name') || 'ShopVPN',
+    logo: get('dsub_logo_url') || get('web_store_logo') || '',
+    notice: get('dsub_notice'),
+    support: get('dsub_support_url') || get('web_store_support_url') || '',
+    footer: get('dsub_footer_text'),
+    theme: get('dsub_theme') || 'auto',
+    show: {
+      configs: get('dsub_show_configs') !== '0', chart: get('dsub_show_chart') !== '0',
+      qr: get('dsub_show_qr') !== '0', apps: get('dsub_show_apps') !== '0', faq: get('dsub_show_faq') !== '0'
+    }
+  });
+  const send = () => { try { frame.contentWindow.postMessage({ type: 'shopvpn-sub-page-preview', payload: payload() }, '*'); } catch (e) {} };
+  frame.addEventListener('load', send);
+  const openBtn = $('#sub-page-preview-open', root);
+  if (openBtn) openBtn.onclick = () => window.open('/api/settings/sub-page-preview?preview=1', '_blank', 'noopener');
+  $$('[data-key]', root).forEach(el => {
+    const key = el.dataset.key || '';
+    if (key.startsWith('dsub_') || key === 'store_name' || key === 'web_store_logo' || key === 'web_store_support_url') {
+      el.addEventListener('input', send); el.addEventListener('change', send);
+    }
+  });
+  send();
+}
+
 function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens) {
   setContent(`
     <div class="bn-hero"><div><h2>${settingsUiText('تنظیمات')}</h2><p>${settingsUiText('پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div></div>
@@ -9160,6 +9295,8 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
   `);
   $$('#settings-tabs-nav .bn-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  bindWebStoreLivePreview(content());
+  bindSubscriptionLivePreview(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -9221,6 +9358,8 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
   `);
   $$('#settings-tabs-nav .bru-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  bindWebStoreLivePreview(content());
+  bindSubscriptionLivePreview(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);

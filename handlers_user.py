@@ -18,7 +18,7 @@ import math
 from datetime import datetime, timezone, timedelta
 
 from aiogram import Router, F, Bot, Dispatcher
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -32,11 +32,12 @@ from daily_quiz import answer_quiz_for_message
 from season_quiz_handlers import show_season_for_message
 from engagement_handlers import show_lootbox_for_message, show_progress_for_message
 import seasons as season_logic
-from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
+from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, MergeFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
 import ai_media
 from draft_stream import DraftStreamer
 import account_link
+import web_auth
 import receipt_ai_check
 from service_refund import (
     quote_service_refund, refund_quote_text, wallet_refund_amount, grant_service_refund_credit, refund_result_text,
@@ -44,6 +45,7 @@ from service_refund import (
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path, DB_PATH, ADMIN_PANEL_URL
 from database import Database, DuplicateBotTokenError
 from config_delivery import deliver_config_to_user, send_individual_configs, build_qr_bytes
+import dedicated_sub
 from renewal_engine import execute_renewal, RenewalError
 import renewal_log
 from temp_messages import schedule_message_autodelete
@@ -70,7 +72,8 @@ import leak_index
 from reseller_auto_provision import provision_auto_config, provision_test_config, provision_reseller_fixed_product, is_volume_credit_bot, ProvisionError
 from direct_panel_provision import provision_direct, planned_usernames, ProvisionError as DirectProvisionError
 from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
-from i18n import set_language, reset_language, language_label, normalize_language, is_language_enabled, tr
+from notification_i18n import send_telegram
+from i18n import set_language, reset_language, language_label, normalize_language, is_language_enabled, tr, language_scope
 
 
 _CHANNEL_POST_TOKEN = re.compile(r"cp\d{1,9}")
@@ -134,6 +137,14 @@ class _MessageCall:
     async def answer(self, text=None, *args, **kwargs):
         if text:
             await self.message.answer(text)
+
+
+_DIGIT_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _merge_code_from(text) -> str:
+    match = re.search(r"(?<!\d)\d{8}(?!\d)", (text or "").translate(_DIGIT_MAP))
+    return match.group(0) if match else ""
 
 
 def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router:
@@ -638,7 +649,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(db.get_text('handlers_user.auto_95fbba11', 'ℹ️ برای ساخت اشتراک هوشمند حداقل دو اشتراک فعال لازم است.')); return
         token=await asyncio.to_thread(db.create_smart_subscription,message.from_user.id,urls)
         from config import API_BASE_URL
-        base=(db.get_setting("smart_subscription_base_url","") or API_BASE_URL).rstrip("/")
+        # اگر ساب اختصاصی روشن است، لینک هوشمند هم از دامنه‌ی همان سرور ساخته می‌شود (آن سرور endpoint را سرو می‌کند)
+        dedicated_base=dedicated_sub.base_url(db) if dedicated_sub.is_enabled(db) else ""
+        base=(db.get_setting("smart_subscription_base_url","") or dedicated_base or API_BASE_URL).rstrip("/")
         if not base:
             await message.answer(db.get_text('handlers_user.auto_c76802fa', '⛔️ آدرس عمومی API تنظیم نشده است.')); return
         await message.answer(tr(f"🔗 لینک اشتراک هوشمند شما:\n{base}/sub/smart/{token}"))
@@ -702,10 +715,140 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 text += f"\n💰 پاداش دعوت‌کننده: {invite_bonus:,} تومان"
             if reward_info.get("free_config_product_id"):
                 text += "\n🎁 دعوت‌کننده یک کانفیگ رایگان جایزه گرفت"
+            skip_labels = {
+                "suspended": "⛔️ پاداش پرداخت نشد: رفرال این کاربر به‌خاطر تشخیص تقلب متوقف شده است",
+                "cap_reached": "⚠️ پاداش پرداخت نشد: سقف تعداد دعوت‌های مشمول پر شده است",
+                "no_amount": "⚠️ پاداش پرداخت نشد: مبلغ پاداش دعوت صفر است",
+                "bonus_disabled": "⚠️ پاداش پرداخت نشد: پاداش دعوت غیرفعال است",
+                "referral_disabled": "⚠️ پاداش پرداخت نشد: زیرمجموعه‌گیری غیرفعال است",
+            }
+            if reward_info.get("skipped") in skip_labels and not invite_bonus:
+                text += "\n" + skip_labels[reward_info["skipped"]]
         try:
             await report_router.send_text(bot, db, "referral", text, kb.user_quick_actions_kb(referred_user_id))
         except Exception:
             logging.getLogger("handlers_user").warning("ارسال کارت رفرال به گروه گزارش ناموفق بود.", exc_info=True)
+
+    @router.callback_query(F.data.startswith("weblogin_ok:"))
+    async def cb_weblogin_ok(callback: CallbackQuery):
+        """تأیید ورود به سایت وب (فقط بات اصلی)."""
+        if not is_main_bot:
+            await callback.answer()
+            return
+        code = callback.data.split(":", 1)[1]
+        ok = await asyncio.to_thread(web_auth.confirm_login, db, code, callback.from_user.id)
+        await callback.answer()
+        if ok:
+            text = db.get_text("handlers_user.weblogin.done", "✅ ورود به سایت تأیید شد. به مرورگر برگردید.")
+        else:
+            text = db.get_text(
+                "handlers_user.weblogin.expired",
+                "⌛️ این درخواست منقضی شده یا قبلاً استفاده شده است. از سایت دوباره تلاش کنید.",
+            )
+        try:
+            await callback.message.edit_text(text)
+        except TelegramBadRequest:
+            pass
+
+    async def _merge_preview_reply(message: Message, tg_id: int, code: str) -> bool:
+        allowed = await asyncio.to_thread(
+            web_auth.enforce_rate_limit, db, "merge-try:" + str(tg_id), web_auth.MERGE_TRIES_PER_HOUR, 3600
+        )
+        if not allowed:
+            await message.answer(tr("⛔ تعداد تلاش‌ها زیاد بود. کمی بعد دوباره امتحان کنید."))
+            return False
+        try:
+            info = await asyncio.to_thread(web_auth.preview_merge, db, code, tg_id, "bot")
+        except ValueError as exc:
+            await message.answer("❌ " + tr(web_auth.merge_reason_text(str(exc))))
+            return False
+        await message.answer(
+            tr("🔗 تأیید ادغام حساب") + "\n\n"
+            + tr("حساب ایمیلی {email} با این حساب تلگرام یکی می‌شود.").replace("{email}", info["email"]) + "\n"
+            + tr("موجودی، سرویس‌ها و تیکت‌های آن ایمیل به این حساب منتقل می‌شوند و این کار برگشت‌پذیر نیست.") + "\n\n"
+            + tr("⚠️ فقط اگر همین الان خودتان در سایت این درخواست را ساخته‌اید تأیید کنید."),
+            reply_markup=kb.merge_confirm_kb(code),
+        )
+        return True
+
+    @router.callback_query(F.data == "acct:merge")
+    async def cb_account_merge(call: CallbackQuery, state: FSMContext):
+        if not is_main_bot or (await asyncio.to_thread(db.get_setting, "acct_show_merge", "1")) != "1":
+            await call.answer(db.get_text('handlers_user.auto_877cd65e', 'این بخش غیرفعال است.'), show_alert=True)
+            return
+        await state.set_state(MergeFlow.waiting_code)
+        prompt = (
+            tr("🔗 ادغام با حساب ایمیلی") + "\n\n"
+            + tr("اگر در سایت با ایمیل حساب دارید، می‌توانید آن را با این حساب یکی کنید.") + "\n\n"
+            + tr("۱) در سایت وارد حساب ایمیلی شوید و «ادغام با تلگرام» را بزنید.") + "\n"
+            + tr("۲) کد ۸ رقمی را همین‌جا بفرستید.") + "\n\n"
+            + tr("یا اگر کدی ندارید، دکمه‌ی زیر را بزنید تا از اینجا کد بسازید و در سایت وارد کنید.")
+        )
+        await _safe_edit(call.message, prompt, reply_markup=kb.merge_menu_kb())
+        await call.answer()
+
+    @router.callback_query(F.data == "acct:merge_make")
+    async def cb_account_merge_make(call: CallbackQuery, state: FSMContext):
+        if not is_main_bot:
+            await call.answer()
+            return
+        await state.clear()
+        try:
+            code = await asyncio.to_thread(web_auth.create_merge_code, db, "bot", call.from_user.id)
+        except ValueError as exc:
+            await call.answer(tr(web_auth.merge_reason_text(str(exc))), show_alert=True)
+            return
+        text = (
+            tr("🔗 کد ادغام شما") + f"\n<code>{code}</code>\n\n"
+            + tr("این کد ۱۰ دقیقه اعتبار دارد. در سایت وارد حساب ایمیلی شوید، «ادغام با تلگرام» را بزنید و این کد را وارد کنید.")
+        )
+        await _safe_edit(call.message, text, parse_mode="HTML", reply_markup=kb.merge_menu_kb())
+        await call.answer()
+
+    @router.callback_query(F.data == "acct:merge_cancel")
+    async def cb_account_merge_cancel(call: CallbackQuery, state: FSMContext):
+        await state.clear()
+        text = await _account_hub_text(call.from_user.id)
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db, is_main_bot))
+        await call.answer()
+
+    @router.message(Command("merge"))
+    async def cmd_merge(message: Message, command: CommandObject, state: FSMContext):
+        """ادغام حساب ایمیلی فروشگاه با این حساب تلگرام.
+        /merge            ← کد می‌سازد تا در سایت وارد شود (طرف دوم: حساب ایمیلی)
+        /merge 12345678   ← کدی را که در سایت ساخته شده بررسی و تأیید می‌کند"""
+        if not is_main_bot:
+            return
+        await state.clear()
+        tg_id = message.from_user.id
+        arg = _merge_code_from(command.args)
+        if not arg:
+            code = await asyncio.to_thread(web_auth.create_merge_code, db, "bot", tg_id)
+            await message.answer(
+                tr("🔗 کد ادغام شما") + f"\n<code>{code}</code>\n\n"
+                + tr("این کد ۱۰ دقیقه اعتبار دارد. در سایت وارد حساب ایمیلی شوید، «ادغام با تلگرام» را بزنید و این کد را وارد کنید."),
+                parse_mode="HTML",
+            )
+            return
+        await _merge_preview_reply(message, tg_id, arg)
+
+    @router.callback_query(F.data.startswith("merge_ok:"))
+    async def cb_merge_ok(callback: CallbackQuery, state: FSMContext):
+        if not is_main_bot:
+            await callback.answer()
+            return
+        await state.clear()
+        code = callback.data.split(":", 1)[1]
+        try:
+            await asyncio.to_thread(web_auth.complete_merge, db, code, callback.from_user.id, "bot")
+            text = tr("✅ ادغام انجام شد. از این پس ورود با ایمیل و ورود با تلگرام هر دو به همین یک حساب می‌رسد.")
+        except ValueError as exc:
+            text = "❌ " + tr(web_auth.merge_reason_text(str(exc)))
+        await callback.answer()
+        try:
+            await callback.message.edit_text(text)
+        except TelegramBadRequest:
+            pass
 
     @router.message(CommandStart())
     async def cmd_start(message: Message, state: FSMContext, bot: Bot):
@@ -730,6 +873,28 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         start_param = parts[1].strip() if len(parts) > 1 else ""
         post_start_actions = []
 
+        # ورود به سایت وب: فقط دکمه‌ی تأیید نشان داده می‌شود و بقیه‌ی /start (معافیت عضویت،
+        # منبع ورود و ...) اجرا نمی‌شود، چون این لینک از بیرون و به‌دست هر کسی می‌رسد.
+        if is_main_bot and re.fullmatch(r"weblogin_[0-9a-f]{32}", start_param):
+            login_ip, login_at = await asyncio.to_thread(web_auth.login_request_info, db, start_param[len("weblogin_"):])
+            if not login_at:
+                await message.answer("⌛️ این درخواست ورود منقضی شده است. دوباره از سایت وارد شوید.")
+                return
+            when = (datetime.fromtimestamp(login_at, timezone.utc) + timedelta(hours=3, minutes=30)).strftime("%Y-%m-%d %H:%M")
+            await message.answer(
+                db.get_text(
+                    "handlers_user.weblogin.prompt",
+                    "🔐 درخواست ورود به سایت\n"
+                    f"زمان درخواست: {when}\nآی‌پی تقریبی: {login_ip or 'نامشخص'}\n"
+                    "فقط اگر خودتان همین حالا از سایت وارد شدن را خواسته‌اید تأیید کنید؛ در غیر این صورت نادیده بگیرید.",
+                ),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text=db.get_text("handlers_user.weblogin.confirm_btn", "✅ تأیید ورود"),
+                    callback_data="weblogin_ok:" + start_param[len("weblogin_"):],
+                )]]),
+            )
+            return
+
         # طبق تصمیم صریح: ورود با هر دیپ‌لینکی (نه فقط nofj) یعنی معافیت دائمی
         # از عضویت اجباری برای همین کاربر.
         if any(not _CHANNEL_POST_TOKEN.fullmatch(t) for t in start_param.split("-") if t):
@@ -750,9 +915,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     already_referred = bool(already_referred and already_referred["referred_by"])
                     if not already_referred:
                         (await asyncio.to_thread(db.set_referred_by, message.from_user.id, referrer_id))
-                        reward_info = (await asyncio.to_thread(
-                            db.apply_referral_invite_rewards, message.from_user.id, referrer_id
-                        ))
+                        try:
+                            reward_info = (await asyncio.to_thread(
+                                db.apply_referral_invite_rewards, message.from_user.id, referrer_id
+                            ))
+                        except Exception:
+                            logging.getLogger("handlers_user").exception("اعمال پاداش دعوت ناموفق بود.")
+                            reward_info = {"skipped": "error"}
                         await _handle_referral_invite_rewards(bot, referrer_id, reward_info)
                         await _notify_new_referral(bot, message.from_user.id, referrer_id, reward_info)
                         await check_and_notify_referral_fraud(bot.send_message, db, referrer_id, bot_token=bot.token)
@@ -937,6 +1106,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await message.answer(text, reply_markup=kb.product_confirm_kb(db, product_id, 1, stock, 10 if tier_info["title"] else 0))
 
     async def _handle_referral_invite_rewards(bot: Bot, referrer_id: int, reward_info: dict):
+        """پیام‌ها به دعوت‌کننده می‌رود؛ پس باید به زبان خودِ او رندر شوند، نه زبان
+        دعوت‌شونده‌ای که آپدیتش الان در حال پردازش است."""
+        if not reward_info:
+            return
+        lang = await asyncio.to_thread(db.get_user_language, referrer_id)
+        catalog = await asyncio.to_thread(db.translation_catalog, lang) if lang not in {"fa", "en"} else None
+        with language_scope(lang, catalog, track_missing=lang not in {"fa", "en"}):
+            await _handle_referral_invite_rewards_inner(bot, referrer_id, reward_info)
+
+    async def _handle_referral_invite_rewards_inner(bot: Bot, referrer_id: int, reward_info: dict):
         """پیام و تحویل جوایز حالت‌های ۲ و ۳ زیرمجموعه‌گیری (که با صرفِ دعوت، بدون
         نیاز به خرید زیرمجموعه، فعال می‌شوند) را برای دعوت‌کننده انجام می‌دهد."""
         if not reward_info:
@@ -1173,13 +1352,34 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         data = await state.get_data()
         pending_id = data.get("pending_discount_code_id")
         if not pending_id:
-            return data.get("discount_amount", 0) or 0, ""
+            # کدِ دستیِ قبلاً اعمال‌شده: فقط اگر برای همین محصول باشد و هنوز معتبر
+            # باشد دوباره محاسبه می‌شود؛ در غیر این‌صورت پاک می‌شود تا تخفیفِ
+            # محصول قبلی روی پلن دیگر نشت نکند.
+            applied_id = data.get("discount_code_id")
+            if not applied_id:
+                if data.get("discount_amount"):
+                    await state.update_data(discount_amount=0, discount_product_id=None)
+                return 0, ""
+            if product_id is not None and data.get("discount_product_id") != product_id:
+                await state.update_data(discount_code_id=None, discount_amount=0, discount_product_id=None)
+                return 0, ""
+            code_row = (await asyncio.to_thread(db.get_discount_code_by_id, applied_id))
+            if not code_row or not (await asyncio.to_thread(
+                db.is_discount_code_valid, code_row, total_price, product_id, user_id=user_id
+            )):
+                await state.update_data(discount_code_id=None, discount_amount=0, discount_product_id=None)
+                return 0, ""
+            discount_amount = (await asyncio.to_thread(db.compute_discount_amount, code_row, total_price))
+            await state.update_data(discount_amount=discount_amount)
+            return discount_amount, code_row["code"]
         code_row = (await asyncio.to_thread(db.get_discount_code_by_id, pending_id))
         if not (await asyncio.to_thread(db.is_discount_code_valid, code_row, total_price, product_id, user_id=user_id)):
             await state.update_data(pending_discount_code_id=None, pending_discount_code_label=None)
             return 0, ""
         discount_amount = (await asyncio.to_thread(db.compute_discount_amount, code_row, total_price))
-        await state.update_data(discount_code_id=code_row["id"], discount_amount=discount_amount)
+        await state.update_data(
+            discount_code_id=code_row["id"], discount_amount=discount_amount, discount_product_id=product_id,
+        )
         return discount_amount, code_row["code"]
 
     async def _register_product_waitlist(user_id: int, product_id: int, call: CallbackQuery = None, message: Message = None):
@@ -1213,6 +1413,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         max_users = await _users_option(product)
         await state.update_data(buy_users_pid=None, buy_users=None)
+        _prev = await state.get_data()
+        if _prev.get("discount_code_id") and _prev.get("discount_product_id") != product_id:
+            await state.update_data(discount_code_id=None, discount_amount=0, discount_product_id=None)
         if max_users:
             await _show_users_picker(call, product, max_users)
             await call.answer()
@@ -1871,6 +2074,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         data = await state.get_data()
         discount_code_id = data.get("discount_code_id")
         discount_amount = data.get("discount_amount", 0) or 0
+        if discount_code_id and data.get("discount_product_id") != product_id:
+            # کدِ اعمال‌شده برای محصول دیگری بوده؛ روی این خرید نباید اثر بگذارد
+            discount_code_id, discount_amount = None, 0
+            await state.update_data(discount_code_id=None, discount_amount=0, discount_product_id=None)
 
         users = _chosen_users(data, product)
         if users:
@@ -1976,11 +2183,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 if reward_info:
                     reward_amount, referrer_id = reward_info
                     try:
-                        await bot.send_message(
-                            referrer_id,
-                            tr(f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
-                            f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد."),
-                        )
+                        await send_telegram(bot, db, referrer_id, f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
+                            f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد.")
                     except Exception:
                         pass
 
@@ -3133,7 +3337,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         await _send_test_success_message(
             message,
-            plan_name=plan.get("name", ""),
+            plan_name=plan["name"],
             amount=format_plan_amount(plan),
             username=result.get("username", ""),
         )
@@ -3487,7 +3691,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t in (db.get_setting("btn_my_orders"), tr(db.get_setting("btn_my_orders")))))
     async def my_orders(message: Message):
         text = await _account_hub_text(message.from_user.id)
-        await message.answer(text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+        await message.answer(text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db, is_main_bot))
 
     @router.message(F.text.func(lambda t: t in (db.get_setting("btn_tutorial"), tr(db.get_setting("btn_tutorial")))))
     async def tutorial_menu_entry(message: Message):
@@ -3503,7 +3707,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data == "acct:hub")
     async def cb_account_hub(call: CallbackQuery):
         text = await _account_hub_text(call.from_user.id)
-        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db, is_main_bot))
         await call.answer()
 
     @router.callback_query(F.data == "acct:language")
@@ -3541,6 +3745,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         fake_message = call.message.model_copy(update={"from_user": call.from_user})
         await wallet_menu(fake_message)
 
+    @router.message(MergeFlow.waiting_code)
+    async def account_merge_receive(message: Message, state: FSMContext):
+        code = _merge_code_from(message.text)
+        if not code:
+            await message.answer(tr("کد باید ۸ رقم باشد. دوباره بفرستید."), reply_markup=kb.merge_menu_kb())
+            return
+        if await _merge_preview_reply(message, message.from_user.id, code):
+            await state.clear()
+
     @router.callback_query(F.data == "acct:addsvc")
     async def cb_account_add_service(call: CallbackQuery, state: FSMContext):
         if (await asyncio.to_thread(db.get_setting, "acct_show_add_service", "1")) != "1":
@@ -3564,7 +3777,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_account_add_service_cancel(call: CallbackQuery, state: FSMContext):
         await state.clear()
         text = await _account_hub_text(call.from_user.id)
-        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db, is_main_bot))
         await call.answer()
 
     @router.message(AddServiceFlow.waiting_input)
@@ -3857,7 +4070,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif cc["expires_at"]:
                 text += f"📅 انقضا: {to_jalali_str(cc['expires_at'], with_time=True)}\n"
             if sub_url:
-                text += f"🔗 `{sub_url}`\n"
+                shown_url = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, sub_url)
+                text += f"🔗 `{shown_url}`\n"
                 info = await fetch_sub_info(sub_url)
                 text += f"\n{format_sub_info_fa(info)}"
                 if str(sub_url).startswith(("http://", "https://")):
@@ -4221,6 +4435,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_4e32a60a', 'لینکی برای ساخت کیوآر پیدا نشد.'), show_alert=True)
             return
         await call.answer()
+        link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
         photo = BufferedInputFile(build_qr_bytes(link, db=db), filename="config_qr.png")
         await bot.send_photo(call.from_user.id, photo, caption=tr("⬜ کیوآر کانفیگ شما"))
 
@@ -4759,11 +4974,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         ))
         await call.answer(db.get_text('handlers_user.auto_70c5a109', '✅ کانفیگ منتقل شد.'), show_alert=True)
         try:
-            await call.bot.send_message(
-                target_id,
-                tr(f"📦 یک کانفیگ («{cc['display_name'] or cc['username']}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
-                "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید."),
-            )
+            await send_telegram(call.bot, db, target_id, f"📦 یک کانفیگ («{cc['display_name'] or cc['username']}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
+                "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید.")
         except Exception:
             pass
         try:
@@ -4847,11 +5059,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 if renewal_reward_info:
                     renewal_reward_amount, renewal_referrer_id = renewal_reward_info
                     try:
-                        await bot.send_message(
-                            renewal_referrer_id,
-                            tr(f"🤝 تبریک! یکی از زیرمجموعه‌های شما سرویسش را تمدید کرد.\n"
-                            f"💰 {renewal_reward_amount:,} تومان پورسانت به کیف پول شما اضافه شد."),
-                        )
+                        await send_telegram(bot, db, renewal_referrer_id, f"🤝 تبریک! یکی از زیرمجموعه‌های شما سرویسش را تمدید کرد.\n"
+                            f"💰 {renewal_reward_amount:,} تومان پورسانت به کیف پول شما اضافه شد.")
                     except Exception:
                         pass
                 await edit_fn(result_text)
@@ -5954,7 +6163,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await message.answer(tr(f"✅ {amount:,} تومان منتقل شد.\nموجودی فعلی: {balance:,} تومان"), reply_markup=kb.wallet_menu_kb(db))
         await _notify_admins_wallet_transfer(message.bot, message.from_user.id, receiver, amount)
         try:
-            await message.bot.send_message(receiver, tr(f"💸 {amount:,} تومان از طرف یک کاربر به کیف پول شما منتقل شد."))
+            await send_telegram(message.bot, db, receiver, f"💸 {amount:,} تومان از طرف یک کاربر به کیف پول شما منتقل شد.")
         except Exception:
             pass
 
@@ -7261,14 +7470,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.clear()
         sent_ok = False
         try:
-            await message.bot.send_message(
-                owner_id,
-                tr(f"🏪 کاربری با آیدی عددی {message.from_user.id} درخواست کرده که شما مالکِ یک بات "
+            await send_telegram(message.bot, db, owner_id, f"🏪 کاربری با آیدی عددی {message.from_user.id} درخواست کرده که شما مالکِ یک بات "
                 f"نمایندگی (@{req['bot_username']}) با {req['volume_gb']:,} گیگ اعتبار حجمی اولیه باشید.\n\n"
                 "با تایید، این بات و کلِ اعتبار/موجودیِ آن از این پس متعلق به آیدی شما (همین چت) "
-                "خواهد بود. آیا تایید می‌کنید؟"),
-                reply_markup=kb.reseller_owner_external_confirm_kb(request_id),
-            )
+                "خواهد بود. آیا تایید می‌کنید؟",
+                reply_markup=kb.reseller_owner_external_confirm_kb(request_id))
             sent_ok = True
         except Exception:
             sent_ok = False
@@ -7359,11 +7565,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             except Exception:
                 pass
             try:
-                await bot.send_message(
-                    requester_id,
-                    tr("⛔️ این توکن همین الان توسط یک ثبت‌نام دیگر مصرف شد؛ لطفاً یک توکن جدید از @BotFather "
-                    "بگیرید و دوباره ارسال کنید."),
-                )
+                await send_telegram(bot, db, requester_id, "⛔️ این توکن همین الان توسط یک ثبت‌نام دیگر مصرف شد؛ لطفاً یک توکن جدید از @BotFather "
+                    "بگیرید و دوباره ارسال کنید.")
             except Exception:
                 pass
             return
@@ -7451,32 +7654,23 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     "ابتدا ADMIN_PANEL_URL / آدرس پنل وب را تنظیم کنید تا لینک راه‌اندازی ارسال شود."
                 )
         try:
-            await bot.send_message(
-                owner_id,
-                tr(f"{status_text}\n\n"
+            await send_telegram(bot, db, owner_id, f"{status_text}\n\n"
                 f"🤖 بات: @{username}\n"
                 f"📦 اعتبار حجمی تخصیص‌یافته: {req['volume_gb']:,} گیگ\n\n"
                 f"برای شروع، با /start به بات خودتان (@{username}) وارد شوید."
-                f"{web_panel_note}"),
-                reply_markup=kb.menu_for_user(db, owner_id, is_main_bot),
-            )
+                f"{web_panel_note}",
+                reply_markup=kb.menu_for_user(db, owner_id, is_main_bot))
         except Exception:
             pass
         if requester_id != owner_id:
             try:
-                await bot.send_message(
-                    requester_id,
-                    tr(f"✅ آیدی {owner_id} مالکیت نمایندگی #{req['id']} شما را تایید کرد و راه‌اندازی تکمیل شد.\n"
-                    f"🤖 بات: @{username}"),
-                )
+                await send_telegram(bot, db, requester_id, f"✅ آیدی {owner_id} مالکیت نمایندگی #{req['id']} شما را تایید کرد و راه‌اندازی تکمیل شد.\n"
+                    f"🤖 بات: @{username}")
             except Exception:
                 pass
         try:
             for admin_id in _senior_admin_ids():
-                await bot.send_message(
-                    admin_id,
-                    tr(f"✅ نمایندگی #{req['id']} تکمیل شد.\n🤖 بات: @{username}\n👤 مالک: {owner_id}"),
-                )
+                await send_telegram(bot, db, admin_id, f"✅ نمایندگی #{req['id']} تکمیل شد.\n🤖 بات: @{username}\n👤 مالک: {owner_id}")
         except Exception:
             pass
 
@@ -7536,11 +7730,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 key=StorageKey(bot_id=bot.id, chat_id=req["user_id"], user_id=req["user_id"]),
             )
             await user_state.set_state(ResellerRequestFlow.waiting_owner_id)
-            await bot.send_message(
-                req["user_id"],
-                tr(f"❌ آیدی {rejected_owner_id} مالکیت نمایندگی #{request_id} شما را نپذیرفت.\n\n"
-                "لطفاً یک آیدی عددی دیگر (یا آیدی عددی خودتان) را ارسال کنید:"),
-            )
+            await send_telegram(bot, db, req["user_id"], f"❌ آیدی {rejected_owner_id} مالکیت نمایندگی #{request_id} شما را نپذیرفت.\n\n"
+                "لطفاً یک آیدی عددی دیگر (یا آیدی عددی خودتان) را ارسال کنید:")
         except Exception:
             pass
 
@@ -7899,11 +8090,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if reward_info:
                 reward_amount, referrer_id = reward_info
                 try:
-                    await bot.send_message(
-                        referrer_id,
-                        tr(f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
-                        f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد."),
-                    )
+                    await send_telegram(bot, db, referrer_id, f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
+                        f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد.")
                 except Exception:
                     pass
             try:
@@ -8024,6 +8212,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not link:
             await message.answer(db.get_text('handlers_user.auto_1e7d994f', '⛔️ لینکی برای ساخت کیوآر پیدا نشد.'))
             return
+        link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
         photo = BufferedInputFile(build_qr_bytes(link, db=db), filename="config_qr.png")
         await bot.send_photo(user_id, photo, caption=tr("⬜ کیوآر کانفیگ شما"))
 

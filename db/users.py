@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from .constants import *
+from .constants import _wallet_tag
 
 class UsersMixin:
     def get_user_language(self, tg_id: int) -> str:
@@ -549,8 +550,9 @@ class UsersMixin:
         - حالت ۲: دریافت یک محصول مشخص و رایگان با رسیدن تعداد دعوت‌ها به یک آستانه.
         خروجی: {"invite_bonus": مبلغ یا None, "free_config_product_id": آیدی محصول یا None}
         """
-        result = {"invite_bonus": None, "free_config_product_id": None}
+        result = {"invite_bonus": None, "free_config_product_id": None, "skipped": None}
         if self.get_setting("referral_button_enabled", "1") != "1":
+            result["skipped"] = "referral_disabled"
             return result
         with self._get_conn() as conn:
             referrer = conn.execute(
@@ -559,6 +561,7 @@ class UsersMixin:
             if not referrer:
                 return result
             if self._is_referral_fraud_suspended(conn, referrer_tg_id):
+                result["skipped"] = "suspended"
                 return result
 
             # --- حالت ۳: شارژ ثابت کیف پول برای هر دعوت، تا سقف مشخص ---
@@ -580,6 +583,12 @@ class UsersMixin:
                             (amount, referrer_tg_id),
                         )
                     result["invite_bonus"] = amount
+                elif amount <= 0:
+                    result["skipped"] = "no_amount"
+                else:
+                    result["skipped"] = "cap_reached"
+            else:
+                result["skipped"] = "bonus_disabled"
 
             # --- حالت ۲: محصول رایگان با رسیدن تعداد دعوت‌ها به یک آستانه (یک‌بار) ---
             if (
@@ -609,6 +618,53 @@ class UsersMixin:
     # را صدا می‌زند.
     # -----------------------------------------------------------------------
 
+
+    def list_referrals_for_admin(self, referrer_id: int, limit: int = 500) -> list:
+        """زیرمجموعه‌های مستقیم یک کاربر با وضعیت خرید و پرداخت پاداش دعوت."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT u.telegram_id, u.username, u.first_name, u.joined_at, "
+                "COALESCE(u.referral_invite_bonus_given, 0) AS bonus_given, "
+                "(SELECT COUNT(*) FROM orders o WHERE o.user_id=u.telegram_id AND o.status='approved') AS approved_orders "
+                "FROM users u WHERE u.referred_by=? ORDER BY u.joined_at DESC, u.id DESC LIMIT ?",
+                (referrer_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def pay_pending_invite_bonuses(self, referrer_id: int) -> dict:
+        """پاداش دعوتِ پرداخت‌نشده‌ی زیرمجموعه‌های یک کاربر را (با رعایت سقف) به کیف پولش می‌ریزد."""
+        amount = int(self.get_setting("referral_invite_bonus_amount", "0") or 0)
+        max_count = int(self.get_setting("referral_invite_bonus_max_count", "0") or 0)
+        result = {"paid_count": 0, "amount": amount, "total": 0}
+        if amount <= 0:
+            return result
+        with self._get_conn() as conn:
+            paid_before = conn.execute(
+                "SELECT COUNT(*) c FROM users WHERE referred_by=? AND referral_invite_bonus_given=1",
+                (referrer_id,),
+            ).fetchone()["c"]
+            pending = [
+                r["telegram_id"] for r in conn.execute(
+                    "SELECT telegram_id FROM users WHERE referred_by=? AND COALESCE(referral_invite_bonus_given, 0)=0 "
+                    "ORDER BY joined_at, id",
+                    (referrer_id,),
+                ).fetchall()
+            ]
+            if max_count > 0:
+                pending = pending[:max(0, max_count - paid_before)]
+            if not pending:
+                return result
+            for uid in pending:
+                conn.execute("UPDATE users SET referral_invite_bonus_given=1 WHERE telegram_id=?", (uid,))
+            total = amount * len(pending)
+            with _wallet_tag(conn, referrer_id, "referral_invite", "پاداش دعوت (پرداخت دستی توسط ادمین)"):
+                conn.execute(
+                    "UPDATE users SET referral_credit = MAX(referral_credit + ?, MIN(referral_credit, 0)) WHERE telegram_id=?",
+                    (total, referrer_id),
+                )
+            result["paid_count"] = len(pending)
+            result["total"] = total
+        return result
 
     @staticmethod
     def _is_referral_fraud_suspended(conn, referrer_id: int) -> bool:

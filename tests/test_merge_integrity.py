@@ -87,6 +87,18 @@ UPSTREAM_FEATURE_MODULES = (
     "seasons.py",
     "db/engagement.py",
     "db/seasons.py",
+    # --- upstream batch: dedicated sub, web store, in-bot updater ---
+    "dedicated_sub.py",
+    "admin_dedicated_sub.py",
+    "db/dedicated_sub.py",
+    "sub_server/__init__.py",
+    "sub_server/server.py",
+    "web_auth.py",
+    "web_store/__init__.py",
+    "web_store/routes.py",
+    "web_store/server.py",
+    "updater.py",
+    "admin_update.py",
 )
 
 # Upstream keeps re-uploading these with a module-level `from i18n import tr`
@@ -436,6 +448,7 @@ def test_seasons_quiz_and_lootbox_stay_wired():
     assert "asyncio.create_task(seasons.season_loop(db, bot))" in bot_manager
     assert "asyncio.create_task(daily_quiz.quiz_loop(db, bot))" in bot_manager
 
+
     # Streak/points bookkeeping is triggered from the blocked-user touch path.
     blocked_user = (ROOT / "blocked_user.py").read_text(encoding="utf-8")
     assert "import engagement" in blocked_user
@@ -603,3 +616,43 @@ def test_rejected_upstream_paths_stay_out():
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "userbot_session.json" in gitignore
     assert "leak_session.json" in gitignore
+
+
+def test_dedicated_sub_web_store_and_updater_stay_wired():
+    """Dedicated subscription, website auth/store, and updater must stay reachable."""
+    handlers_admin = (ROOT / "handlers_admin.py").read_text(encoding="utf-8")
+    assert "import admin_dedicated_sub" in handlers_admin
+    assert "import admin_update" in handlers_admin
+    assert "admin_dedicated_sub.register(router, db, senior_admin_only, deny_mid, replace_admin_view)" in handlers_admin
+    assert "admin_update.register(router, db, senior_admin_only, deny_mid, replace_admin_view)" in handlers_admin
+
+    handlers_user = (ROOT / "handlers_user.py").read_text(encoding="utf-8")
+    assert "import web_auth" in handlers_user
+    assert "import dedicated_sub" in handlers_user
+    assert "web_auth.confirm_login" in handlers_user
+    assert "dedicated_sub.dedicated_link_for_upstream" in handlers_user
+
+    bot_manager = (ROOT / "bot_manager.py").read_text(encoding="utf-8")
+    assert "import updater" in bot_manager
+    assert "updater.check_loop(bot, db)" in bot_manager
+
+    config_delivery = (ROOT / "config_delivery.py").read_text(encoding="utf-8")
+    assert "import dedicated_sub" in config_delivery
+    assert "dedicated_sub.dedicated_link_for_upstream" in config_delivery
+
+    db_init = (ROOT / "db/__init__.py").read_text(encoding="utf-8")
+    assert "from .dedicated_sub import DedicatedSubMixin" in db_init
+
+    miniapp = (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
+    assert "import web_auth" in miniapp
+    assert "import dedicated_sub" in miniapp
+    assert "web_auth.session_user" in miniapp
+
+    admin_panel = (ROOT / "admin_panel/server.py").read_text(encoding="utf-8")
+    assert "import dedicated_sub as ds" in admin_panel
+    assert "api_web_store_preview_url" in admin_panel
+
+    sub_server = (ROOT / "sub_server/server.py").read_text(encoding="utf-8")
+    assert "import dedicated_sub as ds" in sub_server
+    web_store = (ROOT / "web_store/server.py").read_text(encoding="utf-8")
+    assert "from web_store.routes import router as web_router" in web_store

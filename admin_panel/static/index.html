@@ -23,16 +23,16 @@
 <link rel="stylesheet" href="/assets/style.css">
 <script>
 (function(){
-  var t = { theme:'android', mode:'light' };
+  var t = { theme:'enterprise', mode:'light' };
   try{ t = JSON.parse(localStorage.getItem('sv-theme') || 'null') || t; }catch(e){}
-  var theme = t.theme || 'android', mode = t.mode || 'light';
+  var theme = t.theme || 'enterprise', mode = t.mode || 'light';
   document.documentElement.setAttribute('data-theme', theme);
   document.documentElement.setAttribute('data-mode', mode);
 
   // رنگ نوار وضعیت اندروید / آدرس‌بار مرورگر و اسپلش‌اسکرین PWA را با
   // تم و حالت روشن/تیره‌ی فعلی هماهنگ می‌کند (مهم‌ترین مورد: تم اندروید
   // که برخلاف بقیه‌ی تم‌ها به‌صورت پیش‌فرض روشنه)
-  var themeColors = { android: { light: '#FEF7FF', dark: '#141218' } };
+  var themeColors = { enterprise: { light: '#F7F9FC', dark: '#0B1220' }, android: { light: '#FEF7FF', dark: '#141218' } };
   var tc = (themeColors[theme] && themeColors[theme][mode]) || '#0B0C14';
   var metaTag = document.querySelector('meta[name="theme-color"]');
   if (metaTag) metaTag.setAttribute('content', tc);

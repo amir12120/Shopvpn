@@ -5352,10 +5352,11 @@ function adminConfigLinkBox(link) {
 
 async function renderAdminUserDetail(body) {
   const { telegramId } = adminUserView;
-  const [u, bankConfigs, customConfigs] = await Promise.all([
+  const [u, bankConfigs, customConfigs, refs] = await Promise.all([
     api(`/api/admin/users/${telegramId}`),
     api(`/api/admin/users/${telegramId}/configs`).catch(() => []),
     api(`/api/admin/users/${telegramId}/custom-configs`).catch(() => []),
+    api(`/api/admin/users/${telegramId}/referrals`).catch(() => ({ items: [], total: 0, pending_bonus_count: 0, bonus_amount: 0 })),
   ]);
 
   const statusLine = `<span class="badge ${USER_STATUS_BADGE_CLASS[u.status]}">${USER_STATUS_LABEL[u.status]}</span>`;
@@ -5387,6 +5388,24 @@ async function renderAdminUserDetail(body) {
         </div>
       </div>
     `).join("");
+
+  const referralsHtml = (refs.suspended ? `<div class="hint-text" style="margin:0 0 8px">⛔️ پاداش رفرال این کاربر به‌خاطر تشخیص تقلب متوقف شده است.</div>` : "")
+    + (refs.pending_bonus_count > 0 && refs.bonus_amount > 0
+      ? `<div class="hint-text" style="margin:0 0 8px">${fmt(refs.pending_bonus_count)} زیرمجموعه پاداش دعوت دریافت نکرده‌اند (هرکدام ${fmt(refs.bonus_amount)} تومان)</div><button class="btn small" id="detail-pay-pending-refs" style="width:auto;margin-bottom:8px">💰 پرداخت پاداش‌های پرداخت‌نشده</button>`
+      : "")
+    + (refs.items.length === 0
+      ? `<div class="hint-text" style="margin:0">زیرمجموعه‌ای ندارد.</div>`
+      : refs.items.map((r) => `
+      <div class="admin-list-row">
+        <div class="admin-list-row-main">
+          <span>${escHtml(r.username ? "@" + r.username : (r.first_name || "نامشخص"))} · <span class="mono">${r.telegram_id}</span></span>
+          <span class="hint-text" style="margin:0">${r.joined_at ? toJalaliStr(r.joined_at, true) : ""} · ${fmt(r.approved_orders)} خرید</span>
+        </div>
+        <div class="admin-list-row-actions">
+          <span class="badge ${r.bonus_given ? "approved" : "pending"}">${r.bonus_given ? "پاداش پرداخت شد" : "پاداش پرداخت نشده"}</span>
+        </div>
+      </div>
+    `).join(""));
 
   const bankConfigsHtml = bankConfigs.length === 0
     ? `<div class="hint-text" style="margin:0">هیچ کانفیگ بانکی‌ای برای این کاربر ثبت نشده.</div>`
@@ -5456,6 +5475,9 @@ async function renderAdminUserDetail(body) {
       <button class="btn small" id="detail-message-send" style="width:auto">ارسال پیام</button>
     </div>
 
+    <div class="eyebrow">👥 زیرمجموعه‌ها (${fmt(refs.total)})</div>
+    <div class="card">${referralsHtml}</div>
+
     <div class="eyebrow">🔗 لینک‌های اشتراک (بانک محصول)</div>
     <div class="card">${bankConfigsHtml}</div>
 
@@ -5468,6 +5490,18 @@ async function renderAdminUserDetail(body) {
     <div class="eyebrow">💳 تاریخچه شارژ کیف‌پول</div>
     <div class="card">${topupsHtml}</div>
   `;
+
+  const payRefsBtn = document.getElementById("detail-pay-pending-refs");
+  if (payRefsBtn) {
+    payRefsBtn.onclick = async () => {
+      try {
+        const r = await api(`/api/admin/users/${telegramId}/referrals/pay-pending`, { method: "POST" });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify(`${fmt(r.total)} تومان پاداش دعوت پرداخت شد.`);
+        renderAdminUserDetail(body);
+      } catch (e) { notify("⚠️ " + e.message); }
+    };
+  }
 
   document.querySelectorAll("[data-copy-link]").forEach((btn) => {
     btn.onclick = () => {

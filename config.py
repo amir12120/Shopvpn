@@ -92,6 +92,11 @@ if not API_BASE_URL and MINIAPP_URL:
     if _parsed.scheme and _parsed.netloc:
         API_BASE_URL = f"{_parsed.scheme}://{_parsed.netloc}"
 
+# آدرس عمومی سرور «ساب اختصاصی» (مثلاً https://sub.example.com). با گزینه‌ی راه‌اندازی ساب اختصاصی در
+# منوی manage.sh خودکار تنظیم می‌شود؛ روشن/خاموش و شخصی‌سازی آن از داخل ادمین بات انجام می‌شود.
+DEDICATED_SUB_URL = os.getenv("DEDICATED_SUB_URL", "").rstrip("/")
+DEDICATED_SUB_PORT = int(os.getenv("DEDICATED_SUB_PORT", "8004"))
+
 # کلید API درگاه پرداخت کریپتو Plisio (فقط به‌عنوان فال‌بک سراسری؛ در عمل هر بات
 # (اصلی یا نمایندگی) کلید خودش را از داخل پنل مدیریت بات تنظیم می‌کند)
 PLISIO_API_KEY = os.getenv("PLISIO_API_KEY", "")

@@ -640,10 +640,11 @@ _ACCOUNT_HUB_CALLBACKS = {
     # صندوق شانس: ورودی جدا در حساب کاربری (خریدش مثل یک محصول با همه‌ی روش‌های پرداخت است)
     "acct_lootbox": ("acct_show_lootbox", "lb_menu"),
     "acct_add_service": ("acct_show_add_service", "acct:addsvc"),
+    "acct_merge": ("acct_show_merge", "acct:merge"),
 }
 
 
-def account_hub_kb(db) -> InlineKeyboardMarkup:
+def account_hub_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
     from database import ACCOUNT_HUB_META, DEFAULT_ACCOUNT_HUB_ORDER
     entries = []
     order = db.get_custom_order("account_hub", DEFAULT_ACCOUNT_HUB_ORDER)
@@ -652,6 +653,8 @@ def account_hub_kb(db) -> InlineKeyboardMarkup:
         if db.get_setting(toggle_key, "1") != "1":
             continue
         if key == "acct_tutorial" and tutorial_hub.GENERAL not in db.get_tutorial_bound_targets():
+            continue
+        if key == "acct_merge" and not is_main_bot:
             continue
         # دکمه‌ی زیرمجموعه‌گیری فقط وقتی نشان داده شود که کلید اصلی و حداقل یکی از
         # سه مدل پاداش روشن باشد (هم‌رفتار با item_referral در منوی اصلی)؛ وگرنه
@@ -680,6 +683,20 @@ def account_hub_kb(db) -> InlineKeyboardMarkup:
 def add_service_cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="acct:addsvc_cancel")],
+    ])
+
+
+def merge_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("🆕 ساخت کد از اینجا"), callback_data="acct:merge_make")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="acct:merge_cancel")],
+    ])
+
+
+def merge_confirm_kb(code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("✅ تأیید ادغام"), callback_data="merge_ok:" + code)],
+        [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="acct:merge_cancel")],
     ])
 
 
@@ -1665,6 +1682,8 @@ ADMIN_PANEL_ITEMS = [
     ("adm_engage", "🎁 صندوق شانس و پیشرفت", "eng_adm"),
     ("adm_spam_settings", "🛡 ضداسپم کاربران", "adm_spam_settings"),
     ("adm_gswitch", "🔌 سوئیچ سراسری ربات (خاموش/روشن)", "adm_gswitch"),
+    ("adm_update", "🔄 آپدیت پروژه", "adm_update"),
+    ("adm_dsub", "🔗 ساب اختصاصی (دامنه، صفحه‌ی وب، اپ‌ها)", "adm_dsub"),
     ("adm_temp_message", "⏳ پیام موقت (خودحذف‌شونده)", "adm_temp_message"),
     ("adm_set_support_contact", "📞 روش‌های ارتباط با پشتیبانی", "adm_set_support_contact"),
     ("adm_ai_support_settings", "🤖 دستیار پشتیبانی و سوالات متداول", "adm_ai_support_settings"),
@@ -1719,6 +1738,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_service_alert_channel",
         "adm_custom_config_settings",
         "adm_panel_servers",
+        "adm_dsub",
         "adm_delivery_settings",
         "adm_renewal_pricing",
     ]),
@@ -1792,6 +1812,7 @@ ADMIN_PANEL_CATEGORIES = [
     ]),
     ("management", "📊 گزارش و سیستم", [
         "adm_gswitch",
+        "adm_update",
         "adm_stats",
         "adm_user_search",
         "adm_backup_menu",
@@ -1855,6 +1876,9 @@ def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
         return (not is_main_bot) and _is_volume_credit_owner(db)
     if key.startswith(("adm_set_xgw_", "adm_xgw_pay_")) and not is_main_bot:
         return False
+    if key == "adm_update":
+        # آپدیت پروژه فقط از بات اصلی (یک نصب = یک پروژه)، نه بات‌های نمایندگی
+        return is_main_bot and db.is_full_access_bot(is_main_bot)
     if key in ("adm_userbot", "adm_leak") and not is_main_bot:
         # یوزربات و اکانت تشخیص نشت فقط به اکانت تلگرام مالک بات اصلی وصل می‌شوند
         return False
@@ -2552,6 +2576,7 @@ def user_full_stats_kb(tg_id: int, is_blocked: bool = False) -> InlineKeyboardMa
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=tr("📦 لیست کامل کانفیگ‌های این کاربر"), callback_data=f"adm_user_configs:{tg_id}")],
         [InlineKeyboardButton(text=tr("🛠 مدیریت تک‌تک کانفیگ‌ها"), callback_data=f"adm_user_cfglist:{tg_id}")],
+        [InlineKeyboardButton(text=tr("👥 زیرمجموعه‌های این کاربر"), callback_data=f"adm_user_refs:{tg_id}")],
         [InlineKeyboardButton(text=tr("⏻ فعال/غیرفعال کردن همه‌ی کانفیگ‌های این کاربر"), callback_data=f"adm_user_toggle_all:{tg_id}")],
         [InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_user_msg:{tg_id}")],
         [InlineKeyboardButton(text=tr("🎁 ارسال کد تخفیف اختصاصی"), callback_data=f"adm_user_disc:{tg_id}")],
@@ -2568,11 +2593,20 @@ def user_group_stats_kb(tg_id: int, is_blocked: bool = False) -> InlineKeyboardM
     """نسخه‌ی سبک کارت پروفایل برای گروه گزارش: فقط دکمه‌هایی که بدون تایپ/FSM در گروه کار می‌کنند."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=tr("📦 لیست کامل کانفیگ‌های این کاربر"), callback_data=f"adm_user_configs:{tg_id}")],
+        [InlineKeyboardButton(text=tr("👥 زیرمجموعه‌ها"), callback_data=f"adm_user_refs:{tg_id}")],
         [
             InlineKeyboardButton(text=tr("✅ آنبلاک") if is_blocked else tr("🚫 بلاک"), callback_data=f"qa_block:{tg_id}"),
             InlineKeyboardButton(text=tr("✉️ پیام"), callback_data=f"qa_msg:{tg_id}"),
         ],
     ])
+
+
+def user_referrals_kb(tg_id: int, can_pay: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if can_pay:
+        rows.append([InlineKeyboardButton(text=tr("💰 پرداخت پاداش‌های پرداخت‌نشده"), callback_data=f"adm_user_refpay:{tg_id}")])
+    rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"qa_profile:{tg_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def user_toggle_all_confirm_kb(tg_id: int, new_enabled: bool) -> InlineKeyboardMarkup:

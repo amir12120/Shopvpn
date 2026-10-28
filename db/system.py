@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from .constants import *
+from .constants import _wallet_tag
 
 class SystemMixin:
     def wipe_agent_state(self, user_tg_id: int) -> dict:

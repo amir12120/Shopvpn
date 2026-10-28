@@ -53,6 +53,7 @@ import seasons
 from season_quiz_handlers import create_season_quiz_router
 from engagement_handlers import create_engagement_router
 import report_router
+import updater
 from report_router import ReportGroupGuardMiddleware
 from audit_forwarder import audit_forward_loop
 from global_switch import GlobalBotSwitchMiddleware
@@ -61,6 +62,7 @@ import tutorial_hub
 from i18n import (
     tr, set_language, reset_language, normalize_language, get_language,
     start_missing_tracking, stop_missing_tracking, pop_missing_lookups, merge_language_catalog,
+    is_language_enabled,
 )
 from broadcast_i18n import send_scheduled_broadcast
 from channel_post_scheduler import channel_post_loop
@@ -115,6 +117,15 @@ class LanguageMiddleware:
                     row = None
                 language = (row["language_code"] if row and "language_code" in row.keys() else None)
                 language = normalize_language(language or getattr(user, "language_code", None))
+                if language not in {"fa", "en"}:
+                    # زبان تلگرامِ کاربر (مثلاً ar) فقط وقتی استفاده شود که ادمین
+                    # آن را فعال کرده باشد؛ وگرنه به فارسی برمی‌گردیم.
+                    try:
+                        enabled = await asyncio.to_thread(is_language_enabled, self.db, language)
+                    except Exception:
+                        enabled = False
+                    if not enabled:
+                        language = "fa"
                 catalog = await asyncio.to_thread(self.db.translation_catalog, language) if language not in {"fa", "en"} and await asyncio.to_thread(self.db.get_language, language) else None
                 token = set_language(language, catalog)
                 if language not in {"fa", "en"}:
@@ -561,6 +572,10 @@ class BotManager:
         audit_task = asyncio.create_task(audit_forward_loop(bot, db))
         if is_main_bot:
             asyncio.create_task(_announce_startup(bot, db))
+            update_check_task = asyncio.create_task(updater.check_loop(bot, db))
+            asyncio.create_task(updater.announce_result(bot, db))
+        else:
+            update_check_task = None
 
         self.instances[token] = {
             "bot": bot, "dp": dp, "task": task, "reminder_task": reminder_task,
@@ -572,7 +587,7 @@ class BotManager:
             "cleanup_task": cleanup_task, "lottery_task": lottery_task,
             "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task,
             "gift_expiry_task": gift_expiry_task, "audit_task": audit_task,
-            "season_task": season_task, "quiz_task": quiz_task,
+            "season_task": season_task, "quiz_task": quiz_task, "update_check_task": update_check_task,
             "db_path": db_path,
         }
         logger.info("بات با db_path=%s راه‌اندازی شد.", db_path)
@@ -583,7 +598,7 @@ class BotManager:
         "scheduled_broadcast_task", "channel_post_task", "cache_refresh_task", "temp_msg_task",
         "extra_gateway_task", "panel_health_task", "daily_report_task",
         "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task",
-        "gift_expiry_task", "audit_task", "season_task", "quiz_task",
+        "gift_expiry_task", "audit_task", "season_task", "quiz_task", "update_check_task",
     )
 
     async def stop_bot(self, token: str) -> bool:

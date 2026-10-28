@@ -3113,6 +3113,41 @@ class WalletAdjustBody(BaseModel):
     delta: int
 
 
+def _referrals_payload(tg_id: int) -> dict:
+    items = db.list_referrals_for_admin(tg_id)
+    amount = int(db.get_setting("referral_invite_bonus_amount", "0") or 0)
+    return {
+        "items": items,
+        "total": len(items),
+        "pending_bonus_count": sum(1 for r in items if not r["bonus_given"]),
+        "bonus_amount": amount,
+        "bonus_enabled": db.get_setting("referral_invite_bonus_enabled", "0") == "1",
+        "suspended": db.is_referral_fraud_suspended(tg_id),
+    }
+
+
+@app.get("/api/users/{tg_id}/referrals")
+def api_user_referrals(tg_id: int, admin=Depends(get_current_admin)):
+    if not db.get_user(tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    return _referrals_payload(tg_id)
+
+
+@app.post("/api/users/{tg_id}/referrals/pay-pending")
+async def api_pay_pending_referral_bonus(tg_id: int, admin=Depends(require_permission("users"))):
+    if not db.get_user(tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    res = await asyncio.to_thread(db.pay_pending_invite_bonuses, tg_id)
+    if res["paid_count"] <= 0:
+        raise HTTPException(400, tr("پاداشی برای پرداخت وجود ندارد (مبلغ پاداش صفر است، سقف پر شده یا همه پرداخت شده‌اند)."))
+    await asyncio.to_thread(db.log_admin_action,
+        admin["id"], "referral_bonus_manual", f"پاداش دعوت {res['paid_count']} زیرمجموعه ({res['total']:,} تومان) برای کاربر {tg_id} پرداخت شد (پنل وب - {admin['username']})",
+        "user", tg_id,
+    )
+    await notify_user(tg_id, f"🤝 پاداش دعوت {res['paid_count']} زیرمجموعه‌ی شما پرداخت شد.\n💰 {res['total']:,} تومان به کیف پول شما اضافه شد.")
+    return {"ok": True, **res, **_referrals_payload(tg_id)}
+
+
 @app.post("/api/users/{tg_id}/wallet")
 async def api_adjust_wallet(tg_id: int, body: WalletAdjustBody, admin=Depends(require_permission("users"))):
     (await asyncio.to_thread(db.add_wallet_credit, tg_id, body.delta, "admin_adjust", f"تنظیم دستی توسط ادمین ({admin['username']})"))
@@ -5940,6 +5975,53 @@ async def api_exchange_rate_refresh(admin=Depends(require_permission("panels")))
 @app.get("/api/settings")
 def api_settings(admin=Depends(require_permission("settings"))):
     return db.get_all_settings()
+
+
+@app.get("/api/settings/sub-page-preview")
+def api_sub_page_preview(admin=Depends(require_permission("settings"))):
+    """Render a safe, data-only mock of the subscription web page for the admin live preview."""
+    import html as html_lib
+    import dedicated_sub as ds
+    template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sub_server", "sub_page.html")
+    with open(template_path, "r", encoding="utf-8") as fh:
+        template = fh.read()
+    settings = ds.all_settings(db)
+    mock_cc = {
+        "display_name": "سرویس نمونه", "username": "demo", "status": "active", "enabled": 1,
+        "duration_days": 30, "created_at": datetime.utcnow().isoformat(),
+        "expires_at": (datetime.utcnow()).isoformat(),
+    }
+    now = int(time.time())
+    brand = (settings.get("dsub_brand") or db.get_setting("brand_name", "") or db.get_setting("shop_name", "")
+             or "ShopVPN").strip()
+    info = {"total": 50 * ds.GB, "upload": 2 * ds.GB, "download": 5 * ds.GB, "expire": now + 25 * 86400}
+    series = {"labels": ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"], "values": [1.2, 1.8, 2.1, 2.7, 3.4, 4.1, 5.0]}
+    data = ds.build_page_data(mock_cc, info, [
+        "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=tcp#🇩🇪%20Demo",
+        "vmess://demo#🇳🇱%20Backup",
+    ], settings, brand, "https://example.com/s/demo", series, now)
+    data["live"] = True
+    nonce = secrets.token_urlsafe(12)
+    rendered = (template.replace("__NONCE__", nonce)
+                .replace("__TITLE__", html_lib.escape("پیش‌نمایش صفحه لینک ساب"))
+                .replace("__THEME__", data.get("theme", "auto"))
+                .replace("__DATA__", ds.json_for_script(data)))
+    csp = ("default-src 'none'; script-src 'nonce-%s'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
+           "font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'none'; "
+           "frame-ancestors 'self'; base-uri 'none'; form-action 'none'" % nonce)
+    return HTMLResponse(rendered, headers={
+        "content-security-policy": csp, "cache-control": "no-store", "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff", "x-robots-tag": "noindex, nofollow",
+    })
+
+
+@app.get("/api/settings/web-store-preview-url")
+def api_web_store_preview_url(admin=Depends(require_permission("settings"))):
+    """Public origin of the web store service, used by the admin live preview iframe."""
+    url = (os.getenv("SHOPVPN_SEO_SITE_URL", "") or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = ""
+    return {"url": url}
 
 
 class SettingBody(BaseModel):

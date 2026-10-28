@@ -1826,6 +1826,7 @@ class DatabaseBase:
             ("custom_configs", "auto_renew", "INTEGER DEFAULT 0"),
             ("custom_configs", "auto_renew_alert_date", "TEXT"),
             ("custom_configs", "display_name", "TEXT"),
+            ("custom_configs", "sub_token", "TEXT"),
             ("users", "reseller_panel_id", "INTEGER"),
             # نصب‌های قدیمی‌تر ممکن است جدول reseller_requests را قبل از اضافه‌شدن
             # این ستون‌ها ساخته باشند (چون CREATE TABLE IF NOT EXISTS در آن حالت
@@ -2059,6 +2060,24 @@ class DatabaseBase:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_admin_logs_record ON admin_logs(record_type, record_id)"
         )
+
+        # ساب اختصاصی: توکن لینک هر سرویس + لاگ دسترسی + تاریخچه‌ی مصرف (نمودار صفحه‌ی وب)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_configs_sub_token "
+            "ON custom_configs(sub_token) WHERE sub_token IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sub_access_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, config_id INTEGER, ts INTEGER NOT NULL, "
+            "ip TEXT, ua TEXT, kind TEXT, status INTEGER)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sub_access_log_ts ON sub_access_log(ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sub_access_log_cfg ON sub_access_log(config_id, ts)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sub_usage_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, config_id INTEGER NOT NULL, ts INTEGER NOT NULL, used INTEGER NOT NULL)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sub_usage_log_cfg ON sub_usage_log(config_id, ts)")
 
 
     def _sqlite_retry(self, operation, attempts: int = 4, delay: float = 0.15):

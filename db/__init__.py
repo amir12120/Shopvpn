@@ -34,6 +34,7 @@ from .leak_store import LeakStoreMixin
 from .gift_cards import GiftCardsMixin
 from .seasons import SeasonsMixin
 from .engagement import EngagementMixin
+from .dedicated_sub import DedicatedSubMixin
 
 class Database(
     DatabaseBase,
@@ -51,6 +52,7 @@ class Database(
     GiftCardsMixin,
     SeasonsMixin,
     EngagementMixin,
+    DedicatedSubMixin,
 ):
     pass
 
