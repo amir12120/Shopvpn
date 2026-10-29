@@ -183,9 +183,10 @@ test suite; if one fails, fix the merge — never the test.
    cause, never suppress it.
 6. Final check: `git status` clean, `VERSION` correct, and a fresh
    `git diff --stat HEAD upstream/main` contains only the documented exclusions
-   (install/scripts, web-store fake map, ru/zh docs, root upload duplicates).
-   Because this is a standalone repo, `HEAD..upstream/main == 0` is **not** the
-   goal and must not be used as a success test.
+   (install/scripts, ru/zh docs, root upload duplicates, and upstream's
+   zero-width watermark lines). Because this is a standalone repo,
+   `HEAD..upstream/main == 0` is **not** the goal and must not be used as a
+   success test.
 
 ## 8. Final report (short, factual)
 
@@ -193,6 +194,13 @@ test suite; if one fails, fix the merge — never the test.
 - Which upstream changes were REJECTED and why.
 - What was added to the tests and CI.
 - Result of each quality gate, plus the CI run number/URL.
-- Tag, release link, and confirmation that upstream behind == 0.
+- Tag, release link, and the list of upstream changes still excluded.
 - Anything you could NOT do, stated plainly. Never invent success, never hide a
   failing check.
+
+## 9. Sync log
+
+| Date | Fork version | Ported | Rejected and why |
+|---|---|---|---|
+| 2026-10-30 | 4.19.0 | Storefront network map (`web_store/static/assets/network-map.*`) and its server-side `/api/web/world-map` cache. It is a static, clearly-labelled illustrative map with no CDN call and no new Python dependency. | The 41 new upstream uploads are mostly zero-width watermark noise; upstream also removed the reseller-section switch, web-store branding fields, the SSH node install package and node creation, and regressed the SSH username digit guard. Root `catalog.py`/`users.py`/`system.py`/`orders.py` are unimported upload duplicates with package-relative imports. Russian/Chinese READMEs violate the fa/en-only policy. None of those were copied. |
+
