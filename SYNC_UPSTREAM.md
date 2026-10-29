@@ -48,7 +48,10 @@ guessing.
 
 ## 1. Investigate BEFORE changing anything
 
-1. `git fetch upstream main`
+0. Make sure the upstream remote exists. `bash check_upstream.sh` adds or
+   updates it, fetches the source, and prints a read-only comparison; use the
+   commands below when you need the raw diff.
+1. `git fetch upstream main` (or `bash check_upstream.sh`)
 2. `git log --oneline HEAD..upstream/main`
 3. `git diff --stat HEAD...upstream/main`
 4. Read the real upstream diffs for Python changes: `git diff HEAD...upstream/main -- '*.py'`
