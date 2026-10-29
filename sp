@@ -35,7 +35,7 @@ fi
 if [ ! -f "$install_dir/manage.sh" ]; then
     echo "ShopVPN is not installed (no manage.sh in $install_dir)." >&2
     echo "Install it first:" >&2
-    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)" >&2
+    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/install.sh)" >&2
     exit 1
 fi
 

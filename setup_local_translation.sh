@@ -22,7 +22,7 @@
 #   SHOPVPN_INSTALL_LIBRETRANSLATE=1     also install the heavy LibreTranslate
 #   SHOPVPN_SKIP_MODELS=1                skip model downloads entirely
 # ============================================================================
-set -euo pipefail
+set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/venv}"
@@ -40,9 +40,29 @@ SKIP_MODELS="${SHOPVPN_SKIP_MODELS:-0}"
 ENV_FILE="$ROOT_DIR/.env"
 LANGS_SPEC="${SHOPVPN_TRANSLATION_LANGS:-}"
 if [ -z "$LANGS_SPEC" ] && [ -f "$ENV_FILE" ]; then
-  LANGS_SPEC="$(grep -m1 '^SHOPVPN_TRANSLATION_LANGS=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')"
+  # `sed` instead of `grep | cut`: under `set -euo pipefail` a missing key made
+  # grep return 1, which killed the whole script before it printed a single
+  # line. That is why every update showed "✗ translation" with no detail and
+  # never wrote the key that would have made the next run work.
+  LANGS_SPEC="$(sed -n 's/^SHOPVPN_TRANSLATION_LANGS=//p' "$ENV_FILE" 2>/dev/null | head -n 1 | tr -d '[:space:]') || true"
 fi
 LANGS_SPEC="${LANGS_SPEC:-fa}"
+
+# Save the key immediately, before any download. Older installs did not have
+# it, so a failed model download used to leave the next update with no key at
+# all (and the old `set -e` bug then aborted silently).
+mkdir -p "$(dirname "$ENV_FILE")" 2>/dev/null || true
+touch "$ENV_FILE" 2>/dev/null || true
+if [ -f "$ENV_FILE" ]; then
+  if grep -q '^SHOPVPN_TRANSLATION_LANGS=' "$ENV_FILE"; then
+    sed -i "s#^SHOPVPN_TRANSLATION_LANGS=.*#SHOPVPN_TRANSLATION_LANGS=${LANGS_SPEC}#" "$ENV_FILE" 2>/dev/null || true
+  else
+    printf '\nSHOPVPN_TRANSLATION_LANGS=%s\n' "$LANGS_SPEC" >> "$ENV_FILE" 2>/dev/null || true
+  fi
+fi
+
+# Non-zero means a critical step failed; warnings do not change it.
+FAILED=0
 
 # Never let pip keep gigabytes of downloaded wheels around: this is one of the
 # biggest silent disk hogs on small VPS disks.
@@ -126,20 +146,35 @@ install_system_prereqs() {
   fi
 }
 
-install_system_prereqs
+if ! install_system_prereqs; then
+  echo "[translation] ERROR: system prerequisites could not be installed." >&2
+  exit 1
+fi
 
 if [ ! -x "$PYTHON_BIN" ]; then
   echo "[translation] Creating Python virtual environment..."
-  python3 -m venv "$VENV_DIR"
+  if ! python3 -m venv "$VENV_DIR"; then
+    echo "[translation] ERROR: could not create $VENV_DIR." >&2
+    exit 1
+  fi
 fi
 
-pip_q "$PYTHON_BIN" --upgrade pip setuptools wheel
+pip_q "$PYTHON_BIN" --upgrade pip setuptools wheel || \
+  echo "[translation] Warning: pip/setuptools upgrade failed; continuing." >&2
 # argostranslate -> stanza -> torch. Prefer the CPU-only build so we don't pull
 # ~5 GB of CUDA/nvidia libraries onto a small VPS.
 if ! pip_q "$PYTHON_BIN" --index-url https://download.pytorch.org/whl/cpu torch; then
   echo "[translation] Warning: CPU-only torch install failed; continuing." >&2
 fi
-pip_q "$PYTHON_BIN" 'argostranslate>=1.11.0'
+if ! pip_q "$PYTHON_BIN" 'argostranslate>=1.11.0'; then
+  echo "[translation] ERROR: could not install argostranslate. The bot keeps using the runtime and models it already has." >&2
+  exit 1
+fi
+if [ ! -x "$VENV_DIR/bin/argospm" ]; then
+  echo "[translation] ERROR: argospm is missing from $VENV_DIR/bin." >&2
+  echo "[translation] Reinstall the virtualenv with: $PYTHON_BIN -m pip install --force-reinstall argostranslate" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Decide which language pairs to preload.
@@ -194,7 +229,11 @@ else
     echo "[translation] Installing models as the bot's user: $SERVICE_USER (HOME=$SERVICE_HOME)"
   fi
   # Argos package metadata is public/open and does not require an API key.
-  as_service_user "$VENV_DIR/bin/argospm" update
+  # A failed index refresh must not abort the whole update: installed models
+  # are still usable and the next run retries.
+  if ! as_service_user "$VENV_DIR/bin/argospm" update; then
+    echo "[translation] Warning: could not refresh the Argos model index; using installed models." >&2
+  fi
 
   # en -> fa is what the Persian UI needs; fa -> en completes the admin panel,
   # which can contain raw Persian strings.
@@ -315,10 +354,16 @@ if [ -x "$LT_PYTHON" ]; then "$LT_PYTHON" -m pip cache purge >/dev/null 2>&1 || 
 rm -rf "$HOME/.cache/pip" 2>/dev/null || true
 if [ "$(id -u)" -eq 0 ]; then rm -rf /root/.cache/pip 2>/dev/null || true; fi
 
-"$PYTHON_BIN" - <<'PY'
+if "$PYTHON_BIN" - <<'PY'
 import argostranslate
 print("[translation] Argos Translate: ready")
 PY
+then
+  :
+else
+  echo "[translation] ERROR: the Argos runtime cannot be imported." >&2
+  FAILED=1
+fi
 
 if [ "$LT_ENABLED" = "1" ] && command -v curl >/dev/null 2>&1; then
   if curl -fsS --max-time 5 http://127.0.0.1:5000/languages >/dev/null 2>&1; then
@@ -344,4 +389,8 @@ if [ "$SERVICE_USER" != "$(id -un)" ]; then
   fi
 fi
 echo "[translation] Add more languages later with: SHOPVPN_TRANSLATION_LANGS=tr,ar bash setup_local_translation.sh"
+if [ "$FAILED" -ne 0 ]; then
+  echo "[translation] Local translation setup finished with errors; the bot will keep running with what is already installed." >&2
+  exit "$FAILED"
+fi
 echo "[translation] Local translation setup completed."

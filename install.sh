@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# ShopVPN installer / updater  (personal fork: amir12120/Shopvpn)
+# ShopVPN installer / updater  (personal fork: amir12120/shopvpn-amir)
 #
 # One command does everything, in this order:
 #   1. installs every missing system prerequisite (git, python3, venv, ...)
@@ -8,7 +8,7 @@
 #   3. installs the `shopvpn` CLI command
 #   4. opens the management CLI menu automatically when the install is done
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/install.sh)
 #
 # Afterwards, typing `shopvpn` opens the same management menu at any time.
 #
@@ -37,12 +37,12 @@ export NEEDRESTART_SUSPEND=1
 # ----------------------------------------------------------------------------
 # Settings
 # ----------------------------------------------------------------------------
-REPO_URL="https://github.com/amir12120/Shopvpn.git"
+REPO_URL="https://github.com/amir12120/shopvpn-amir.git"
 INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
 CLI_NAME="shopvpn"
 GITHUB_OWNER="amir12120"
-GITHUB_REPO="Shopvpn"
+GITHUB_REPO="shopvpn-amir"
 GITHUB_BRANCH="main"
 
 TOTAL_STEPS=7
@@ -431,7 +431,7 @@ export SHOPVPN_DIR="\$INSTALL_DIR"
 if [ ! -f "\$INSTALL_DIR/manage.sh" ]; then
     echo "ShopVPN is not installed at \$INSTALL_DIR." >&2
     echo "Install it first with:" >&2
-    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)" >&2
+    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/install.sh)" >&2
     exit 1
 fi
 exec bash "\$INSTALL_DIR/manage.sh" "\$@"

@@ -1,9 +1,9 @@
-# 🛰️ ShopVPN install guide (personal fork `amir12120/Shopvpn`)
+# 🛰️ ShopVPN install guide (standalone build `amir12120/shopvpn-amir`)
 
-This document is specific to the **personal fork** and explains a lean,
+This document is specific to the **standalone build** and explains a lean,
 disk-aware installation on **Ubuntu 22.04** (and Debian 11+).
 
-- 🔗 Repository: <https://github.com/amir12120/Shopvpn>
+- 🔗 Repository: <https://github.com/amir12120/shopvpn-amir>
 - 🧩 Upstream project: `mehdirafatpanah/Shopvpn`
 
 > Note: this fork makes the installer "lean" so **disk usage drops sharply**
@@ -57,7 +57,7 @@ On a fresh Ubuntu/Debian server, run **one** command. It does everything:
 4. opens the management menu automatically when the install finishes.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/install.sh)
 ```
 
 > 🔁 Running the same command again = update (idempotent). The `.env` file and
@@ -72,7 +72,7 @@ mid-install)? You can still run the preflight checker on its own:
 
 ```bash
 # check + install prerequisites only
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/preflight.sh)
 
 # report what is missing without changing anything
 bash preflight.sh --check
@@ -85,8 +85,8 @@ sudo bash preflight.sh --with-web
 
 | Variable | Effect |
 |---|---|
-| `SHOPVPN_TRANSLATION_LANGS="tr,ar"` | Preload extra Argos languages (or `all`) |
-| `SHOPVPN_INSTALL_LIBRETRANSLATE=1` | Also install the heavy LibreTranslate fallback |
+| `SHOPVPN_TRANSLATION_LANGS="fa"` | Language set for the local models (`fa`/`en` only) |
+| `SHOPVPN_INSTALL_LIBRETRANSLATE=1` | Also install the heavy LibreTranslate fallback (not needed for fa/en) |
 | `SHOPVPN_SKIP_MODELS=1` | Skip Argos model downloads |
 | `SHOPVPN_SKIP_SERVICE_START=1` | Create/enable the service but don't start it |
 | `SHOPVPN_SKIP_MENU=1` | Don't auto-open the management menu at the end |
@@ -108,7 +108,7 @@ You can also run the same CLI straight from the repository without installing
 anything:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/manage.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/manage.sh)
 ```
 
 The bot runs as a `systemd` service:
@@ -129,8 +129,10 @@ menu language is English; press `L` in the menu to switch to Persian.
 `install.sh` installs the short `sp` command next to `shopvpn`. `sp update` runs
 exactly the same pipeline as menu item 2 — fetch, Python packages, translation
 models, disk cleanup, restart, readiness check — but without the menu and
-without waiting for a key press. The exit status is real: `0` only when every
-step passed and the bot stayed up, so it can be used in scripts and cron.
+without waiting for a key press. The exit status is real: `0` when the critical
+steps passed and the bot stayed up. A failed model refresh is reported as a
+warning (the bot keeps its installed models) and does not fail the update, so
+the command is safe in scripts and cron.
 
 ```bash
 sp update
@@ -157,7 +159,6 @@ The default install is lean (~1 to 1.5 GB) instead of several GB:
   the venv dropped from **~5.7 GB to ~1.3 GB**.
 - ✅ The apt cache and downloaded package archives are cleaned, and
   prerequisites use `--no-install-recommends`.
-- ✅ The clone is **shallow** (`--depth 1`).
 
 At the end of every install **and every update** (the `shopvpn` update action
 runs the same cleanup step), [`cleanup.sh`](cleanup.sh) runs automatically and
@@ -211,28 +212,31 @@ df -h /
 
 <a id="langs"></a>
 
-## 5) Translation languages and optional LibreTranslate
+## 5) Local translation (Persian/English)
 
-By default only the **Persian/English** pairs (`en_fa` and `fa_en`) are
-installed. To translate more languages locally:
+Only the **Persian/English** pairs (`en_fa` and `fa_en`) are enabled; the
+application does not offer a third UI language. Both models are installed by
+default and live under the bot account's `HOME`, not `/root`.
+
+To repair them without reinstalling the bot:
 
 ```bash
-# install specific languages (e.g. Turkish and Arabic)
-SHOPVPN_TRANSLATION_LANGS="tr,ar" bash ~/v2ray_bot/setup_local_translation.sh
-
-# or every language in the catalog (~1.5 GB+)
-SHOPVPN_TRANSLATION_LANGS=all bash ~/v2ray_bot/setup_local_translation.sh
+bash ~/v2ray_bot/setup_local_translation.sh
 ```
 
-> You can do the same from the `shopvpn` menu (option 29).
+The update action also runs this script. If it cannot reach the model index, it
+prints a warning and leaves the installed models untouched; the next update
+retries. A missing `SHOPVPN_TRANSLATION_LANGS` key is created automatically, so
+the step can no longer exit silently.
 
-**LibreTranslate (heavy, optional)** — only if you need more language/quality:
+**LibreTranslate (heavy, optional)** — not needed for Persian/English, and never
+installed by default:
 
 ```bash
 SHOPVPN_INSTALL_LIBRETRANSLATE=1 bash ~/v2ray_bot/setup_local_translation.sh
 ```
 
-> ⚠️ This uses several GB. Most shops do not need it.
+> ⚠️ This uses several GB. The lean fork deliberately avoids it.
 
 ---
 
@@ -246,7 +250,9 @@ SHOPVPN_INSTALL_LIBRETRANSLATE=1 bash ~/v2ray_bot/setup_local_translation.sh
 | git clone fails / asks for a username+password | The script automatically falls back to the `codeload.github.com` archive |
 | Disk is full | See [Fixing high disk usage](#disk); remove LibreTranslate and purge the pip cache |
 | The bot does not start | `sudo journalctl -u v2raybot -n 80 --no-pager`; usually a wrong `BOT_TOKEN`/`OWNER_ID` |
-| A language does not translate | Install that language (see [languages](#langs)) |
+| Update prints “✗ translation” | This is a warning now; the bot keeps its installed models. Re-run `bash ~/v2ray_bot/setup_local_translation.sh` and check the first error line |
+| Update says “Bot did not start” although step 5 was green | Check `systemctl is-active v2raybot`; the old summary could print this when only the translation step failed. The fixed version reports failure only for an inactive unit |
+| Persian or English does not translate | Run the repair command in [section 5](#langs); only `fa`/`en` are supported |
 | Python is too old | Make sure it is Ubuntu 22.04, or install python3.10+ |
 
 ---

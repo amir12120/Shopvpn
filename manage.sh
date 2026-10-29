@@ -13,13 +13,13 @@
 # ---------------------------------------------------------------------------
 # Customizable settings / تنظیمات قابل شخصی‌سازی
 # ---------------------------------------------------------------------------
-REPO_URL="https://github.com/amir12120/Shopvpn.git"
+REPO_URL="https://github.com/amir12120/shopvpn-amir.git"
 # SHOPVPN_DIR lets `sp` (and any deploy script) point the menu at a checkout
 # that is not in the default location. install.sh uses the same default.
 INSTALL_DIR="${SHOPVPN_DIR:-$HOME/v2ray_bot}"
 SERVICE_NAME="v2raybot"
 GITHUB_OWNER="amir12120"
-GITHUB_REPO="Shopvpn"
+GITHUB_REPO="shopvpn-amir"
 GITHUB_BRANCH="main"
 export GIT_TERMINAL_PROMPT=0
 
@@ -336,6 +336,10 @@ MSG_EN[update_done]="✅ Bot updated."
 MSG_FA[update_done]="✅ آپدیت بات انجام شد."
 MSG_EN[updating_translation]="🌍 Updating the local translation runtime and models"
 MSG_FA[updating_translation]="🌍 به‌روزرسانی موتور ترجمهٔ محلی و مدل‌های زبان"
+MSG_EN[translation_update_warning]="⚠️ Translation models were not refreshed; the bot is running with the models already installed and will retry next time."
+MSG_FA[translation_update_warning]="⚠️ مدل‌های ترجمه به‌روز نشدند؛ بات با مدل‌های نصب‌شدهٔ قبلی اجرا می‌شود و در آپدیت بعدی دوباره تلاش می‌کند."
+MSG_EN[update_incomplete]="⚠️ The update finished with errors, but the bot is still running. Check the failed step above and retry."
+MSG_FA[update_incomplete]="⚠️ آپدیت با خطا تمام شد، اما بات همچنان در حال اجراست. مرحلهٔ ناموفق را در بالا ببین و دوباره تلاش کن."
 MSG_EN[cleaning_disk]="🧹 Reclaiming disk space (pip/apt caches, temp files)"
 MSG_FA[cleaning_disk]="🧹 آزادسازی فضای دیسک (کش پیپ و apt و فایل‌های موقت)"
 MSG_EN[service_not_ready]="⛔️ %s did not stay up. Last log lines:"
@@ -1305,7 +1309,7 @@ update_bot() {
     [ "$has_miniapp" = "1" ] && total=$((total+1))
     [ "$has_panel" = "1" ] && total=$((total+1))
     [ "$has_api" = "1" ] && total=$((total+1))
-    local step=0 failed=0
+    local step=0 failed=0 warned=0
 
     section_header "$(t update_bot_header)"
 
@@ -1316,7 +1320,10 @@ update_bot() {
     run_step "$step" "$total" "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && ($PIP_CPU_TORCH || true) && $PIP_REQS && deactivate" || failed=1
 
     step=$((step+1))
-    run_step "$step" "$total" "$(t updating_translation)" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
+    # Translation is an optional runtime: a failed model refresh must never be
+    # reported as "the bot did not start". The bot keeps the models it already
+    # has, and the next update retries this step.
+    run_step "$step" "$total" "$(t updating_translation)" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || warned=1
 
     # Reclaim disk before restarting: the new packages and models left their
     # download caches behind, exactly the files that only eat the server's disk.
@@ -1342,9 +1349,20 @@ update_bot() {
     fi
 
     draw_rule
-    if [ "$failed" = "0" ] && systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "  ${GREEN}${BOLD}$(t update_done)${RESET}"
-        return 0
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        if [ "$failed" = "0" ]; then
+            echo -e "  ${GREEN}${BOLD}$(t update_done)${RESET}"
+            if [ "$warned" = "1" ]; then
+                echo -e "  ${YELLOW}$(t translation_update_warning)${RESET}"
+            fi
+            return 0
+        fi
+        # The unit is up, but another step (fetch/packages/cleanup) failed.
+        # Saying "the bot did not start" here is what made a successful restart
+        # look like a dead bot.
+        echo -e "  ${YELLOW}$(t update_incomplete)${RESET}" >&2
+        [ "$warned" = "1" ] && echo -e "  ${YELLOW}$(t translation_update_warning)${RESET}" >&2
+        return 1
     fi
     echo -e "  ${RED}$(t install_failed "$SERVICE_NAME")${RESET}" >&2
     return 1

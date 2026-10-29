@@ -60,15 +60,16 @@ def test_english_install_guide_exists():
 
 
 def test_readmes_mention_shopvpn_command():
-    for name in ("README.md", "README.fa.md", "README.ru.md", "README.zh.md"):
+    for name in ("README.md", "README.fa.md"):
         assert "shopvpn" in _read(name), f"{name} should document the shopvpn command"
 
 
-def test_all_readmes_exist_in_both_languages():
-    """English and Persian docs must both stay present."""
-    for name in ("README.md", "README.fa.md", "INSTALL.md", "INSTALL.fa.md",
-                 "README.ru.md", "README.zh.md"):
+def test_only_english_and_persian_docs_ship():
+    """The fork supports fa/en only; stale ru/zh readmes must not come back."""
+    for name in ("README.md", "README.fa.md", "INSTALL.md", "INSTALL.fa.md"):
         assert os.path.isfile(os.path.join(ROOT, name)), f"{name} is missing"
+    for name in ("README.ru.md", "README.zh.md"):
+        assert not os.path.exists(os.path.join(ROOT, name)), f"{name} must stay removed"
 
 
 def test_persian_docs_stay_persian():
@@ -104,7 +105,8 @@ def test_disk_lean_installs_survive_upstream_merges():
 
 def test_manage_keeps_fork_repo_and_optional_heavy_fallback():
     text = _read("manage.sh")
-    assert 'REPO_URL="https://github.com/amir12120/Shopvpn.git"' in text
+    assert 'REPO_URL="https://github.com/amir12120/shopvpn-amir.git"' in text
+    assert 'GITHUB_REPO="shopvpn-amir"' in text
     assert 'GITHUB_OWNER="amir12120"' in text
     # LibreTranslate is a multi-GB opt-in, never a silent download.
     assert "lt_heavy_prompt" in text
@@ -128,6 +130,39 @@ def test_update_runs_every_step_including_disk_cleanup():
     assert "setup_local_translation.sh" in body               # translation runtime
     assert "cleanup.sh" in body, "update must free disk like the install does"
     assert 'restart_service_and_wait "$SERVICE_NAME"' in body
+
+
+def test_translation_failure_is_a_warning_not_a_dead_bot():
+    """A failed model refresh must not print "the bot did not start".
+
+    The update summary used to treat every optional step failure as fatal, so a
+    translation error printed the install_failed message even after step 5 had
+    confirmed the bot was up. Keep the two states separate.
+    """
+    body = _update_bot_body()
+    assert 'setup_local_translation.sh' in body
+    assert '|| warned=1' in body
+    assert 'failed=1' not in body.split("setup_local_translation.sh")[1].split("\n")[0]
+    final = body.split("draw_rule")[-1]
+    assert 'systemctl is-active --quiet "$SERVICE_NAME"' in final
+    assert 'translation_update_warning' in final
+    assert 'update_incomplete' in final
+
+
+def test_translation_setup_cannot_exit_silently():
+    """The old `set -e` + `grep` combination exited before writing anything.
+
+    A missing SHOPVPN_TRANSLATION_LANGS key made grep return 1, which killed the
+    script under `set -e`. The run then showed only a red cross, with no output,
+    and never saved the key for the next update.
+    """
+    text = _read("setup_local_translation.sh")
+    assert re.search(r"^set -uo pipefail$", text, re.M)
+    assert not re.search(r"^set -euo pipefail$", text, re.M)
+    assert "sed -n 's/^SHOPVPN_TRANSLATION_LANGS=//p'" in text
+    assert "SHOPVPN_TRANSLATION_LANGS=%s" in text
+    assert "FAILED=1" in text
+    assert "exit \"$FAILED\"" in text
 
 
 def test_no_restart_is_trusted_after_a_fixed_sleep():

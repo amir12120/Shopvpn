@@ -3,7 +3,7 @@
 This file is the authoritative, reusable procedure for pulling new upstream work
 into this fork **without breaking anything we changed ourselves**.
 
-- fork: `https://github.com/amir12120/Shopvpn` (branch `main`)
+- fork: `https://github.com/amir12120/shopvpn-amir` (branch `main`)
 - upstream: `https://github.com/mehdirafatpanah/Shopvpn`
 
 ## How to use this file
@@ -40,9 +40,11 @@ guessing.
   test suite only.
 - If `git status` is not clean at the start, stop and report. Never discard,
   stash, or overwrite changes you did not make.
-- This is a released, user-installed product (v4.9.0+) running on Ubuntu 22.04
-  with systemd, Argos/LibreTranslate offline translation and SQLite. A broken
-  merge ships real damage to real servers. Be conservative and evidence-driven.
+- This is a released, user-installed product (v4.17.0+) running on Ubuntu 22.04
+  with systemd, Argos offline translation and SQLite. A broken merge ships real
+  damage to real servers. Be conservative and evidence-driven.
+- The repository is **standalone** now (not a GitHub fork). There is no automatic
+  upstream merge and no "behind" badge; compare content, not the fork counter.
 
 ## 1. Investigate BEFORE changing anything
 
@@ -70,8 +72,8 @@ Upstream re-uploads its own older shell files on every merge. These never change
 - everything under `.github/`
 - everything under `tests/`
 - `VERSION`
-- `README.md`, `README.fa.md`, `INSTALL.md`, `INSTALL.fa.md` and any other docs
-  (drop upstream's ru/zh READMEs; this project is fa/en only)
+- `README.md`, `README.fa.md`, `INSTALL.md`, `INSTALL.fa.md`
+  (ru/zh readmes are deliberately absent; this project is fa/en only)
 - `i18n_extra.py`, and `i18n.py` where it declares
   `SUPPORTED_LANGUAGES = ("fa", "en")` — never add a third language
 
@@ -131,7 +133,12 @@ test suite; if one fails, fix the merge — never the test.
 - `manage.sh` has `wait_for_service_ready()` / `restart_service_and_wait()`
   (three consecutive `systemctl is-active` polls, 30 s budget, prints journal
   lines on failure) and `update_bot()` runs in this order:
-  fetch → pip → translation → cleanup.sh → restart-and-wait.
+  fetch → pip → translation → cleanup.sh → restart-and-wait. A failed
+  translation step is a warning (`warned=1`), never `failed=1`; "Bot did not
+  start" is printed only when the unit is actually inactive.
+- `setup_local_translation.sh` must keep `set -uo pipefail` (not `-e`) and read
+  `SHOPVPN_TRANSLATION_LANGS` with `sed ... || true`, then write the key before
+  any download. This is the fix for the silent `✗ translation` failure.
 - `install.sh` writes the journald drop-in
   (`/etc/systemd/journald.conf.d/shopvpn-disk.conf`, `SystemMaxUse`,
   `SystemKeepFree=1G`, opt out with `SHOPVPN_SKIP_JOURNAL_LIMIT=1`) and has the
@@ -139,7 +146,7 @@ test suite; if one fails, fix the merge — never the test.
 
 ## 6. Quality gates — ALL must pass, never work around one
 
-- `PYTHONUTF8=1 "$PY" -m pytest tests -q` (baseline: 96 passed)
+- `PYTHONUTF8=1 "$PY" -m pytest tests -q` (baseline: 140+ passed)
 - `PYTHONUTF8=1 "$PY" -m ruff check --select F821,F811,E9 .`
   (ruff ships in the helper venv; a bare `ruff` may be "command not found")
 - `bash -n` on every `*.sh`, plus a scan for the shell-glue bug class:
@@ -165,14 +172,17 @@ test suite; if one fails, fix the merge — never the test.
    `timeout 200 git -c http.version=HTTP/1.1 push origin main`, then **prove** it
    landed via `git fetch origin main -q` and comparing `git rev-parse HEAD` with
    `git rev-parse origin/main`.
-4. Create the GitHub release for that tag via the REST API
-   (`Authorization: Bearer $PAT`, where `$PAT` comes from `git credential fill`
-   — the long git PAT returns 401 on api.github.com).
+4. Create the GitHub release for that tag via the REST API. Use the workspace
+   token source described in `AGENTS.md`; never paste a token into the repo or
+   a release body.
 5. Wait for CI: `Deploy Smoke Test` and `Cleanup Caches` must be green. Poll in
    short calls; a long poll can exceed the command timeout. If red, fix the
    cause, never suppress it.
-6. Final check: `git status` clean, `VERSION` correct,
-   `git rev-list --count HEAD..upstream/main` == 0.
+6. Final check: `git status` clean, `VERSION` correct, and a fresh
+   `git diff --stat HEAD upstream/main` contains only the documented exclusions
+   (install/scripts, web-store fake map, ru/zh docs, root upload duplicates).
+   Because this is a standalone repo, `HEAD..upstream/main == 0` is **not** the
+   goal and must not be used as a success test.
 
 ## 8. Final report (short, factual)
 

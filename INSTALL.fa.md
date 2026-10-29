@@ -1,12 +1,12 @@
-# 🛰️ راهنمای نصب ShopVPN (فورک شخصی `amir12120/Shopvpn`)
+# 🛰️ راهنمای نصب ShopVPN Amir (`amir12120/shopvpn-amir`)
 
-این سند مخصوص **فورک شخصی** است و نصب را روی **Ubuntu 22.04** (و Debian 11+) به‌صورت سبک و آگاه‌به‌دیسک توضیح می‌دهد.
+این سند مخصوص **نسخه‌ی مستقل شخصی** است و نصب را روی **Ubuntu 22.04** (و Debian 11+) به‌صورت سبک و آگاه‌به‌دیسک توضیح می‌دهد.
 
-- 🔗 مخزن: <https://github.com/amir12120/Shopvpn>
+- 🔗 مخزن: <https://github.com/amir12120/shopvpn-amir>
 - 🧩 پروژه اصلی (upstream): `mehdirafatpanah/Shopvpn`
 - 🇬🇧 نسخهٔ انگلیسی همین راهنما: [`INSTALL.md`](INSTALL.md)
 
-> نکته: این فورک نصب‌کننده را «سبک» کرده تا **مصرف دیسک به‌شدت کاهش پیدا کند** (جزئیات در بخش [رفع مشکل فضای دیسک](#disk)).
+> نکته: این نسخه نصب‌کننده را «سبک» کرده تا **مصرف دیسک به‌شدت کاهش پیدا کند** (جزئیات در بخش [رفع مشکل فضای دیسک](#disk)).
 
 ---
 
@@ -16,7 +16,7 @@
 2. [نصب با یک دستور (پیش‌نیازها + بات + منو)](#prereq-install)
 3. [جزئیات نصب (اختصاصی این فورک)](#install)
 4. [رفع مشکل اشغال زیاد فضای دیسک](#disk)
-5. [زبان‌های ترجمه و LibreTranslate اختیاری](#langs)
+5. [ترجمه‌ی محلی فارسی/انگلیسی](#langs)
 6. [مدیریت و اجرای دائمی](#manage)
 7. [عیب‌یابی](#troubleshoot)
 
@@ -57,7 +57,7 @@
 4. و در پایان **منوی مدیریت را به‌صورت خودکار باز می‌کند**.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/install.sh)
 ```
 
 > 🔁 اجرای دوبارهٔ همین دستور = آپدیت (idempotent). فایل `.env` و دیتابیس حفظ می‌شود.
@@ -66,7 +66,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/insta
 
 ```bash
 # فقط بررسی و نصب پیش‌نیازها
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/preflight.sh)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/preflight.sh)
 ```
 
 - فقط بررسی بدون تغییر: `bash preflight.sh --check`
@@ -120,7 +120,6 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/
 - ✅ اگر LibreTranslate را اختیاری فعال کنی، مدل‌های Argos بین هر دو **مشترک** می‌شوند (دانلود تکراری حذف می‌شود).
 - ✅ **torch نسخهٔ CPU** از قبل نصب می‌شود (`--index-url .../whl/cpu`) تا pip نسخهٔ CUDA را با ~۵ گیگ کتابخانهٔ `nvidia-*` نکشد. این تنها مصرف‌کنندهٔ اصلی باقی‌مانده بود: در تست واقعی روی Ubuntu 22.04 حجم venv از **~۵.۷ گیگ به ~۱.۳ گیگ** کاهش یافت.
 - ✅ **کش apt و آرشیو بسته‌ها** پاک می‌شوند و پیش‌نیازها با `--no-install-recommends` نصب می‌شوند.
-- ✅ کلون **کم‌عمق** (`--depth 1`) است تا تاریخ کامل مخزن روی دیسک سرور ذخیره نشود.
 
 نتیجه: مصرف نصب سبک معمولاً حدود **۱ تا ۱.۵ گیگابایت** است (به‌جای ۸+ گیگ).
 
@@ -172,27 +171,25 @@ df -h /        # بررسی فضای آزادشده
 
 <a id="langs"></a>
 
-## ۵) زبان‌های ترجمه و LibreTranslate اختیاری
+## ۵) ترجمه‌ی محلی فارسی/انگلیسی
 
-پیش‌فرض فقط زبان **فارسی/انگلیسی** (`en_fa` و `fa_en`) نصب می‌شود. اگر می‌خواهی زبان‌های بیشتری به‌صورت محلی ترجمه شوند:
+فقط جفت‌های **فارسی/انگلیسی** (`en_fa` و `fa_en`) فعال هستند و برنامه زبان سوم ارائه نمی‌دهد. هر دو مدل پیش‌فرض نصب می‌شوند و در `HOME` کاربر سرویس قرار می‌گیرند، نه `/root`.
+
+برای تعمیر مدل‌ها بدون نصب دوباره‌ی بات:
 
 ```bash
-# نصب چند زبان مشخص (مثلاً ترکی و عربی)
-SHOPVPN_TRANSLATION_LANGS="tr,ar" bash ~/v2ray_bot/setup_local_translation.sh
-
-# یا همهٔ زبان‌های کاتالوگ (~۱.۵ گیگ+)
-SHOPVPN_TRANSLATION_LANGS=all bash ~/v2ray_bot/setup_local_translation.sh
+bash ~/v2ray_bot/setup_local_translation.sh
 ```
 
-> می‌توانی همین کار را از منوی `shopvpn` (که همان `manage.sh` است) گزینهٔ **۲۹** هم انجام دهی.
+گزینه‌ی آپدیت هم همین اسکریپت را اجرا می‌کند. اگر به ایندکس مدل دسترسی نداشته باشد، فقط هشدار می‌دهد و مدل‌های نصب‌شده دست‌نخورده می‌مانند؛ آپدیت بعدی دوباره تلاش می‌کند. کلید `SHOPVPN_TRANSLATION_LANGS` اگر نباشد خودکار ساخته می‌شود، پس اسکریپت دیگر بی‌صدا متوقف نمی‌شود.
 
-**LibreTranslate (سنگین، اختیاری):** فقط اگر کیفیت/زبان بیشتری لازم داری:
+**LibreTranslate (سنگین، اختیاری):** برای فارسی/انگلیسی لازم نیست و هرگز پیش‌فرض نصب نمی‌شود:
 
 ```bash
 SHOPVPN_INSTALL_LIBRETRANSLATE=1 bash ~/v2ray_bot/setup_local_translation.sh
 ```
 
-> ⚠️ این کار چند گیگابایت فضا می‌برد. برای اکثر فروشگاه‌ها لازم نیست.
+> ⚠️ این کار چند گیگابایت فضا می‌برد. نسخه‌ی سبک عمداً از آن استفاده نمی‌کند.
 
 ---
 
@@ -218,7 +215,7 @@ shopvpn
 > اگر می‌خواهی بدون نصب هم اجرا شود:
 >
 > ```bash
-> bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/Shopvpn/main/manage.sh)
+> bash <(curl -fsSL https://raw.githubusercontent.com/amir12120/shopvpn-amir/main/manage.sh)
 > ```
 
 ---
@@ -233,7 +230,9 @@ shopvpn
 | کلون گیت شکست می‌خورد / پرامپت یوزر/پس می‌خواهد | اسکریپت به‌طور خودکار از آرشیو `codeload.github.com` استفاده می‌کند (بدون نیاز به اعتبار) |
 | دیسک پر شده | بخش [رفع مشکل فضای دیسک](#disk)؛ LibreTranslate را حذف و کش pip را پاک کن |
 | بات بالا نمی‌آید | `sudo journalctl -u v2raybot -n 80 --no-pager` را ببین؛ معمولاً `BOT_TOKEN`/`OWNER_ID` اشتباه است |
-| ترجمهٔ یک زبان کار نمی‌کند | آن زبان را نصب کن (بخش [زبان‌ها](#langs)) |
+| آپدیت «✗ translation» نشان می‌دهد | حالا فقط هشدار است و بات با مدل‌های قبلی اجرا می‌شود. `bash ~/v2ray_bot/setup_local_translation.sh` را دوباره اجرا و اولین خط خطا را بررسی کن |
+| آپدیت «Bot did not start» می‌دهد ولی مرحله ۵ سبز بود | `systemctl is-active v2raybot` را ببین؛ نسخه‌ی قبلی هنگام شکست ترجمه این پیام را اشتباه چاپ می‌کرد. نسخه‌ی اصلاح‌شده فقط وقتی این خطا را می‌دهد که سرویس واقعاً غیرفعال باشد |
+| فارسی یا انگلیسی ترجمه نمی‌شود | دستور تعمیر در [بخش ۵](#langs) را اجرا کن؛ فقط `fa`/`en` پشتیبانی می‌شوند |
 | Python قدیمی است | مطمئن شو Ubuntu 22.04 باشد یا python3.10+ نصب کن |
 
 ---
