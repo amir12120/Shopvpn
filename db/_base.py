@@ -1224,6 +1224,7 @@ class DatabaseBase:
                     status TEXT NOT NULL DEFAULT 'pending',
                     expires_at TEXT,
                     credential_enc TEXT,
+                    custom_config_id INTEGER,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(node_id,account_id),
@@ -1743,6 +1744,8 @@ class DatabaseBase:
     def _migrate_columns(self, conn):
         if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "credential_enc"):
             conn.execute("ALTER TABLE ssh_accounts ADD COLUMN credential_enc TEXT")
+        if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "custom_config_id"):
+            conn.execute("ALTER TABLE ssh_accounts ADD COLUMN custom_config_id INTEGER")
 
         # Additive migration for unified quota counter epochs. Older DBs stored
         # only the provider's raw used_bytes, which could move backwards after a panel reset.

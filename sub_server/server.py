@@ -286,7 +286,15 @@ async def sub_endpoint(request: Request) -> Response:
             up = Upstream(0, {}, b"", fresh=False)
         ok = up.status == 200 and bool(up.body)
         info = ds.parse_userinfo(up.headers.get("subscription-userinfo")) if ok else {}
+        # For combined VPN+SSH products, the shared quota pool is authoritative;
+        # panel headers can otherwise incorrectly show unlimited usage/expiry.
+        pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+        if pool_info:
+            info = pool_info
         uris = ds.extract_uris(up.body) if ok else []
+        if ok:
+            # حساب‌های SSH متصل به همین سرویس را در صفحه‌ی اشتراک هم نشان بده.
+            uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
         if ok and up.fresh:
             await _snapshot_usage(cc, up.headers)
         series = None
@@ -307,7 +315,18 @@ async def sub_endpoint(request: Request) -> Response:
         up = Upstream(0, {}, b"", fresh=False)
     if up.status == 200 and up.fresh:
         await _snapshot_usage(cc, up.headers)
-    reply = ds.compose_client_reply(up.status, up.headers, up.body, cc, settings, brand, page_url)
+    # Keep the VPN client subscription headers consistent with the shared quota
+    # displayed on the web page and in the bot (including the SSH side's usage).
+    pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+    if pool_info:
+        up.headers = dict(up.headers)
+        up.headers["subscription-userinfo"] = "; ".join(
+            f"{key}={int(pool_info.get(key) or 0)}"
+            for key in ("upload", "download", "total", "expire") if key in pool_info
+        )
+    extra_uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
+    reply = ds.compose_client_reply(up.status, up.headers, up.body, cc, settings, brand, page_url,
+                                    extra_uris=extra_uris)
     if reply is None:
         status = 404 if up.status == 404 else 502
         await _log(cc["id"], request, "sub", status, settings)
@@ -356,6 +375,8 @@ async def qr_endpoint(request: Request) -> Response:
         except Exception:
             return PlainTextResponse("Upstream unavailable", status_code=502)
         uris = ds.extract_uris(up.body) if up.status == 200 else []
+        if up.status == 200:
+            uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
         if not 0 <= n < min(len(uris), 60):
             return _not_found()
         text = uris[n]

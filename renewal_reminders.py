@@ -326,7 +326,15 @@ async def check_and_process_auto_renewals(bot, db) -> int:
             continue
         try:
             provider = get_provider(server)
-            await provider.update_user(row["username"], add_volume_gb=volume_gb, add_days=duration_days, reset_usage=True)
+            pool = await _db(db.quota_pool_for_custom_config, row["id"])
+            if pool:
+                # سرویس ترکیبی VPN+SSH: حجم/انقضا در استخر مشترک است، نه فقط روی پنل.
+                import renewal_engine
+                await renewal_engine.renew_pooled_service(
+                    db, provider, row["username"], pool, "full", volume_gb, duration_days, fresh=True,
+                )
+            else:
+                await provider.update_user(row["username"], add_volume_gb=volume_gb, add_days=duration_days, reset_usage=True)
         except PanelError:
             logger.exception("تمدید خودکار روی پنل برای کانفیگ «%s» ناموفق بود.", row["username"])
             await _db(db.add_wallet_credit, user_id, price, "order_refund", "بازگشت وجه تمدید خودکار ناموفق")

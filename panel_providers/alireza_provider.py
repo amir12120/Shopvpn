@@ -174,6 +174,19 @@ class AlirezaProvider(BasePanelProvider):
             raise PanelError("لینک اشتراک این کاربر روی پنل یافت نشد.")
         return PanelUserResult(username=username, subscription_url=url, raw=client)
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط totalGB کلاینت را عوض می‌کند (انقضا/مصرف دست‌نخورده)؛ reenable برای کلاینتی که
+        پنل چون به سقف رسیده بود غیرفعالش کرده."""
+        async with await self._authed_session() as session:
+            client, inbound_id, _ = await self._find(session, username)
+            updated = dict(client)
+            updated["totalGB"] = int(limit_bytes)
+            if reenable:
+                updated["enable"] = True
+            await self._update_client(session, inbound_id, client["id"], updated, "اعمال سقف حجم")
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False,

@@ -105,7 +105,9 @@ class QuotaReconciler:
             uploaded_bytes=usage.get("uploaded_bytes", 0),
             downloaded_bytes=usage.get("downloaded_bytes", 0),
             source=f"panel:{server.get('panel_type', 'unknown')}", reported_at=stamp)
-        return {"ok": True, "used_bytes": used, "source": server.get("panel_type", "unknown")}
+        return {"ok": True, "used_bytes": used, "source": server.get("panel_type", "unknown"),
+                "raw_used_bytes": used, "panel_limit_bytes": int(usage.get("data_limit_bytes") or 0),
+                "panel_status": str(usage.get("status") or "")}
 
     async def _poll_ssh(self, service_id):
         account, node = self._ssh_record(service_id)
@@ -131,7 +133,8 @@ class QuotaReconciler:
             uploaded_bytes=usage.get("uploaded_bytes", 0),
             downloaded_bytes=usage.get("downloaded_bytes", 0),
             source=str(usage.get("source") or "ssh-agent"), reported_at=stamp)
-        return {"ok": True, "used_bytes": used, "source": usage.get("source") or "ssh-agent"}
+        return {"ok": True, "used_bytes": used, "source": usage.get("source") or "ssh-agent",
+                "remote_status": remote_status}
 
     async def _set_member_enabled(self, pool_id, member, enabled, reason):
         kind, service_id = member["service_kind"], member["service_id"]
@@ -178,6 +181,75 @@ class QuotaReconciler:
             logger.warning("Quota enforcement failed for pool=%s service=%s/%s: %s",
                            pool_id, kind, service_id, error)
             return {"service_kind": kind, "service_id": service_id, "ok": False, "error": error}
+
+    async def _sync_vpn_panel_limits(self, pool, members, poll_results, usage):
+        """مصرف SSH را روی پنل(های) VPN عضو همان استخر «اعمال» می‌کند.
+
+        پنل‌های VPN هیچ راهی برای نوشتن مستقیم «مصرف» ندارند (و نوشتن آن هم باعث شمارش
+        دوباره‌ی مصرف در poll بعدی می‌شد)، پس سقف حجم کاربر روی پنل برابر می‌شود با
+        «مصرف خودِ پنل + باقی‌مانده‌ی استخر مشترک» = سقف استخر − مصرف SSH. نتیجه:
+          * پنل همیشه باقی‌مانده‌ی واقعیِ مشترک را می‌بیند؛
+          * وقتی حجم مشترک تمام شود، خودِ پنل VPN هم در همان لحظه (بدون انتظار برای
+            دور بعدیِ reconciler) کاربر را قطع می‌کند.
+        فقط وقتی اجرا می‌شود که استخر سقف مشخص دارد، حداقل یک عضو SSH دارد و همه‌ی
+        شمارنده‌ها تازه‌اند. خطای یک پنل هیچ‌وقت enforcement را مختل نمی‌کند."""
+        limit = int(pool.get("limit_bytes") or 0)
+        if limit <= 0 or not any(m["service_kind"] == "ssh" for m in members):
+            return []
+        remaining = max(limit - int((usage or {}).get("used_bytes") or 0), 0)
+        results = []
+        for res in poll_results:
+            if res.get("service_kind") != "vpn" or not res.get("ok") or res.get("raw_used_bytes") is None:
+                continue
+            service_id = res["service_id"]
+            try:
+                config_id = str(service_id).split(":", 1)[1]
+                cc, server = self._vpn_record(config_id)
+                if not cc or not server:
+                    continue
+                provider = self.vpn_provider_factory(server)
+                if not getattr(provider, "supports_data_limit_sync", False):
+                    results.append({"service_id": service_id, "ok": True, "skipped": "unsupported_panel"})
+                    continue
+                raw_used = int(res["raw_used_bytes"])
+                current = int(res.get("panel_limit_bytes") or 0)
+                # سقف مثبت: 0 در پنل‌ها یعنی «نامحدود» پس هرگز 0 نمی‌نویسیم.
+                target = max(raw_used + remaining, 1)
+                if current and abs(target - current) < 1024 * 1024:
+                    continue
+                reenable = bool(current and raw_used >= current and target > raw_used)
+                await provider.set_data_limit_bytes(cc["username"], target, reenable=reenable)
+                results.append({"service_id": service_id, "ok": True, "limit_bytes": target})
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                logger.warning("Panel limit sync failed for pool=%s service=%s: %s", pool.get("id"), service_id, error)
+                results.append({"service_id": service_id, "ok": False, "error": error})
+        return results
+
+    async def push_pool_expiry(self, pool_id):
+        """انقضای فعلی استخر را روی همه‌ی حساب‌های SSH عضو آن (روی نود) می‌نویسد.
+        بعد از تمدید سرویس ترکیبی صدا زده می‌شود تا نود حساب را با تاریخ قدیمی قطع نکند.
+        خروجی: [{"service_id", "ok", "error"?}] و هیچ‌وقت exception پرتاب نمی‌کند."""
+        pool = self.db.get_quota_pool(int(pool_id))
+        results = []
+        if not pool:
+            return results
+        for member in self.db.get_quota_members(int(pool_id)):
+            if member["service_kind"] != "ssh":
+                continue
+            sid = member["service_id"]
+            try:
+                account, node = self._ssh_record(sid)
+                if not account or not node:
+                    raise RuntimeError("حساب SSH یا نود آن پیدا نشد")
+                provider = self.ssh_provider_factory(node, secret_resolver=self.secret_resolver)
+                await provider.update_account(sid, limit_bytes=0, expires_at=pool.get("expires_at"))
+                results.append({"service_id": sid, "ok": True})
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                logger.warning("push_pool_expiry failed for pool=%s account=%s: %s", pool_id, sid, error)
+                results.append({"service_id": sid, "ok": False, "error": error})
+        return results
 
     def _pool_is_expired(self, pool):
         raw = pool.get("expires_at")
@@ -226,6 +298,7 @@ class QuotaReconciler:
         limit = int(pool.get("limit_bytes") or 0)
         exceeded = bool(limit and usage and int(usage["used_bytes"]) >= limit)
         actions = []
+        panel_sync = []
         if expired:
             for member in members:
                 actions.append(await self._set_member_enabled(pool_id, member, False, "expired"))
@@ -247,8 +320,18 @@ class QuotaReconciler:
                 prior = self.db.get_quota_enforcement_state(pool_id, member["service_kind"], member["service_id"])
                 if prior and prior.get("is_disabled") and prior.get("reason") in {"quota_exceeded", "expired", "stale"}:
                     actions.append(await self._set_member_enabled(pool_id, member, True, None))
+            # اگر استخر تمدید شده ولی انقضای محلی نود SSH هنوز قدیمی است، نود خودش حساب را
+            # expired کرده؛ انقضا را با استخر هم‌گام و حساب را فعال می‌کنیم.
+            healed = {a.get("service_id") for a in actions if a.get("enabled")}
+            for res in poll_results:
+                if (res.get("service_kind") == "ssh" and res.get("ok") and res.get("remote_status") == "expired"
+                        and res["service_id"] not in healed):
+                    member = next((m for m in members if m["service_kind"] == "ssh" and m["service_id"] == res["service_id"]), None)
+                    if member:
+                        actions.append(await self._set_member_enabled(pool_id, member, True, None))
             self.db.set_quota_pool_status(pool_id, "active")
             state = "active"
+            panel_sync = await self._sync_vpn_panel_limits(pool, members, poll_results, usage)
         else:
             self.db.set_quota_pool_status(pool_id, "stale")
             state = "stale"
@@ -257,7 +340,7 @@ class QuotaReconciler:
         stale_fail_closed = state == "stale" and limit > 0 and len(actions) == len(members)
         return {"pool_id": pool_id, "state": state, "used_bytes": int((usage or {}).get("used_bytes") or 0),
                 "limit_bytes": limit, "snapshots_fresh": fresh, "poll_results": poll_results,
-                "actions": actions, "enforcement_complete": bool(all_enforced and (state in {"active", "exceeded", "expired"} or stale_fail_closed))}
+                "actions": actions, "panel_sync": panel_sync, "enforcement_complete": bool(all_enforced and (state in {"active", "exceeded", "expired"} or stale_fail_closed))}
 
     async def poll_once(self):
         results = []

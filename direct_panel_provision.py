@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from user_limit import order_user_limit, provider_kwargs
+from ssh_uri import build_ssh_uri
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,17 @@ def _random_username(prefix: str = "") -> str:
 
 def planned_usernames(base: str, quantity: int) -> list:
     return [base] if quantity == 1 else [f"{base}_{i}" for i in range(1, quantity + 1)]
+
+
+def _order_config_name(order) -> str:
+    """Read config_name from either sqlite3.Row or a mapping without assuming .get()."""
+    if order is None:
+        return ""
+    try:
+        value = order["config_name"]
+    except (KeyError, IndexError, TypeError):
+        value = ""
+    return str(value or "")
 
 
 async def provision_direct(db, product, quantity: int = 1, user_id: int = None, order_id: int = None) -> list:
@@ -208,6 +220,8 @@ async def _provision_combined(db, product, quantity: int = 1, user_id: int = Non
             if not cc_id:
                 raise ProvisionError("ثبت سرویس VPN برای اتصال به سهمیه مشترک ناموفق بود.")
             db.attach_custom_config_to_quota_pool(pool_id, cc_id)
+        for vpn_item, ssh_item in zip(vpn_items, ssh_items):
+            db.link_ssh_account_to_config(ssh_item["account_id"], vpn_item["custom_config_id"])
     except Exception as exc:
         provider = get_provider(db.get_panel_server(product["provision_server_id"]))
         for item in vpn_items:
@@ -227,6 +241,9 @@ async def _provision_combined(db, product, quantity: int = 1, user_id: int = Non
 
     for item in vpn_items:
         item["quota_pool_id"] = int(pool_id)
+    import dedicated_sub
+    if dedicated_sub.is_enabled(db):
+        return vpn_items
     return vpn_items + ssh_items
 
 
@@ -263,11 +280,27 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
     except Exception as exc:
         raise ProvisionError(f"آماده‌سازی محصول SSH ناموفق بود: {exc}") from exc
     built = []
+    order = db.get_order(order_id) if order_id is not None else None
+    # Keep the SSH login recognizable and tied to the name shown for the order.
+    # SSH usernames are restricted to portable ASCII account-name characters.
+    requested_base = _order_config_name(order).strip().lower()
+    requested_base = "".join(ch for ch in requested_base if ch in string.ascii_lowercase + string.digits + "_-").strip("_-")
+    requested_base = requested_base[:12]
+    # Linux useradd rejects logins that start with a digit, so keep the base valid.
+    if requested_base and not (requested_base[0].islower() or requested_base[0] == "_"):
+        requested_base = "u" + requested_base
     try:
-        for _ in range(quantity):
+        for item_index in range(quantity):
             result = None
             for attempt in range(5):
-                username = "sv" + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
+                if not requested_base:
+                    unit_base = ""
+                elif quantity == 1:
+                    unit_base = requested_base
+                else:
+                    unit_base = f"{requested_base[:9]}{item_index + 1}"
+                username = f"{unit_base}_{suffix}" if unit_base else "sv" + suffix
                 try:
                     # The shared pool is the sole volume authority. A duplicate
                     # per-account cap would prevent a renewed/increased pool from
@@ -315,8 +348,7 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
     for item in built:
         password = str(item.metadata.get("password") or "")
         host = str(item.host or "")
-        uri_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-        uri = f"ssh://{urllib.parse.quote(item.username, safe='')}:{urllib.parse.quote(password, safe='')}@{uri_host}:{int(item.port)}"
+        uri = build_ssh_uri(item.username, password, host, int(item.port), str(node.get("name") or "SSH"))
         output.append({"username": item.username, "host": host, "port": int(item.port),
             "password": password, "account_id": item.account_id, "quota_pool_id": int(pool_id),
             "subscription_url": uri, "volume_gb": volume_gb, "duration_days": duration_days,

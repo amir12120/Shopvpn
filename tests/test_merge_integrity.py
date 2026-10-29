@@ -102,10 +102,13 @@ UPSTREAM_FEATURE_MODULES = (
     # --- upstream batch: SSH nodes + unified VPN/SSH quota pools ---
     "quota_reconciler.py",
     "ssh_admin.py",
+    "ssh_admin_bot.py",
     "ssh_auto_install.py",
     "ssh_credentials.py",
     "ssh_node_agent.py",
     "ssh_providers.py",
+    "ssh_service.py",
+    "ssh_uri.py",
     "db/usage.py",
 )
 
@@ -196,6 +199,63 @@ def test_upstream_feature_modules_still_shipped_and_wired():
     assert "product_waitlist.notify_waitlist" in admin_panel
     assert "product_waitlist.notify_waitlist" in (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
 
+
+
+def test_ssh_management_is_wired_end_to_end():
+    """The SSH admin bot, shared quota service and config-link migration must stay
+    reachable from the admin, mini app, subscription server and renewal path."""
+    handlers_admin = (ROOT / "handlers_admin.py").read_text(encoding="utf-8")
+    assert "import ssh_admin_bot" in handlers_admin
+    assert "ssh_admin_bot.register(router, db" in handlers_admin
+
+    keyboards = (ROOT / "keyboards.py").read_text(encoding="utf-8")
+    assert '"adm_ssh_menu"' in keyboards
+    assert "adm_ssh_menu_style" in (ROOT / "db/constants.py").read_text(encoding="utf-8")
+    assert "adm_ssh_menu" in (ROOT / "admin_help.py").read_text(encoding="utf-8")
+    assert "class AdminSSH(StatesGroup):" in (ROOT / "states.py").read_text(encoding="utf-8")
+
+    admin_panel = (ROOT / "admin_panel/server.py").read_text(encoding="utf-8")
+    assert '@app.post("/api/ssh/nodes/{node_id}/rename")' in admin_panel
+    # The fork's manual node tools must not disappear in a future upstream sync.
+    assert '@app.get("/api/ssh/install-package")' in admin_panel
+    assert '@app.post("/api/ssh/nodes")' in admin_panel
+    admin_js = (ROOT / "admin_panel/static/app.js").read_text(encoding="utf-8")
+    assert "/rename`" in admin_js and "data-ssh-rename-node" in admin_js
+
+    miniapp = (ROOT / "miniapp/server.py").read_text(encoding="utf-8")
+    for route in ("/api/admin/ssh/overview", "/api/admin/ssh/nodes/auto-install",
+                  "/api/admin/ssh/accounts", "/api/admin/ssh/reconcile"):
+        assert route in miniapp, f"miniapp lost {route}"
+    assert "adminSection === \"ssh\"" in (ROOT / "miniapp/static/app.js").read_text(encoding="utf-8")
+
+    dedicated_sub = (ROOT / "dedicated_sub.py").read_text(encoding="utf-8")
+    assert "def quota_info_for_config" in dedicated_sub
+    assert "def ssh_uris_for_config" in dedicated_sub
+    assert '"ssh://"' in dedicated_sub
+    sub_server = (ROOT / "sub_server/server.py").read_text(encoding="utf-8")
+    assert "quota_info_for_config" in sub_server
+    assert "ssh_uris_for_config" in sub_server
+
+    reconciler = (ROOT / "quota_reconciler.py").read_text(encoding="utf-8")
+    assert "async def _sync_vpn_panel_limits" in reconciler
+    assert "async def push_pool_expiry" in reconciler
+    engine = (ROOT / "renewal_engine.py").read_text(encoding="utf-8")
+    assert "async def renew_pooled_service" in engine
+    assert "quota_pool_for_custom_config" in engine
+    assert "renew_pooled_service" in (ROOT / "renewal_reminders.py").read_text(encoding="utf-8")
+
+    providers = sorted(path.name for path in (ROOT / "panel_providers").glob("*_provider.py"))
+    synced = [name for name in providers
+              if "supports_data_limit_sync = True" in (ROOT / "panel_providers" / name).read_text(encoding="utf-8")]
+    assert len(synced) >= 8, f"panel limit sync is missing from {set(providers) - set(synced)}"
+
+    db_base = (ROOT / "db/_base.py").read_text(encoding="utf-8")
+    assert "custom_config_id INTEGER" in db_base
+    assert 'ALTER TABLE ssh_accounts ADD COLUMN custom_config_id INTEGER' in db_base
+    db_usage = (ROOT / "db/usage.py").read_text(encoding="utf-8")
+    for method in ("def link_ssh_account_to_config", "def ssh_accounts_for_config",
+                   "def quota_pool_for_custom_config", "def update_ssh_node_name"):
+        assert method in db_usage
 
 
 def test_card_number_gate_is_wired_end_to_end():

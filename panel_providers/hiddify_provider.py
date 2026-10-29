@@ -176,6 +176,30 @@ class HiddifyProvider(BasePanelProvider):
             self.last_error = f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}"
             return False
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط usage_limit_GB را عوض می‌کند؛ مصرف/انقضا/وضعیت دست‌نخورده می‌ماند. 0 = نامحدود."""
+        async with self._session() as session:
+            user = await self._find_by_name(session, username)
+            payload = dict(user)
+            limit_gb = round(int(limit_bytes) / (1024 ** 3), 6)
+            if int(limit_bytes) > 0:
+                limit_gb = max(limit_gb, 0.000001)  # هرگز 0 (= نامحدود) برای سقف مثبت
+            payload["usage_limit_GB"] = limit_gb
+            try:
+                async with session.patch(
+                    f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در اعمال سقف حجم روی پنل (کد {resp.status}): {text[:300]}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False) -> PanelUserResult:

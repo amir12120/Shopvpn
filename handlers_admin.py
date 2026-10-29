@@ -15461,4 +15461,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         safe_edit, callback_id,
     )
 
+    import ssh_admin_bot
+    ssh_admin_bot.register(router, db, full_access_bot=full_access_bot, senior_admin_only=senior_admin_only,
+                           deny_mid=deny_mid, safe_edit=safe_edit, replace_admin_view=replace_admin_view)
+
     return router

@@ -108,6 +108,14 @@ class RebeccaProvider(BasePanelProvider):
                 json={"status": "active" if enabled else "disabled"},
             )
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط سقف حجم کاربر را عوض می‌کند (بدون دست‌زدن به انقضا/وضعیت/مصرف). 0 = نامحدود."""
+        async with self._session() as session:
+            await self._call(session, "PUT", f"user/{username}", "اعمال سقف حجم",
+                             json={"data_limit": int(limit_bytes)})
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False) -> PanelUserResult:

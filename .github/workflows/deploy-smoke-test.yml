@@ -170,6 +170,7 @@ jobs:
               # SSH nodes + unified VPN/SSH quota pools merged from upstream.
               "quota_reconciler", "ssh_providers", "ssh_credentials",
               "ssh_auto_install", "ssh_node_agent", "db.usage",
+              "ssh_service", "ssh_admin_bot", "ssh_uri",
               # New third-party dependencies from requirements.txt: prove the
               # lean install can actually import them on the target box.
               "telethon", "arabic_reshaper", "bidi",

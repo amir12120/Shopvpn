@@ -288,6 +288,26 @@ class MarzbanProvider(BasePanelProvider):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط سقف حجم کاربر را عوض می‌کند (بدون دست‌زدن به انقضا/وضعیت/مصرف). 0 = نامحدود."""
+        async with self._session() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            try:
+                async with session.put(
+                    f"{self._base_url()}/api/user/{username}", json={"data_limit": int(limit_bytes)}, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در اعمال سقف حجم روی پنل (کد {resp.status}): {text[:300]}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False) -> PanelUserResult:

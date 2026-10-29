@@ -199,6 +199,30 @@ class WGDashboardProvider(BasePanelProvider):
             file_text = await self._download(session, config, peer["id"])
         return PanelUserResult(username=username, subscription_url=file_text, raw=peer)
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط job محدودیت حجم peer را عوض می‌کند (انقضا/مصرف دست‌نخورده). 0 = نامحدود."""
+        config = self._config()
+        async with self._session() as session:
+            peer, _ = await self._find(session, config, username)
+            peer_id = peer["id"]
+            limit_job, _date_job = self._jobs(peer)
+            current_limit = gb_to_bytes(limit_job["Value"]) if limit_job else 0
+            new_gb = round(int(limit_bytes) / (1024 ** 3), 2)
+            if limit_bytes and new_gb * (1024 ** 3) < int(limit_bytes):
+                new_gb = round(new_gb + 0.01, 2)  # گرد کردن رو به بالا؛ هرگز کمتر از سقف واقعی
+            if int(limit_bytes) == current_limit or (limit_job and abs(float(limit_job["Value"]) - new_gb) < 0.005):
+                return
+            if limit_job:
+                await self._delete_job(session, limit_job)
+            if limit_bytes:
+                await self._save_job(session, config, peer_id, "total_data", new_gb)
+            if reenable:
+                await self._api(
+                    session, "POST", f"allowAccessPeers/{quote(config)}", "فعال‌سازی peer", json={"peers": [peer_id]},
+                )
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False) -> PanelUserResult:

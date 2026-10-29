@@ -648,6 +648,10 @@ class SSHNodeCreateBody(BaseModel):
     allow_insecure_http: bool = False
 
 
+class SSHNodeRenameBody(BaseModel):
+    name: str
+
+
 class SSHPoolCreateBody(BaseModel):
     user_id: int
     limit_gb: float = 0
@@ -5918,6 +5922,18 @@ def api_ssh_create_node(body: SSHNodeCreateBody, admin=Depends(require_permissio
         config_json={"agent_url": url, "allow_insecure_http": bool(body.allow_insecure_http)})
     db.log_admin_action(admin["id"], "ssh_node_add", f"SSH Linux node #{node_id}: {name}", "ssh")
     return {"ok": True, "node_id": node_id, "status": "pending", "secret_ref": f"env:{env_name}"}
+
+
+@app.post("/api/ssh/nodes/{node_id}/rename")
+def api_ssh_rename_node(node_id: int, body: SSHNodeRenameBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    try:
+        updated = db.update_ssh_node_name(node_id, body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not updated:
+        raise HTTPException(404, "نود پیدا نشد.")
+    db.log_admin_action(admin["id"], "ssh_node_rename", f"SSH node #{node_id}: {body.name.strip()}", "ssh")
+    return {"ok": True}
 
 
 @app.post("/api/ssh/nodes/{node_id}/test")

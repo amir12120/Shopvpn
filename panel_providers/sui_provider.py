@@ -149,6 +149,18 @@ class SUIProvider(BasePanelProvider):
             url = await self._sub_url(session, username)
         return PanelUserResult(username=username, subscription_url=url, raw=client)
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط volume کلاینت را عوض می‌کند (انقضا/مصرف دست‌نخورده)."""
+        async with self._session() as session:
+            client = await self._find(session, username)
+            updated = dict(client)
+            updated["volume"] = int(limit_bytes)
+            if reenable:
+                updated["enable"] = True
+            await self._save(session, "edit", updated, "اعمال سقف حجم")
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False) -> PanelUserResult:

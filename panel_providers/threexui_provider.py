@@ -375,6 +375,21 @@ class ThreeXUIProvider(BasePanelProvider):
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             raise PanelError(f"خطا در اتصال به پنل (inbound {inbound_id}): {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
+    supports_data_limit_sync = True
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط totalGB کلاینت را روی همه‌ی inbound ها عوض می‌کند (انقضا/مصرف دست‌نخورده).
+        reenable=True یعنی پنل کلاینت را چون به سقف رسیده بود خودش غیرفعال کرده و حالا
+        که سقف بالاتر رفته باید دوباره فعال شود."""
+        async with self._session() as session:
+            matches = await self._find_client_all_inbounds(session, username)
+            for client, inbound_id in matches:
+                updated = dict(client)
+                updated["totalGB"] = int(limit_bytes)
+                if reenable:
+                    updated["enable"] = True
+                await self._post_client_update(session, username, inbound_id, updated, "اعمال سقف حجم")
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
                            unlimited_volume: bool = False,

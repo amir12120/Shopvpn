@@ -341,7 +341,7 @@ def resolve_faq(settings: Dict[str, str]) -> List[tuple]:
 # ---------------------------------------------------------------------------
 # تحلیل پاسخ پنل
 # ---------------------------------------------------------------------------
-CONFIG_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "tuic://")
+CONFIG_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "tuic://", "ssh://")
 _CONFIG_URI_RE = re.compile(r"(?:vmess|vless|trojan|hysteria2|hy2|hysteria|tuic|ssr|ss)://[^\s\"'<>]+")
 
 
@@ -411,6 +411,73 @@ def extract_uris(raw: bytes) -> List[str]:
         return _full_json_configs_to_uris(body.text) or []
     except Exception:
         return []
+
+
+def quota_info_for_config(db, config_id: int, any_status: bool = False) -> Optional[dict]:
+    """Return subscription-userinfo compatible values from the shared VPN+SSH pool.
+
+    A panel may report unlimited quota for the VPN half while the product is sold
+    with a shared quota. The pool is authoritative for both the web page and client
+    subscription headers, so the bot and subscription link show the same limits.
+    """
+    try:
+        pool = db.quota_pool_for_custom_config(int(config_id))
+        if not pool or (not any_status and str(pool.get("status") or "active") != "active"):
+            return None
+        usage = db.get_quota_usage(int(pool["id"]))
+        if not usage:
+            return None
+        expire = 0
+        raw_expire = pool.get("expires_at")
+        if raw_expire:
+            try:
+                parsed = datetime.fromisoformat(str(raw_expire).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                expire = int(parsed.timestamp())
+            except (TypeError, ValueError, OverflowError):
+                expire = 0
+        info = {
+            "upload": int(usage.get("used_bytes") or 0),
+            "download": 0,
+            "total": int(usage.get("limit_bytes") or 0),
+        }
+        if expire:
+            info["expire"] = expire
+        return info
+    except Exception:
+        return None
+
+
+def ssh_uris_for_config(db, config_id, cc=None) -> List[str]:
+    """لینک‌های ssh:// حساب‌های فعالِ متصل به این سرویس؛ برای افزودن داخل ساب اختصاصی."""
+    try:
+        rows = db.ssh_accounts_for_config(int(config_id))
+    except Exception:
+        return []
+    if not rows:
+        return []
+    from ssh_credentials import decrypt_credential
+    out = []
+    for n, row in enumerate(rows, start=1):
+        try:
+            password = decrypt_credential(row.get("credential_enc"))
+        except Exception:
+            continue
+        host = str(row.get("host") or "")
+        remark = str(row.get("node_name") or "").strip() or "SSH " + str(row.get("username") or "")
+        # مثل بقیه کانفیگ‌ها: نام نود + نام کاربری سرویس
+        svc = str(_row(cc, "username") or _row(cc, "display_name") or "").strip() if cc is not None else ""
+        if svc and svc not in remark:
+            remark += " " + svc
+        if len(rows) > 1:
+            remark += f" {n}"
+        try:
+            from ssh_uri import build_ssh_uri
+            out.append(build_ssh_uri(row.get("username"), password, host, int(row.get("port") or 22), remark))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def encode_uris(uris_text: str, was_b64: bool) -> bytes:
@@ -558,7 +625,7 @@ _PASS_HEADERS = ("subscription-userinfo", "content-disposition", "routing", "pro
 
 def compose_client_reply(up_status: Optional[int], up_headers: Dict[str, str], up_body: bytes,
                          cc, settings: Dict[str, str], brand: str, page_url: str,
-                         now: Optional[int] = None) -> Optional[ClientReply]:
+                         now: Optional[int] = None, extra_uris: Optional[List[str]] = None) -> Optional[ClientReply]:
     """پاسخ نهایی به اپ. None یعنی «پنل پاسخ معتبر نداد و جایگزینی هم مجاز نیست» (فراخوان خطا می‌دهد)."""
     now = now or int(time.time())
     up_headers = {k.lower(): v for k, v in (up_headers or {}).items()}
@@ -607,8 +674,10 @@ def compose_client_reply(up_status: Optional[int], up_headers: Dict[str, str], u
 
     if body.kind == "uris":
         out_text = body.text
+        if extra_uris:
+            out_text = out_text.rstrip("\n") + "\n" + "\n".join(extra_uris)
         if settings.get("dsub_info_line") == "1" and state == "active":
-            out_text = info_uri(info_line_text(settings, info, cc, now)) + "\n" + body.text
+            out_text = info_uri(info_line_text(settings, info, cc, now)) + "\n" + out_text
         return finish(encode_uris(out_text, body.was_b64), "text/plain; charset=utf-8")
 
     ctype = up_headers.get("content-type") or "text/plain; charset=utf-8"

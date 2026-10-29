@@ -342,6 +342,7 @@ DEFAULT_SETTINGS = {
     "btn_custom_config": "🛠 ساخت کانفیگ شخصی",
     "btn_custom_config_style": "primary",
     "adm_panel_servers_style": "",
+    "adm_ssh_menu_style": "",
     "adm_custom_config_settings_style": "",
     # چیدمان دکمه‌های منوی اصلی (ترتیب و نمایش) - آرایه JSON از کلیدها
     "menu_order": '["miniapp","btn_buy","btn_test","btn_my_orders","btn_referral","btn_wheel","btn_contact","btn_admin_panel"]',

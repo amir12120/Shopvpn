@@ -138,6 +138,17 @@ class BasePanelProvider(ABC):
             return True, ""
         return False, self.last_error or "اتصال یا احراز هویت ناموفق"
 
+    supports_data_limit_sync = False
+
+    async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
+        """فقط «سقف حجم» کاربر روی خودِ پنل را به limit_bytes تغییر می‌دهد (0 = نامحدود)،
+        بدون دست‌زدن به انقضا، مصرف یا وضعیت دستی فعال/غیرفعال. برای سرویس‌های ترکیبی
+        VPN+SSH استفاده می‌شود: مصرف SSH از سقف مشترک کم می‌شود تا پنل VPN هم باقی‌مانده‌ی
+        واقعی را ببیند و خودش در لحظه‌ی اتمام قطع کند. reenable=True یعنی پنل کاربر را چون
+        به سقف قبلی رسیده بود خودش غیرفعال کرده و حالا باید دوباره فعال شود.
+        provider هایی که این قابلیت را دارند این متد را override و supports_data_limit_sync را True می‌کنند."""
+        raise PanelError("این نوع پنل از تغییر مستقل سقف حجم پشتیبانی نمی‌کند.")
+
     async def set_enabled(self, username: str, enabled: bool) -> None:
         """کاربر را روی خودِ پنل فعال/غیرفعال می‌کند (بدون تغییر حجم/انقضا).
         پیاده‌سازی پیش‌فرض: پشتیبانی نمی‌شود؛ provider هایی که این قابلیت را

@@ -793,3 +793,19 @@ class AdminDSubInput(StatesGroup):
 
 class AdminAIChat(StatesGroup):
     chatting = State()
+
+
+class AdminSSH(StatesGroup):
+    node_name = State()
+    node_host = State()
+    node_port = State()
+    node_pass = State()
+    node_rename = State()
+    acc_user = State()
+    acc_username = State()
+    acc_limit = State()
+    acc_days = State()
+    pool_user = State()
+    pool_limit = State()
+    pool_days = State()
+    attach_config = State()

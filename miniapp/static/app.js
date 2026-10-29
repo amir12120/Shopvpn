@@ -2934,6 +2934,7 @@ const ADMIN_TABS = [
   { key: "finance", label: "💳 مالی و پرداخت", fullOnly: true, seniorOnly: true },
   { key: "catalog", label: "📦 محصولات", fullOnly: true, seniorOnly: true },
   { key: "panels", label: "🖥 پنل‌های VPN", fullOnly: true, seniorOnly: true },
+  { key: "ssh", label: "🔐 SSH", fullOnly: true, seniorOnly: true },
   { key: "users", label: "👤 کاربران", fullOnly: true },
   { key: "resellers", label: "🏪 نمایندگی‌ها", fullOnly: true, seniorOnly: true, mainBotOnly: true },
   { key: "livechat", label: "💬 پشتیبانی زنده", fullOnly: false },
@@ -2952,7 +2953,7 @@ const ADMIN_TABS = [
 const ADMIN_TAB_GROUPS = [
   { key: "overview", label: "📊 آمار و فروش", tabs: ["stats", "sales"] },
   { key: "finance_group", label: "💳 مالی و پرداخت", tabs: ["finance"] },
-  { key: "catalog_panels", label: "📦 محصولات و پنل‌ها", tabs: ["catalog", "panels"] },
+  { key: "catalog_panels", label: "📦 محصولات و پنل‌ها", tabs: ["catalog", "panels", "ssh"] },
   { key: "people", label: "👥 کاربران و نمایندگی", tabs: ["users", "resellers"] },
   { key: "support", label: "💬 پشتیبانی", tabs: ["livechat", "tickets"] },
   { key: "appearance", label: "🎨 منو و برندینگ", tabs: ["menu", "branding", "banners"] },
@@ -3030,6 +3031,7 @@ async function renderAdmin() {
       adminSection = g.tabs[0];
       if (adminSection === "catalog") adminCatalogView = { level: "categories" };
       if (adminSection === "panels") adminPanelsView = { level: "servers" };
+    if (adminSection === "ssh") adminSshView = { tab: "nodes", mode: "list" };
       if (adminSection === "tickets") adminTicketView = { level: "list" };
       if (adminSection === "livechat") adminLiveChatView = { level: "list" };
       if (adminSection === "users") adminUserView = { level: "list", filter: "all", query: "" };
@@ -3042,6 +3044,7 @@ async function renderAdmin() {
       adminSection = b.dataset.section;
       if (adminSection === "catalog") adminCatalogView = { level: "categories" };
       if (adminSection === "panels") adminPanelsView = { level: "servers" };
+    if (adminSection === "ssh") adminSshView = { tab: "nodes", mode: "list" };
       if (adminSection === "tickets") adminTicketView = { level: "list" };
       if (adminSection === "livechat") adminLiveChatView = { level: "list" };
       if (adminSection === "users") adminUserView = { level: "list", filter: "all", query: "" };
@@ -3059,6 +3062,7 @@ async function renderAdmin() {
   else if (adminSection === "banners") await renderAdminBannersSection();
   else if (adminSection === "catalog") await renderAdminCatalogSection();
   else if (adminSection === "panels") await renderAdminPanelsSection();
+  else if (adminSection === "ssh") await renderAdminSshSection();
   else if (adminSection === "users") await renderAdminUsersSection();
   else if (adminSection === "sales") await renderAdminSalesSection();
   else if (adminSection === "finance") await renderAdminFinanceSection();
@@ -4182,6 +4186,269 @@ async function saveAdminMenu() {
 // ---------------------------------------------------------------------------
 // تب مدیریت > پنل‌های VPN (ساخت کانفیگ شخصی)
 // ---------------------------------------------------------------------------
+
+// ------------------------------------------------------------------------
+// مدیریت SSH: نودها / حساب‌ها / استخرها (مشابه بخش پنل‌های VPN)
+// ------------------------------------------------------------------------
+let adminSshView = { tab: "nodes", mode: "list" }; // tab: nodes | accounts | pools ; mode: list | add-node | add-account | add-pool | attach | created
+const SSH_STATUS_FA = { active: "فعال", pending: "در انتظار", error: "خطا", degraded: "ناپایدار", disabled: "غیرفعال", stale: "داده قدیمی", exceeded: "سهمیه تمام‌شده", quota_exceeded: "سهمیه تمام‌شده", expired: "منقضی", deleted: "حذف‌شده" };
+const sshStatus = (s) => SSH_STATUS_FA[s] || s || "نامشخص";
+const sshIcon = (s) => ({ active: "🟢", pending: "🟡", degraded: "🟠", disabled: "⚪" }[s] || "🔴");
+const sshBytes = (n) => { n = Number(n || 0); return n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`; };
+const SSH_LTR = "direction:ltr;text-align:left;margin-bottom:10px";
+
+async function renderAdminSshSection() {
+  const body = document.getElementById("admin-section-body");
+  const v = adminSshView;
+  const rerender = () => renderAdminSshSection();
+  const goList = (tab) => { adminSshView = { tab: tab || adminSshView.tab, mode: "list" }; rerender(); };
+  body.innerHTML = skeleton(3);
+  try {
+    const d = await api("/api/admin/ssh/overview");
+    const nodes = d.nodes || [], pools = d.pools || [];
+    const accounts = (d.accounts || []).filter((a) => a.status !== "deleted");
+    const activePools = pools.filter((p) => p.status === "active");
+
+    // ---------- فرم‌ها ----------
+    if (v.mode === "add-node") {
+      body.innerHTML = `<div class="card">
+        <div class="eyebrow" style="margin-top:0">➕ افزودن نود SSH (نصب خودکار)</div>
+        <label class="field-label">نام نود</label>
+        <input class="input" id="sn-name" type="text" placeholder="Germany-SSH-1" style="margin-bottom:10px" />
+        <label class="field-label">آی‌پی یا دامنه سرور</label>
+        <input class="input" id="sn-host" type="text" placeholder="203.0.113.10" style="${SSH_LTR}" />
+        <label class="field-label">پورت SSH</label>
+        <input class="input" id="sn-port" type="number" value="22" style="${SSH_LTR}" />
+        <label class="field-label">رمز root</label>
+        <input class="input" id="sn-pass" type="password" autocomplete="off" style="${SSH_LTR}" />
+        <p class="hint-text" style="margin-top:0">سرور باید Ubuntu/Debian تازه باشد. نصب Agent، گواهی TLS، توکن و فایروال خودکار انجام می‌شود. رمز root ذخیره نمی‌شود.</p>
+        <pre id="sn-log" class="hint-text" style="display:none;white-space:pre-wrap;direction:ltr;text-align:left"></pre>
+        <div class="field-error" id="sn-error"></div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="sn-save">⚡ نصب و راه‌اندازی</button>
+          <button class="btn outline" id="sn-cancel">انصراف</button>
+        </div></div>`;
+      document.getElementById("sn-cancel").onclick = () => goList("nodes");
+      document.getElementById("sn-save").onclick = async (e) => {
+        const btn = e.currentTarget, err = document.getElementById("sn-error"), logEl = document.getElementById("sn-log");
+        err.textContent = "";
+        const name = document.getElementById("sn-name").value.trim(), host = document.getElementById("sn-host").value.trim();
+        const password = document.getElementById("sn-pass").value;
+        if (!name || !host || !password) { err.textContent = "نام، آی‌پی و رمز root را وارد کن."; return; }
+        btn.disabled = true; logEl.style.display = ""; logEl.textContent = "شروع نصب...";
+        try {
+          const r = await api("/api/admin/ssh/nodes/auto-install", { method: "POST", body: JSON.stringify({ name, host, ssh_port: Number(document.getElementById("sn-port").value) || 22, password }) });
+          document.getElementById("sn-pass").value = "";
+          for (let i = 0; i < 400; i++) {
+            await new Promise((res) => setTimeout(res, 3000));
+            if (!document.getElementById("sn-log")) return; // کاربر صفحه را عوض کرد
+            const j = await api(`/api/admin/ssh/nodes/install-jobs/${r.job_id}`);
+            logEl.textContent = (j.log || []).join("\n");
+            if (j.status === "done") { notify(j.warning ? "نود نصب شد؛ " + j.warning : "نود با موفقیت نصب و فعال شد."); goList("nodes"); return; }
+            if (j.status === "error") { err.textContent = j.error || "نصب ناموفق بود."; btn.disabled = false; return; }
+          }
+          err.textContent = "نصب طولانی شد؛ بعداً وضعیت نودها را بررسی کن."; btn.disabled = false;
+        } catch (e2) { err.textContent = e2.message; btn.disabled = false; }
+      };
+      return;
+    }
+
+    if (v.mode === "add-account") {
+      const okNodes = nodes.filter((n) => n.status === "active");
+      body.innerHTML = `<div class="card">
+        <div class="eyebrow" style="margin-top:0">➕ ساخت حساب SSH</div>
+        <label class="field-label">نود</label>
+        <select class="input" id="sa-node" style="margin-bottom:10px">${okNodes.map((n) => `<option value="${Number(n.id)}">${escHtml(n.name)}</option>`).join("") || '<option value="">نود فعالی وجود ندارد</option>'}</select>
+        <label class="field-label">شناسه تلگرام کاربر</label>
+        <input class="input" id="sa-user" type="number" style="${SSH_LTR}" />
+        <label class="field-label">نام کاربری SSH</label>
+        <input class="input" id="sa-username" type="text" maxlength="32" placeholder="user123" style="${SSH_LTR}" />
+        <label class="field-label">استخر مشترک (اختیاری)</label>
+        <select class="input" id="sa-pool" style="margin-bottom:10px"><option value="">بدون استخر (حجم مستقل)</option>${activePools.map((p) => `<option value="${Number(p.id)}" data-user="${Number(p.user_id)}">#${Number(p.id)} · کاربر ${Number(p.user_id)} · ${escHtml(p.label || "")}</option>`).join("")}</select>
+        <label class="field-label">سقف حجم مستقل (GB) — 0 یعنی نامحدود (بدون استخر)</label>
+        <input class="input" id="sa-limit" type="number" min="0" step="0.1" value="0" style="${SSH_LTR}" />
+        <label class="field-label">مدت (روز)</label>
+        <input class="input" id="sa-days" type="number" min="0" value="30" style="${SSH_LTR}" />
+        <div class="field-error" id="sa-error"></div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="sa-save">✅ ساخت حساب</button>
+          <button class="btn outline" id="sa-cancel">انصراف</button>
+        </div></div>`;
+      document.getElementById("sa-cancel").onclick = () => goList("accounts");
+      document.getElementById("sa-save").onclick = async (e) => {
+        const btn = e.currentTarget, err = document.getElementById("sa-error");
+        err.textContent = ""; btn.disabled = true;
+        const poolVal = document.getElementById("sa-pool").value;
+        try {
+          const r = await api("/api/admin/ssh/accounts", { method: "POST", body: JSON.stringify({
+            node_id: Number(document.getElementById("sa-node").value), user_id: Number(document.getElementById("sa-user").value),
+            username: document.getElementById("sa-username").value.trim(), limit_gb: Number(document.getElementById("sa-limit").value) || 0,
+            days: Number(document.getElementById("sa-days").value) || 0, quota_pool_id: poolVal ? Number(poolVal) : null }) });
+          adminSshView = { tab: "accounts", mode: "created", created: r };
+          rerender();
+        } catch (e2) { err.textContent = e2.message; btn.disabled = false; }
+      };
+      return;
+    }
+
+    if (v.mode === "created") {
+      const r = v.created || {};
+      body.innerHTML = `<div class="card">
+        <div class="eyebrow" style="margin-top:0">✅ حساب SSH ساخته شد</div>
+        <p>نام کاربری: <b>${escHtml(r.username)}</b></p>
+        <p>سرور: <code>${escHtml(r.host)}:${Number(r.port)}</code></p>
+        <p>رمز (فقط همین بار نمایش داده می‌شود):</p>
+        <input class="input" id="sc-pass" readonly value="${escHtml(r.password || "")}" style="${SSH_LTR}" />
+        ${r.ssh_uri ? `<p>لینک اتصال:</p><input class="input" id="sc-uri" readonly value="${escHtml(r.ssh_uri)}" style="${SSH_LTR}" />` : ""}
+        ${r.warning ? `<p class="hint-text">⚠️ ${escHtml(r.warning)}</p>` : ""}
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="sc-copy-pass">کپی رمز</button>
+          ${r.ssh_uri ? '<button class="btn" id="sc-copy-uri">کپی لینک</button>' : ""}
+          <button class="btn outline" id="sc-done">بستن</button>
+        </div></div>`;
+      const copy = async (text) => { try { await navigator.clipboard.writeText(text); notify("کپی شد."); } catch (_) { notify("دستی کپی کن."); } };
+      document.getElementById("sc-copy-pass").onclick = () => copy(r.password || "");
+      if (r.ssh_uri) document.getElementById("sc-copy-uri").onclick = () => copy(r.ssh_uri);
+      document.getElementById("sc-done").onclick = () => goList("accounts");
+      return;
+    }
+
+    if (v.mode === "add-pool") {
+      body.innerHTML = `<div class="card">
+        <div class="eyebrow" style="margin-top:0">➕ ساخت استخر سهمیه مشترک</div>
+        <label class="field-label">شناسه تلگرام صاحب استخر</label>
+        <input class="input" id="sp-user" type="number" style="${SSH_LTR}" />
+        <label class="field-label">سقف کل (GB) — 0 یعنی نامحدود</label>
+        <input class="input" id="sp-limit" type="number" min="0" step="0.1" value="50" style="${SSH_LTR}" />
+        <label class="field-label">مدت اعتبار (روز) — 0 یعنی بدون انقضا</label>
+        <input class="input" id="sp-days" type="number" min="0" value="30" style="${SSH_LTR}" />
+        <label class="field-label">عنوان</label>
+        <input class="input" id="sp-label" type="text" value="سهمیه مشترک VPN + SSH" maxlength="100" style="margin-bottom:10px" />
+        <div class="field-error" id="sp-error"></div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="sp-save">✅ ساخت استخر</button>
+          <button class="btn outline" id="sp-cancel">انصراف</button>
+        </div></div>`;
+      document.getElementById("sp-cancel").onclick = () => goList("pools");
+      document.getElementById("sp-save").onclick = async (e) => {
+        const btn = e.currentTarget, err = document.getElementById("sp-error");
+        err.textContent = ""; btn.disabled = true;
+        const days = Number(document.getElementById("sp-days").value) || 0;
+        const expires_at = days ? new Date(Date.now() + days * 86400000).toISOString() : null;
+        try {
+          const r = await api("/api/admin/ssh/pools", { method: "POST", body: JSON.stringify({
+            user_id: Number(document.getElementById("sp-user").value), limit_gb: Number(document.getElementById("sp-limit").value) || 0,
+            expires_at, label: document.getElementById("sp-label").value.trim() }) });
+          notify(`استخر #${r.pool_id} ساخته شد.`); goList("pools");
+        } catch (e2) { err.textContent = e2.message; btn.disabled = false; }
+      };
+      return;
+    }
+
+    if (v.mode === "attach") {
+      body.innerHTML = `<div class="card">
+        <div class="eyebrow" style="margin-top:0">🔗 اتصال کانفیگ VPN به استخر</div>
+        <label class="field-label">استخر</label>
+        <select class="input" id="at-pool" style="margin-bottom:10px">${activePools.map((p) => `<option value="${Number(p.id)}">#${Number(p.id)} · کاربر ${Number(p.user_id)} · ${escHtml(p.label || "")}</option>`).join("") || '<option value="">استخر فعالی وجود ندارد</option>'}</select>
+        <label class="field-label">شناسه کانفیگ VPN</label>
+        <input class="input" id="at-config" type="number" min="1" style="${SSH_LTR}" />
+        <div class="field-error" id="at-error"></div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="at-save">🔗 اتصال</button>
+          <button class="btn outline" id="at-cancel">انصراف</button>
+        </div></div>`;
+      document.getElementById("at-cancel").onclick = () => goList("pools");
+      document.getElementById("at-save").onclick = async (e) => {
+        const btn = e.currentTarget, err = document.getElementById("at-error");
+        err.textContent = ""; btn.disabled = true;
+        try {
+          await api(`/api/admin/ssh/pools/${Number(document.getElementById("at-pool").value)}/attach-vpn`, { method: "POST", body: JSON.stringify({ custom_config_id: Number(document.getElementById("at-config").value) }) });
+          notify("کانفیگ VPN به استخر متصل شد."); goList("pools");
+        } catch (e2) { err.textContent = e2.message; btn.disabled = false; }
+      };
+      return;
+    }
+
+    // ---------- لیست‌ها ----------
+    const tabs = [["nodes", "نودها", nodes.length], ["accounts", "حساب‌ها", accounts.length], ["pools", "استخرها", pools.length]];
+    let listHtml = "";
+    if (v.tab === "nodes") {
+      listHtml = `<div style="margin-bottom:10px"><button class="btn" id="ssh-add-node">➕ افزودن نود (نصب خودکار)</button></div>` +
+        (nodes.map((n) => `<div class="card" style="margin-bottom:8px">
+          <div><b>${sshIcon(n.status)} ${escHtml(n.name)}</b></div>
+          <div class="hint-text" style="direction:ltr;text-align:left">${escHtml(n.host)}:${Number(n.port)}</div>
+          <div class="hint-text">وضعیت: ${escHtml(sshStatus(n.status))}${n.last_error ? " · " + escHtml(n.last_error) : ""}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn outline" data-ssh-test="${Number(n.id)}">🔌 تست</button>
+            <button class="btn outline" data-ssh-rename="${Number(n.id)}" data-name="${escHtml(n.name)}">✏️ نام</button>
+            <button class="btn outline" data-ssh-del-node="${Number(n.id)}">🗑 حذف</button>
+          </div></div>`).join("") || '<div class="hint-text">هنوز نودی ثبت نشده است.</div>');
+    } else if (v.tab === "accounts") {
+      listHtml = `<div style="margin-bottom:10px"><button class="btn" id="ssh-add-account">➕ ساخت حساب</button></div>` +
+        (accounts.map((a) => `<div class="card" style="margin-bottom:8px">
+          <div><b>${sshIcon(a.status)} ${escHtml(a.username)}</b> · ${escHtml(sshStatus(a.status))}</div>
+          <div class="hint-text" style="direction:ltr;text-align:left">${escHtml(a.host)}:${Number(a.port)}</div>
+          <div class="hint-text">کاربر ${Number(a.user_id)} · نود #${Number(a.node_id)} · استخر ${a.quota_pool_id ? "#" + Number(a.quota_pool_id) : "ندارد"}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn outline" data-ssh-acc="enable" data-id="${escHtml(a.account_id)}">✅ فعال</button>
+            <button class="btn outline" data-ssh-acc="disable" data-id="${escHtml(a.account_id)}">⏸ غیرفعال</button>
+            <button class="btn outline" data-ssh-acc="delete" data-id="${escHtml(a.account_id)}">🗑 حذف</button>
+          </div></div>`).join("") || '<div class="hint-text">هنوز حساب SSH ثبت نشده است.</div>');
+    } else {
+      listHtml = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn" id="ssh-add-pool">➕ ساخت استخر</button>
+          <button class="btn outline" id="ssh-attach">🔗 اتصال VPN</button>
+          <button class="btn outline" id="ssh-reconcile">🔄 پایش سهمیه</button></div>` +
+        (pools.map((p) => { const u = p.usage || {}; return `<div class="card" style="margin-bottom:8px">
+          <div><b>#${Number(p.id)} · ${escHtml(p.label || "")}</b></div>
+          <div class="hint-text">کاربر ${Number(p.user_id)} · ${sshBytes(u.used_bytes)} از ${Number(p.limit_bytes || 0) ? sshBytes(p.limit_bytes) : "نامحدود"}</div>
+          <div class="hint-text">وضعیت: ${escHtml(sshStatus(p.status))} · اعضا: ${(p.members || []).length}</div></div>`; }).join("") || '<div class="hint-text">استخر سهمیه‌ای وجود ندارد.</div>');
+    }
+    body.innerHTML = `<div class="segmented" style="margin-bottom:12px">${tabs.map(([k, l, c]) => `<button class="seg-btn ${v.tab === k ? "active" : ""}" data-ssh-tab="${k}">${l} (${c})</button>`).join("")}</div>${listHtml}`;
+
+    body.querySelectorAll("[data-ssh-tab]").forEach((b) => (b.onclick = () => goList(b.dataset.sshTab)));
+    const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+    on("ssh-add-node", () => { adminSshView = { tab: "nodes", mode: "add-node" }; rerender(); });
+    on("ssh-add-account", () => { adminSshView = { tab: "accounts", mode: "add-account" }; rerender(); });
+    on("ssh-add-pool", () => { adminSshView = { tab: "pools", mode: "add-pool" }; rerender(); });
+    on("ssh-attach", () => { adminSshView = { tab: "pools", mode: "attach" }; rerender(); });
+    on("ssh-reconcile", async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const r = await api("/api/admin/ssh/reconcile", { method: "POST" });
+        const res = r.results || [];
+        const failed = res.filter((x) => !x.enforcement_complete).length, stale = res.filter((x) => x.state === "stale").length;
+        notify(failed ? `پایش انجام شد؛ ${failed} استخر نیازمند بررسی است.` : (stale ? `${stale} استخر به‌علت گزارش مصرف قدیمی در حالت امن ماند.` : "پایش سهمیه انجام شد."));
+        rerender();
+      } catch (e2) { notify(e2.message); e.currentTarget.disabled = false; }
+    });
+    body.querySelectorAll("[data-ssh-test]").forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      try { const r = await api(`/api/admin/ssh/nodes/${b.dataset.sshTest}/test`, { method: "POST" }); notify(r.ok ? "اتصال Agent موفق بود." : "پاسخ Agent معتبر نیست."); rerender(); }
+      catch (e) { notify(e.message); rerender(); }
+    }));
+    body.querySelectorAll("[data-ssh-rename]").forEach((b) => (b.onclick = async () => {
+      const name = (prompt("نام جدید نود (روی کانفیگ SSH کاربر دیده می‌شود):", b.dataset.name || "") || "").trim();
+      if (!name || name === b.dataset.name) return;
+      try { await api(`/api/admin/ssh/nodes/${b.dataset.sshRename}/rename`, { method: "POST", body: JSON.stringify({ name }) }); rerender(); }
+      catch (e) { notify(e.message); }
+    }));
+    body.querySelectorAll("[data-ssh-del-node]").forEach((b) => (b.onclick = async () => {
+      if (!confirm("این نود حذف شود؟")) return;
+      try { await api(`/api/admin/ssh/nodes/${b.dataset.sshDelNode}`, { method: "DELETE" }); rerender(); }
+      catch (e) { notify(e.message); }
+    }));
+    body.querySelectorAll("[data-ssh-acc]").forEach((b) => (b.onclick = async () => {
+      const action = b.dataset.sshAcc;
+      if (action === "delete" && !confirm("حساب SSH حذف شود؟")) return;
+      b.disabled = true;
+      try { await api(`/api/admin/ssh/accounts/${encodeURIComponent(b.dataset.id)}/action`, { method: "POST", body: JSON.stringify({ action }) }); rerender(); }
+      catch (e) { notify(e.message); b.disabled = false; }
+    }));
+  } catch (e) {
+    body.innerHTML = errorState(escHtml(e.message || "خطا در بارگذاری SSH"));
+  }
+}
 
 async function renderAdminPanelsSection() {
   const body = document.getElementById("admin-section-body");

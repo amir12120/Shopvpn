@@ -3297,6 +3297,167 @@ class CustomGatewayIn(BaseModel):
     config: dict
 
 
+# ---------------------------------------------------------------------------
+# مدیریت SSH: نودها، حساب‌ها و استخرهای سهمیه (منطق مشترک در ssh_service.py)
+# ---------------------------------------------------------------------------
+class SshNodeInstallIn(BaseModel):
+    name: str
+    host: str
+    ssh_port: int = 22
+    password: str
+
+
+class SshNodeRenameIn(BaseModel):
+    name: str
+
+
+class SshPoolIn(BaseModel):
+    user_id: int
+    limit_gb: float = 0
+    expires_at: Optional[str] = None
+    label: str = ""
+
+
+class SshAttachIn(BaseModel):
+    custom_config_id: int
+
+
+class SshAccountIn(BaseModel):
+    node_id: int
+    user_id: int
+    username: str
+    limit_gb: float = 0
+    days: int = 30
+    expires_at: Optional[str] = None
+    quota_pool_id: Optional[int] = None
+
+
+class SshAccountActionIn(BaseModel):
+    action: str
+
+
+def _ssh_call(fn, *args, **kwargs):
+    import ssh_service
+    try:
+        return fn(*args, **kwargs)
+    except ssh_service.SSHServiceError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+
+
+async def _ssh_acall(coro_fn, *args, **kwargs):
+    import ssh_service
+    try:
+        return await coro_fn(*args, **kwargs)
+    except ssh_service.SSHServiceError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+
+
+@app.get("/api/admin/ssh/overview")
+def api_admin_ssh_overview(auth=Depends(require_full_access_admin)):
+    import ssh_service
+    _, db, _ = auth
+    return ssh_service.overview(db)
+
+
+@app.post("/api/admin/ssh/nodes/auto-install")
+def api_admin_ssh_auto_install(body: SshNodeInstallIn, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    job_id = _ssh_call(ssh_service.start_auto_install, db, name=body.name, host=body.host,
+                       ssh_port=body.ssh_port, password=body.password)
+    db.log_admin_action(admin_id, "ssh_node_auto_install", f"SSH node auto-install started: {body.name.strip()} ({body.host.strip()})", "ssh")
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/admin/ssh/nodes/install-jobs/{job_id}")
+def api_admin_ssh_install_job(job_id: str, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    job = ssh_service.get_install_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=tr("کار نصب پیدا نشد."))
+    return job
+
+
+@app.delete("/api/admin/ssh/nodes/{node_id}")
+def api_admin_ssh_delete_node(node_id: int, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    _ssh_call(ssh_service.delete_node, db, node_id)
+    db.log_admin_action(admin_id, "ssh_node_delete", f"SSH node #{node_id}", "ssh")
+    return {"ok": True}
+
+
+@app.post("/api/admin/ssh/nodes/{node_id}/rename")
+def api_admin_ssh_rename_node(node_id: int, body: SshNodeRenameIn, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    _ssh_call(ssh_service.rename_node, db, node_id, body.name)
+    db.log_admin_action(admin_id, "ssh_node_rename", f"SSH node #{node_id}: {body.name.strip()}", "ssh")
+    return {"ok": True}
+
+
+@app.post("/api/admin/ssh/nodes/{node_id}/test")
+async def api_admin_ssh_test_node(node_id: int, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    ok = await _ssh_acall(ssh_service.test_node, db, node_id)
+    db.log_admin_action(admin_id, "ssh_node_test", f"SSH node #{node_id}: {'ok' if ok else 'failed'}", "ssh")
+    return {"ok": bool(ok), "status": "active" if ok else "error"}
+
+
+@app.post("/api/admin/ssh/pools")
+def api_admin_ssh_create_pool(body: SshPoolIn, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    pool_id = _ssh_call(ssh_service.create_pool, db, body.user_id, body.limit_gb, body.expires_at, body.label)
+    db.log_admin_action(admin_id, "ssh_pool_create", f"Shared quota pool #{pool_id} for user {body.user_id}", "ssh")
+    return {"ok": True, "pool_id": pool_id}
+
+
+@app.post("/api/admin/ssh/pools/{pool_id}/attach-vpn")
+def api_admin_ssh_attach_vpn(pool_id: int, body: SshAttachIn, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    _ssh_call(ssh_service.attach_vpn, db, pool_id, body.custom_config_id)
+    db.log_admin_action(admin_id, "ssh_pool_attach_vpn", f"Pool #{pool_id} <- custom_config:{body.custom_config_id}", "ssh")
+    return {"ok": True}
+
+
+@app.post("/api/admin/ssh/accounts")
+async def api_admin_ssh_create_account(body: SshAccountIn, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    from ssh_uri import build_ssh_uri
+    admin_id, db, _ = auth
+    r = await _ssh_acall(ssh_service.create_account, db, node_id=body.node_id, user_id=body.user_id,
+                         username=body.username, limit_gb=body.limit_gb, days=body.days,
+                         expires_at=body.expires_at, quota_pool_id=body.quota_pool_id)
+    db.log_admin_action(admin_id, "ssh_account_create", f"SSH account #{r['id']} for user {body.user_id}", "ssh")
+    try:
+        r["ssh_uri"] = build_ssh_uri(r["username"], r["password"], r["host"], int(r["port"]),
+                                     f"{r.get('node_name') or 'SSH'} {r['username']}")
+    except ValueError:
+        r["ssh_uri"] = ""
+    return r
+
+
+@app.post("/api/admin/ssh/accounts/{account_id}/action")
+async def api_admin_ssh_account_action(account_id: str, body: SshAccountActionIn, auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    status = await _ssh_acall(ssh_service.account_action, db, account_id, body.action)
+    db.log_admin_action(admin_id, f"ssh_account_{body.action.strip().lower()}", f"SSH account {account_id}", "ssh")
+    return {"ok": True, "account_id": account_id, "status": status}
+
+
+@app.post("/api/admin/ssh/reconcile")
+async def api_admin_ssh_reconcile(auth=Depends(require_full_access_admin)):
+    import ssh_service
+    admin_id, db, _ = auth
+    results = await ssh_service.reconcile(db)
+    db.log_admin_action(admin_id, "ssh_quota_reconcile", f"Manual reconcile ({len(results)} pools)", "ssh")
+    return {"ok": True, "results": results}
+
+
 @app.get("/api/admin/gateways")
 def api_admin_list_gateways(auth=Depends(require_senior_admin)):
     _, db, _ = auth

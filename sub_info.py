@@ -360,7 +360,51 @@ async def fetch_individual_links(sub_url: str) -> list:
     return out
 
 
+_pool_db = None
+
+
+def _pool_override_sync(link: str):
+    """اگر لینک ساب (آدرس پنل) متعلق به سرویس ترکیبی VPN+SSH باشد، مصرف/سقف/انقضای «استخر
+    مشترک» را برمی‌گرداند (مصرف VPN+SSH روی هم، سقف اصلی بسته). پنل VPN فقط «باقی‌مانده‌ی
+    مشترک» را به‌عنوان سقف می‌بیند (برای قطع لحظه‌ای)، و نباید آن عدد به کاربر نمایش داده شود.
+    برای سرویس معمولی None برمی‌گردد."""
+    global _pool_db
+    try:
+        import config
+        import dedicated_sub
+        from database import Database
+        if _pool_db is None:
+            _pool_db = Database(config.DB_PATH)
+        base = str(link).split("#", 1)[0]
+        with _pool_db._get_conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM custom_configs WHERE subscription_url=? OR subscription_url=? ORDER BY id DESC LIMIT 1",
+                (link, base.split("?", 1)[0]),
+            ).fetchone()
+        if not row:
+            return None
+        return dedicated_sub.quota_info_for_config(_pool_db, int(row["id"]), any_status=True)
+    except Exception:
+        _log.debug("pool override lookup failed", exc_info=True)
+        return None
+
+
 async def fetch_sub_info(link: str) -> dict:
+    """فراخوانی اصلی؛ برای سرویس‌های ترکیبی VPN+SSH مصرف و سقف را از استخر مشترک می‌خواند."""
+    import asyncio
+    result = await _fetch_sub_info_raw(link)
+    pool = await asyncio.to_thread(_pool_override_sync, link)
+    if pool:
+        base = result if result.get("ok") else {"ok": True, "title": None}
+        result = dict(base)
+        result.update({"ok": True, "upload": int(pool.get("upload") or 0), "download": int(pool.get("download") or 0),
+                       "total": int(pool.get("total") or 0)})
+        if pool.get("expire"):
+            result["expire"] = int(pool["expire"])
+    return result
+
+
+async def _fetch_sub_info_raw(link: str) -> dict:
     """
     خروجی:
       {"ok": True, "upload": int, "download": int, "total": int,
