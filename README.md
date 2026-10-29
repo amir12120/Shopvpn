@@ -25,6 +25,7 @@ A personal, standalone fork of [ShopVPN](https://github.com/mehdirafatpanah/Shop
 | Update errors | A failed translation refresh is a warning, not a dead bot; the bot keeps the models it already has |
 | Translation repair | Missing `SHOPVPN_TRANSLATION_LANGS` is self-healed, and the script can no longer exit silently |
 | Repository | Standalone since v4.17.0; upstream can still be synced manually at any time |
+| Web store | Live network map on the home page with server-side coastline data; no external CDN call from the customer's browser |
 
 ---
 

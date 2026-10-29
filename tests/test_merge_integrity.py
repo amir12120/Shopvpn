@@ -842,3 +842,27 @@ def test_project_update_runner_stays_next_to_the_bot():
     updater_src = (ROOT / "updater.py").read_text(encoding="utf-8")
     assert 'RUNNER = os.path.join(BASE_DIR, "update_runner.sh")' in updater_src
     assert "os.path.isfile(RUNNER)" in updater_src
+
+
+def test_storefront_network_map_stays_wired():
+    """The live network map is a storefront feature, not a dead asset.
+
+    It must be loaded on the home page, served as a static asset, and backed by
+    the same server-side world-map cache the admin dashboard uses.
+    """
+    js = ROOT / "web_store/static/assets/network-map.js"
+    css = ROOT / "web_store/static/assets/network-map.css"
+    assert js.is_file() and js.stat().st_size > 10000
+    assert css.is_file() and css.stat().st_size > 5000
+    assert "window.ShopVPNNetworkMap" in js.read_text(encoding="utf-8")
+
+    index = (ROOT / "web_store/static/index.html").read_text(encoding="utf-8")
+    assert "/assets/network-map.css" in index
+    assert "/assets/network-map.js" in index
+
+    app_js = (ROOT / "web_store/static/assets/app.js").read_text(encoding="utf-8")
+    assert "window.ShopVPNNetworkMap.create" in app_js
+
+    routes = (ROOT / "web_store/routes.py").read_text(encoding="utf-8")
+    assert '@router.get("/api/web/world-map")' in routes
+    assert "world_map.get_world_map()" in routes

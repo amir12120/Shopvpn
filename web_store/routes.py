@@ -375,6 +375,17 @@ def _seo_base(request: Request) -> str:
     return f"{proto}://{host}".rstrip("/")
 
 
+@router.get("/api/web/world-map")
+async def web_world_map():
+    """مسیر SVG خطوط ساحلی برای «نقشه زنده شبکهٔ» صفحه اول.
+
+    مثل کش نقشهٔ پنل ادمین، از سرور خودمان سرو می‌شود تا مرورگر مشتری
+    مستقیم به CDN خارجی وصل نشود (CSP هم اجازه نمی‌دهد).
+    """
+    import world_map
+    return await world_map.get_world_map()
+
+
 @router.get("/robots.txt", include_in_schema=False)
 def seo_robots(request: Request):
     body = (

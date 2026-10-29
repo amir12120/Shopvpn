@@ -632,7 +632,9 @@
       h("h2", { id: "plansH", text: t("plans_title") }),
       h("p", { class: "sub", text: t("plans_sub") }),
       plansBox);
-    mount(h("div", null, hero.node, plans, howSection(), faqSection()), "");
+    var networkMap = window.ShopVPNNetworkMap && window.ShopVPNNetworkMap.create
+      ? window.ShopVPNNetworkMap.create() : null;
+    mount(h("div", null, hero.node, networkMap, plans, howSection(), faqSection()), "");
     plansBox.appendChild(skeletonCards(3));
     loadCatalog().then(function (c) {
       fillPlans(plansBox, c);
