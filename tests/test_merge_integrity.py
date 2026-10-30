@@ -110,6 +110,7 @@ UPSTREAM_FEATURE_MODULES = (
     "ssh_service.py",
     "ssh_uri.py",
     "db/usage.py",
+    "config_geo.py",
 )
 
 # Upstream keeps re-uploading these with a module-level `from i18n import tr`
@@ -256,6 +257,16 @@ def test_ssh_management_is_wired_end_to_end():
     for method in ("def link_ssh_account_to_config", "def ssh_accounts_for_config",
                    "def quota_pool_for_custom_config", "def update_ssh_node_name"):
         assert method in db_usage
+
+
+
+def test_config_geo_is_wired_end_to_end():
+    """Product locations from inventory configs must stay reachable from the web store."""
+    assert "async def locate_products(" in (ROOT / "config_geo.py").read_text(encoding="utf-8")
+    catalog = (ROOT / "db/catalog.py").read_text(encoding="utf-8")
+    assert "def get_config_links_for_geo(" in catalog
+    assert "def get_sub_urls_for_geo(" in catalog
+    assert "/api/web/network-map" in (ROOT / "web_store/routes.py").read_text(encoding="utf-8")
 
 
 def test_card_number_gate_is_wired_end_to_end():

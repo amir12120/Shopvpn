@@ -375,6 +375,74 @@ def _seo_base(request: Request) -> str:
     return f"{proto}://{host}".rstrip("/")
 
 
+
+
+_NETMAP_TTL = 20
+_netmap_cache = {"at": 0.0, "data": None}
+
+
+def _network_map_products(db: Database) -> list:
+    items = []
+    for c in db.get_categories(active_only=True):
+        for p in db.get_products(c["id"], active_only=True):
+            items.append({
+                "id": p["id"],
+                "name": p["name"],
+                "price": p["price"],
+                "in_stock": bool(p["is_auto_provision"]) or db.count_available_configs(p["id"]) > 0,
+                "duration_days": p["duration_days"],
+                "volume_gb": p["auto_provision_volume_gb"],
+            })
+    return items
+
+
+async def _network_map_build(db: Database) -> dict:
+    import config_geo
+    from datetime import datetime, timezone
+    products = await asyncio.to_thread(_network_map_products, db)
+    located = await config_geo.locate_products(db, products)
+    groups = {}
+    for p in products:
+        for key, loc in located.get(p["id"], {}).items():
+            g = groups.setdefault(key, {
+                "id": "l%d_%d" % (round(loc["lat"] * 10), round(loc["lon"] * 10)),
+                "cc": loc["cc"], "city": loc["city"], "city_fa": "", "lat": loc["lat"], "lon": loc["lon"],
+                "targets": [], "products": [],
+            })
+            for tgt in loc["targets"]:
+                if tgt not in g["targets"] and len(g["targets"]) < config_geo.TARGETS_PER_LOCATION:
+                    g["targets"].append(tgt)
+            g["products"].append(dict(p))
+    nodes = []
+    checked = datetime.now(timezone.utc).isoformat()
+    ordered = list(groups.values())
+    statuses = await asyncio.gather(*(config_geo.location_status(g["targets"]) for g in ordered))
+    for g, status in zip(ordered, statuses):
+        g.pop("targets")
+        g["status"] = status
+        g["last_check"] = checked
+        g["products_total"] = len(g["products"])
+        g["products_in_stock"] = sum(1 for x in g["products"] if x["in_stock"])
+        nodes.append(g)
+    nodes.sort(key=lambda n: (-n["products_in_stock"], n["city"]))
+    return {"nodes": nodes}
+
+
+@router.get("/api/web/network-map")
+async def web_network_map(tenant: Tenant = Depends(get_tenant)):
+    """Store locations derived from the config links of each product."""
+    _web_main_only(tenant)
+    import time
+    now = time.monotonic()
+    if _netmap_cache["data"] is not None and now - _netmap_cache["at"] < _NETMAP_TTL:
+        return _netmap_cache["data"]
+    data = await _network_map_build(tenant.db)
+    from datetime import datetime, timezone
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _netmap_cache["at"], _netmap_cache["data"] = now, data
+    return data
+
+
 @router.get("/api/web/world-map")
 async def web_world_map():
     """مسیر SVG خطوط ساحلی برای «نقشه زنده شبکهٔ» صفحه اول.

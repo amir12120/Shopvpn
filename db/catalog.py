@@ -531,6 +531,27 @@ class CatalogMixin:
             return row["c"]
 
 
+    def get_config_links_for_geo(self, product_id: int, limit: int = 40) -> list:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT link FROM configs WHERE product_id=? ORDER BY is_used, id LIMIT ?",
+                (product_id, int(limit)),
+            ).fetchall()
+        return [r["link"] for r in rows]
+
+
+    def get_sub_urls_for_geo(self, product_id: int, limit: int = 2) -> list:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT cc.subscription_url FROM custom_configs cc JOIN orders o ON o.id=cc.order_id "
+                "WHERE o.product_id=? AND cc.subscription_url IS NOT NULL AND cc.subscription_url<>'' "
+                "ORDER BY cc.id DESC LIMIT ?",
+                (product_id, int(limit)),
+            ).fetchall()
+        return [r["subscription_url"] for r in rows]
+
+
+
     def check_low_stock_alert_state(self, product_id: int, stock: int, threshold: int) -> bool:
         """مدیریت وضعیت هشدار موجودی کم برای یک محصول.
         فقط یک‌بار برای هر افت زیر آستانه هشدار می‌دهد (True برمی‌گرداند)، و وقتی موجودی
